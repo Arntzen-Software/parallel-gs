@@ -1,0 +1,1550 @@
+#version 450
+
+// SPDX-FileCopyrightText: 2024 Arntzen Software AS
+// SPDX-FileContributor: Hans-Kristian Arntzen
+// SPDX-FileContributor: Runar Heyer
+// SPDX-License-Identifier: LGPL-3.0+
+
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_vote : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_shader_subgroup_clustered : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_samplerless_texture_functions : require
+
+//#extension GL_EXT_spirv_intrinsics : require
+//spirv_execution_mode(extensions = ["SPV_KHR_float_controls"], capabilities = [4467], 4462, 32);
+
+layout(local_size_x = 64) in;
+layout(constant_id = 0) const int NUM_SAMPLES_X_LOG2 = 0;
+layout(constant_id = 1) const int NUM_SAMPLES_Y_LOG2 = 0;
+layout(constant_id = 2) const uint FB_FMT = 0;
+layout(constant_id = 3) const uint ZB_FMT = 0;
+layout(constant_id = 4) const uint VRAM_MASK = 4 * 1024 * 1024 - 1;
+layout(constant_id = 5) const uint VARIANT_FLAGS = 0;
+layout(constant_id = 6) const uint FEEDBACK_PSM = 0;
+layout(constant_id = 7) const uint FEEDBACK_CPSM = 0;
+
+const bool Z_SENSITIVE = ZB_FMT != -1u;
+const int NUM_SAMPLES_X = 1 << NUM_SAMPLES_X_LOG2;
+const int NUM_SAMPLES_Y = 1 << NUM_SAMPLES_Y_LOG2;
+const int NUM_SAMPLES = NUM_SAMPLES_X * NUM_SAMPLES_Y;
+const int SAMPLING_RATE_DIM_LOG2 = NUM_SAMPLES_Y_LOG2;
+const int SAMPLING_RATE_DIM = 1 << SAMPLING_RATE_DIM_LOG2;
+const uint VRAM_SIZE_16 = (VRAM_MASK + 1u) / 2u;
+const uint VRAM_SIZE_32 = (VRAM_MASK + 1u) / 4u;
+const bool SUPER_SAMPLE = NUM_SAMPLES > 1;
+
+//#include "inc/debug_channel.h"
+//#define DU(x) add_debug_message(0, uvec3(tile.fb_pixel, 0), uvec2(__LINE__, uint(x)))
+//#define DF(x) add_debug_message(1, uvec3(tile.fb_pixel, 0), uvec2(__LINE__, floatBitsToUint(x)))
+
+#define CONSTEXPR const
+#define PRIMITIVE_LIST_QUALIFIER readonly
+#define PRIMITIVE_SETUP_QUALIFIER readonly
+#define BINDLESS
+#define USE_RCP_FLOAT
+#define NEED_CONSTANTS
+#define NEED_PRIMITIVE_SETUP
+#define NEED_PRIMITIVE_LIST
+#define NEED_PRIMITIVE_COUNTS
+#define NEED_PRIMITIVE_SETUP
+#define NEED_PRIMITIVE_ATTRIBUTE
+#define NEED_TRANSFORMED_ATTRIBUTE
+#define NEED_VRAM
+#define NEED_TEXTURE_INFO
+#define NEED_STATE_VECTORS
+
+#include "data_structures.h"
+#include "data_buffers.h"
+#include "intersect.h"
+#include "math_utils.h"
+#include "utils.h"
+#include "swizzle_utils.h"
+
+const bool FEEDBACK = (VARIANT_FLAGS & VARIANT_FLAG_FEEDBACK_BIT) != 0;
+const bool INVARIANT_FP = (VARIANT_FLAGS & VARIANT_FLAG_INVARIANT_FP_BIT) != 0;
+const bool HIZ = (VARIANT_FLAGS & VARIANT_FLAG_HIZ_BIT) != 0;
+const bool HAS_AA1 = (VARIANT_FLAGS & VARIANT_FLAG_HAS_AA1_BIT) != 0;
+const bool HAS_SCANMSK = (VARIANT_FLAGS & VARIANT_FLAG_HAS_SCANMSK_BIT) != 0;
+
+layout(std430, set = 0, binding = BINDING_CLUT) readonly buffer CLUT16
+{
+	uint16_t data[];
+} clut16;
+
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+layout(rgba8, set = 0, binding = BINDING_FEEDBACK_COLOR) writeonly uniform image2DArray FeedbackColor;
+layout(rgba32ui, set = 0, binding = BINDING_FEEDBACK_PRIM) writeonly uniform uimage2D FeedbackPrim;
+layout(rgba32f, set = 0, binding = BINDING_FEEDBACK_VARY) writeonly uniform image2DArray FeedbackVary;
+#endif
+
+#if defined(FEEDBACK_DEPTH) && FEEDBACK_DEPTH
+layout(r32ui, set = 0, binding = BINDING_FEEDBACK_DEPTH) writeonly uniform uimage2DArray FeedbackDepth;
+#endif
+
+struct ShadeRequest
+{
+	int coverage;
+	bool z_test;
+	bool z_write;
+	bool multisample;
+	bool perspective;
+	bool z_greater;
+	bool st_bb;
+	float z;
+	uint state;
+	float i, j;
+};
+
+struct ShadeResultEarly
+{
+	ShadeRequest request;
+	bool opaque;
+};
+
+struct TileInfo
+{
+	ivec2 fb_pixel;
+	ivec2 fb_pixel_single_rate;
+	ivec2 tile_lo;
+	ivec2 tile_hi;
+	int fb_index;
+	int fb_index_depth;
+	int coarse_primitive_list_offset;
+	int coarse_primitive_count;
+};
+
+TileInfo get_tile_info()
+{
+	TileInfo info;
+
+	ivec2 work_group_id = ivec2(gl_WorkGroupID.yz);
+	ivec2 fb_tile_base = work_group_id * ivec2(FB_SWIZZLE_WIDTH, FB_SWIZZLE_HEIGHT);
+	ivec2 coarse_tile = fb_tile_base >> constants.coarse_tile_size_log2;
+	int coarse_tile_linear = coarse_tile.y * constants.coarse_fb_width + coarse_tile.x;
+	info.coarse_primitive_list_offset = coarse_tile_linear * constants.coarse_primitive_list_stride;
+	info.coarse_primitive_count = coarse_primitive_counts.data[coarse_tile_linear];
+
+	ivec2 tile_size;
+	ivec2 tile_index;
+	ivec2 local_pixel;
+
+	if (gl_SubgroupSize == 16)
+	{
+		tile_size = ivec2(4);
+		tile_index.x = int(bitfieldExtract(gl_SubgroupID, 0, 1));
+		tile_index.y = int(bitfieldExtract(gl_SubgroupID, 1, 1));
+
+		if (NUM_SAMPLES > 1)
+		{
+			tile_index.x += 2 * int(gl_WorkGroupID.x % NUM_SAMPLES_X);
+			tile_index.y += 2 * int(gl_WorkGroupID.x / NUM_SAMPLES_X);
+
+			// Need clustered ops to work well.
+			local_pixel.y =
+				int(bitfieldExtract(gl_SubgroupInvocationID, 0, 1)) +
+				int(bitfieldExtract(gl_SubgroupInvocationID, 2, 1)) * 2;
+
+			local_pixel.x =
+				int(bitfieldExtract(gl_SubgroupInvocationID, 1, 1)) +
+				int(bitfieldExtract(gl_SubgroupInvocationID, 3, 1)) * 2;
+		}
+		else
+		{
+			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 2));
+			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 2, 2));
+		}
+	}
+	else if (gl_SubgroupSize == 32)
+	{
+		tile_size = ivec2(4, 8);
+		tile_index.x = int(bitfieldExtract(gl_SubgroupID, 0, 1));
+		tile_index.y = 0;
+
+		if (NUM_SAMPLES > 1)
+		{
+			tile_index.x += 2 * int(gl_WorkGroupID.x % NUM_SAMPLES_X);
+			tile_index.y += int(gl_WorkGroupID.x / NUM_SAMPLES_X);
+
+			// Need clustered ops to work well.
+			local_pixel.y =
+				int(bitfieldExtract(gl_SubgroupInvocationID, 0, 1)) +
+				int(bitfieldExtract(gl_SubgroupInvocationID, 2, 1)) * 2 +
+				int(bitfieldExtract(gl_SubgroupInvocationID, 4, 1)) * 4;
+
+			local_pixel.x =
+				int(bitfieldExtract(gl_SubgroupInvocationID, 1, 1)) +
+				int(bitfieldExtract(gl_SubgroupInvocationID, 3, 1)) * 2;
+		}
+		else
+		{
+			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 2));
+			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 2, 3));
+		}
+	}
+	else
+	{
+		tile_size = ivec2(8, 8);
+		tile_index = ivec2(0);
+
+		if (NUM_SAMPLES > 1)
+		{
+			tile_index.x += int(gl_WorkGroupID.x % NUM_SAMPLES_X);
+			tile_index.y += int(gl_WorkGroupID.x / NUM_SAMPLES_X);
+
+			// Need clustered ops to work well.
+			local_pixel.y =
+				int(bitfieldExtract(gl_SubgroupInvocationID, 0, 1)) +
+				int(bitfieldExtract(gl_SubgroupInvocationID, 2, 1)) * 2 +
+				int(bitfieldExtract(gl_SubgroupInvocationID, 4, 1)) * 4;
+
+			local_pixel.x =
+				int(bitfieldExtract(gl_SubgroupInvocationID, 1, 1)) +
+				int(bitfieldExtract(gl_SubgroupInvocationID, 3, 1)) * 2 +
+				int(bitfieldExtract(gl_SubgroupInvocationID, 5, 1)) * 4;
+		}
+		else
+		{
+			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 3));
+			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 3, 3));
+		}
+	}
+
+	fb_tile_base += constants.base_pixel;
+	// If NUM_SAMPLES_X < NUM_SAMPLES_Y, we do X-offsets to compensate and create a checkerboard. Similar as N64 8x coverage.
+	fb_tile_base *= int(NUM_SAMPLES_Y);
+
+	if (NUM_SAMPLES_X < NUM_SAMPLES_Y)
+	{
+		// Checkerboard.
+		tile_size.x *= 2;
+		local_pixel.x *= 2;
+		local_pixel.x += local_pixel.y & 1;
+	}
+
+	// This is in high-res domain.
+	info.fb_pixel = fb_tile_base + tile_size * tile_index + local_pixel;
+
+	// Some primitives will be snapped to single-rate where we expect UI elements or similar.
+	// For now, snap sprite primitives to single rate.
+	info.fb_pixel_single_rate = info.fb_pixel & ~(SAMPLING_RATE_DIM - 1);
+
+	info.fb_index = int(swizzle_PS2(
+		info.fb_pixel.x >> SAMPLING_RATE_DIM_LOG2,
+		info.fb_pixel.y >> SAMPLING_RATE_DIM_LOG2,
+		constants.fb_color_page * BLOCKS_PER_PAGE,
+		constants.fb_page_stride, FB_FMT, VRAM_MASK));
+
+	if (Z_SENSITIVE)
+	{
+		info.fb_index_depth = int(swizzle_PS2(
+			info.fb_pixel.x >> SAMPLING_RATE_DIM_LOG2,
+			info.fb_pixel.y >> SAMPLING_RATE_DIM_LOG2,
+			constants.fb_depth_page * BLOCKS_PER_PAGE,
+			constants.fb_page_stride, ZB_FMT, VRAM_MASK));
+	}
+	else
+		info.fb_index_depth = 0;
+
+	fb_tile_base += tile_size * tile_index;
+	info.tile_lo = fb_tile_base;
+	info.tile_hi = info.tile_lo + tile_size - 1;
+
+	// This is in single-sampled domain.
+	info.tile_lo >>= SAMPLING_RATE_DIM_LOG2;
+	info.tile_hi >>= SAMPLING_RATE_DIM_LOG2;
+
+	return info;
+}
+
+// Globals
+TileInfo tile;
+
+uint fb_color;
+float fb_depth;
+float fb_depth_hiz_lo;
+
+bool fb_color_dirty;
+bool fb_depth_dirty;
+bool need_update_hiz;
+
+ShadeRequest pending_shade_request;
+uint pending_primitive_index;
+
+const bool is_fb_32bit = FB_FMT == PSMCT32 || FB_FMT == PSMZ32;
+const bool is_fb_24bit = FB_FMT == PSMCT24 || FB_FMT == PSMZ24;
+const bool is_fb_16bit = FB_FMT == PSMCT16 || FB_FMT == PSMCT16S || FB_FMT == PSMZ16 || FB_FMT == PSMZ16S;
+
+const bool is_zb_32bit = ZB_FMT == PSMZ32 || ZB_FMT == PSMCT32;
+const bool is_zb_24bit = ZB_FMT == PSMZ24 || ZB_FMT == PSMCT24;
+const bool is_zb_16bit = ZB_FMT == PSMZ16 || ZB_FMT == PSMZ16S || ZB_FMT == PSMCT16 || ZB_FMT == PSMCT16S;
+
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+uint shade_count = 0u;
+uint last_shade_prim = 0u;
+uint coverage_count = 0u;
+uint texture_mask = 0u;
+vec4 last_stqf = vec4(0.0);
+vec4 last_rgba = vec4(0.0);
+float last_z = 0.0;
+vec2 last_ij = vec2(0.0);
+bool last_z_passed = false;
+
+layout(push_constant) uniform Registers
+{
+	uint lo_primitive_index;
+	uint hi_primitive_index;
+} registers;
+#endif
+////
+
+bool z_test_coverage(float z, bool z_test_greater)
+{
+	bool ret = z_test_greater ? z > fb_depth : z >= fb_depth;
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+	last_z_passed = ret;
+#endif
+	return ret;
+}
+
+bool pending_shade_request_can_decrease_z()
+{
+	return Z_SENSITIVE && pending_shade_request.z_write &&
+		!pending_shade_request.z_test &&
+		pending_shade_request.z < fb_depth;
+}
+
+void check_pending_hiz()
+{
+	if (!need_update_hiz)
+		need_update_hiz = pending_shade_request_can_decrease_z();
+}
+
+void update_hiz()
+{
+	if (subgroupAny(need_update_hiz))
+	{
+		float pending_hi_z = pending_shade_request_can_decrease_z() ?
+			pending_shade_request.z : fb_depth;
+		fb_depth_hiz_lo = subgroupMin(pending_hi_z);
+		need_update_hiz = false;
+	}
+}
+
+void begin_tile()
+{
+	uint sample_index = gl_SubgroupInvocationID & (NUM_SAMPLES - 1);
+	fb_color_dirty = false;
+	fb_depth_dirty = false;
+
+	if (is_fb_16bit)
+	{
+		uint col = uint(vram16.data[tile.fb_index]);
+
+		if (SUPER_SAMPLE)
+		{
+			uint ref = uint(vram16.data[tile.fb_index + VRAM_SIZE_16]);
+			if (ref == col)
+			{
+				// Load super-sampled data instead.
+				uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
+				col = uint(vram16.data[tile.fb_index + vram_offset]);
+			}
+			else
+				fb_color_dirty = true;
+		}
+
+		fb_color = rgba16_to_rgba32(col, 0u, 0x80u, 0u);
+	}
+	else
+	{
+		fb_color = vram32.data[tile.fb_index];
+
+		if (SUPER_SAMPLE)
+		{
+			uint ref = vram32.data[tile.fb_index + VRAM_SIZE_32];
+			if (ref == fb_color)
+			{
+				// Load super-sampled data instead.
+				uint vram_offset = (sample_index + 2u) * VRAM_SIZE_32;
+				fb_color = vram32.data[tile.fb_index + vram_offset];
+			}
+			else
+				fb_color_dirty = true;
+		}
+	}
+
+	if (Z_SENSITIVE)
+	{
+		if (is_zb_16bit)
+		{
+			fb_depth = float(uint(vram16.data[tile.fb_index_depth]));
+
+			if (SUPER_SAMPLE)
+			{
+				float ref = float(uint(vram16.data[tile.fb_index_depth + VRAM_SIZE_16]));
+				if (ref == fb_depth)
+				{
+					// Load super-sampled data instead.
+					uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
+					fb_depth = float(uint(vram16.data[tile.fb_index_depth + vram_offset]));
+				}
+				else
+					fb_depth_dirty = true;
+			}
+		}
+		else
+		{
+			uint z_uint = vram32.data[tile.fb_index_depth];
+			if (is_zb_24bit)
+				z_uint &= 0xffffffu;
+			fb_depth = float(z_uint);
+
+			if (SUPER_SAMPLE)
+			{
+				uint uref = vram32.data[tile.fb_index_depth + VRAM_SIZE_32];
+				if (is_zb_24bit)
+					uref &= 0xffffffu;
+
+				if (uref == z_uint)
+				{
+					// Load super-sampled data instead.
+					uint vram_offset = (sample_index + 2u) * VRAM_SIZE_32;
+					z_uint = vram32.data[tile.fb_index_depth + vram_offset];
+					if (is_zb_24bit)
+						z_uint &= 0xffffffu;
+					fb_depth = float(z_uint);
+				}
+				else
+					fb_depth_dirty = true;
+			}
+		}
+	}
+	else
+		fb_depth = 0.0;
+
+	pending_shade_request.coverage = 0;
+	pending_shade_request.z_write = false;
+
+	if (HIZ)
+	{
+		need_update_hiz = Z_SENSITIVE;
+		if (Z_SENSITIVE)
+			update_hiz();
+	}
+
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+	imageStore(FeedbackColor, ivec3(tile.fb_pixel - (constants.base_pixel << SAMPLING_RATE_DIM_LOG2), 1), unpackUnorm4x8(fb_color));
+	if (NUM_SAMPLES == 2 || NUM_SAMPLES == 8)
+		imageStore(FeedbackColor, ivec3((tile.fb_pixel ^ ivec2(1, 0)) - (constants.base_pixel << SAMPLING_RATE_DIM_LOG2), 1), unpackUnorm4x8(fb_color));
+#endif
+
+#if defined(FEEDBACK_DEPTH) && FEEDBACK_DEPTH
+	imageStore(FeedbackDepth, ivec3(tile.fb_pixel - (constants.base_pixel << SAMPLING_RATE_DIM_LOG2), 1), uvec4(uint(fb_depth)));
+	if (NUM_SAMPLES == 2 || NUM_SAMPLES == 8)
+		imageStore(FeedbackDepth, ivec3(tile.fb_pixel ^ ivec2(1, 0) - (constants.base_pixel << SAMPLING_RATE_DIM_LOG2), 1), uvec4(uint(fb_depth)));
+#endif
+}
+
+void end_tile()
+{
+#if (defined(FEEDBACK_COLOR) && FEEDBACK_COLOR) || (defined(FEEDBACK_DEPTH) && FEEDBACK_DEPTH)
+	ivec2 base_pixel = constants.base_pixel << SAMPLING_RATE_DIM_LOG2;
+	ivec2 feedback_pixel = tile.fb_pixel - base_pixel;
+#endif
+
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+	vec4 fb_color_float = unpackUnorm4x8(fb_color);
+	imageStore(FeedbackColor, ivec3(feedback_pixel, 0), fb_color_float);
+	imageStore(FeedbackPrim, feedback_pixel, uvec4(shade_count, last_shade_prim, coverage_count, texture_mask));
+	imageStore(FeedbackVary, ivec3(feedback_pixel, 0), last_stqf);
+	imageStore(FeedbackVary, ivec3(feedback_pixel, 1), last_rgba);
+
+	vec2 depth_feedback = vec2(0.0);
+	if (coverage_count != 0)
+		depth_feedback = last_z_passed ? vec2(0.0, last_z) : vec2(last_z, 0.0);
+
+	imageStore(FeedbackVary, ivec3(feedback_pixel, 2), vec4(depth_feedback, last_ij));
+	if (NUM_SAMPLES == 2 || NUM_SAMPLES == 8)
+	{
+		ivec2 feedback_pixel_xor = feedback_pixel ^ ivec2(1, 0);
+		imageStore(FeedbackColor, ivec3(feedback_pixel_xor, 0), fb_color_float);
+		imageStore(FeedbackPrim, feedback_pixel_xor, uvec4(shade_count, last_shade_prim, coverage_count, texture_mask));
+		imageStore(FeedbackVary, ivec3(feedback_pixel_xor, 0), last_stqf);
+		imageStore(FeedbackVary, ivec3(feedback_pixel_xor, 1), last_rgba);
+		imageStore(FeedbackVary, ivec3(feedback_pixel_xor, 2), vec4(depth_feedback, last_ij));
+	}
+#endif
+
+#if defined(FEEDBACK_DEPTH) && FEEDBACK_DEPTH
+	imageStore(FeedbackDepth, ivec3(feedback_pixel, 0), uvec4(uint(fb_depth)));
+	if (NUM_SAMPLES == 2 || NUM_SAMPLES == 8)
+		imageStore(FeedbackDepth, ivec3(feedback_pixel, 0) ^ ivec3(1, 0, 0), uvec4(uint(fb_depth)));
+#endif
+
+	uint sample_index = gl_SubgroupInvocationID & (NUM_SAMPLES - 1);
+
+	if (SUPER_SAMPLE)
+	{
+		if (fb_color_dirty)
+		{
+			// Write back high-res samples. This is in case of incremental rendering.
+			if (is_fb_16bit)
+			{
+				uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
+				vram16.data[tile.fb_index + vram_offset] = uint16_t(rgba32_to_rgba16(fb_color));
+			}
+			else
+			{
+				uint vram_offset = (sample_index + 2u) * VRAM_SIZE_32;
+				vram32.data[tile.fb_index + vram_offset] = fb_color;
+			}
+		}
+
+		if (Z_SENSITIVE)
+		{
+			if (fb_depth_dirty)
+			{
+				if (is_zb_16bit)
+				{
+					uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
+					vram16.data[tile.fb_index_depth + vram_offset] = uint16_t(uint(fb_depth));
+				}
+				else
+				{
+					// Don't care about masking writes here.
+					uint vram_offset = (sample_index + 2u) * VRAM_SIZE_32;
+					vram32.data[tile.fb_index_depth + vram_offset] = uint(fb_depth);
+				}
+			}
+		}
+
+		uvec4 ballot_color = subgroupBallot(fb_color_dirty);
+		uvec4 ballot_depth = subgroupBallot(fb_depth_dirty);
+
+		// No need to mask, we only care about valid ballot for the first sample we write-back.
+		if (NUM_SAMPLES >= 16)
+		{
+			ballot_color |= ballot_color >> 8u;
+			ballot_depth |= ballot_depth >> 8u;
+		}
+
+		if (NUM_SAMPLES >= 8)
+		{
+			ballot_color |= ballot_color >> 4u;
+			ballot_depth |= ballot_depth >> 4u;
+		}
+
+		if (NUM_SAMPLES >= 4)
+		{
+			ballot_color |= ballot_color >> 2u;
+			ballot_depth |= ballot_depth >> 2u;
+		}
+
+		ballot_color |= ballot_color >> 1u;
+		ballot_depth |= ballot_depth >> 1u;
+
+		// GLSL does not accept cluster reduction as spec constant.
+		if (NUM_SAMPLES == 16)
+			fb_color = packUnorm4x8(subgroupClusteredAdd(unpackUnorm4x8(fb_color), 16) / 16.0);
+		else if (NUM_SAMPLES == 8)
+			fb_color = packUnorm4x8(subgroupClusteredAdd(unpackUnorm4x8(fb_color), 8) / 8.0);
+		else if (NUM_SAMPLES == 4)
+			fb_color = packUnorm4x8(subgroupClusteredAdd(unpackUnorm4x8(fb_color), 4) / 4.0);
+		else
+			fb_color = packUnorm4x8(subgroupClusteredAdd(unpackUnorm4x8(fb_color), 2) / 2.0);
+
+		fb_color_dirty = subgroupBallotBitExtract(ballot_color, gl_SubgroupInvocationID);
+		fb_depth_dirty = subgroupBallotBitExtract(ballot_depth, gl_SubgroupInvocationID);
+	}
+
+	bool is_first_sample = !SUPER_SAMPLE || sample_index == 0;
+
+	if (fb_color_dirty && is_first_sample)
+	{
+		if (is_fb_16bit)
+		{
+			// Store reference, so we can detect per-pixel when data changed in single-sampled domain.
+			if (SUPER_SAMPLE)
+				vram16.data[tile.fb_index + VRAM_SIZE_16] = uint16_t(rgba32_to_rgba16(fb_color));
+			vram16.data[tile.fb_index] = uint16_t(rgba32_to_rgba16(fb_color));
+		}
+		else
+		{
+			if (SUPER_SAMPLE)
+				vram32.data[tile.fb_index + VRAM_SIZE_32] = fb_color;
+			vram32.data[tile.fb_index] = fb_color;
+		}
+	}
+
+	if (Z_SENSITIVE && is_first_sample)
+	{
+		if (fb_depth_dirty)
+		{
+			if (is_zb_16bit)
+			{
+				if (SUPER_SAMPLE)
+					vram16.data[tile.fb_index_depth + VRAM_SIZE_16] = uint16_t(uint(fb_depth));
+				vram16.data[tile.fb_index_depth] = uint16_t(uint(fb_depth));
+			}
+			else
+			{
+				if (SUPER_SAMPLE)
+					vram32.data[tile.fb_index_depth + VRAM_SIZE_32] = uint(fb_depth);
+
+				if (is_zb_24bit)
+				{
+					uint old_z = vram32.data[tile.fb_index_depth];
+					old_z = bitfieldInsert(old_z, uint(fb_depth), 0, 24);
+					vram32.data[tile.fb_index_depth] = old_z;
+				}
+				else
+				{
+					vram32.data[tile.fb_index_depth] = uint(fb_depth);
+				}
+			}
+		}
+	}
+}
+
+ShadeResultEarly shade_early(uint primitive_index)
+{
+	ShadeResultEarly res;
+
+	PrimitiveSetup prim = primitive_setup.data[primitive_index];
+
+	uint prim_state = primitive_attr.data[primitive_index].state;
+	res.opaque = state_is_opaque(prim_state);
+
+	if (Z_SENSITIVE)
+	{
+		res.request.z_test = state_is_z_test(prim_state);
+		res.request.z_write = state_is_z_write(prim_state);
+		res.request.z_greater = state_is_z_test_greater(prim_state);
+	}
+	else
+	{
+		res.request.z_test = false;
+		res.request.z_write = false;
+		res.request.z_greater = false;
+	}
+
+	res.request.state = state_get_index(prim_state);
+	res.request.multisample = HAS_AA1 && state_is_multisample(prim_state);
+	res.request.perspective = state_is_perspective(prim_state);
+
+	float i, j;
+
+	ivec2 fb_pixel = tile.fb_pixel;
+
+	// Snap the effective pixel to single-rate coordinates when we risk bad upscale.
+	// We can probably make this a dedicated state bit.
+	const uint SNAP_RASTER_BIT = (1u << STATE_BIT_SNAP_RASTER);
+	const uint SNAP_ATTR_BIT = (1u << STATE_BIT_SNAP_ATTRIBUTE);
+
+	if (SUPER_SAMPLE && (prim_state & SNAP_RASTER_BIT) != 0)
+		fb_pixel = tile.fb_pixel_single_rate;
+
+	res.request.coverage = evaluate_coverage(prim, fb_pixel, i, j,
+			res.request.multisample, SAMPLING_RATE_DIM_LOG2);
+
+	if (HAS_SCANMSK)
+	{
+		if ((tile.fb_pixel.y & 1) == 0)
+		{
+			if (state_is_scanmsk_even(prim_state))
+				res.request.coverage = 0;
+		}
+		else
+		{
+			if (state_is_scanmsk_odd(prim_state))
+				res.request.coverage = 0;
+		}
+	}
+
+	// AA1 without full-coverage cannot write depth.
+	// TODO: It's still very murky what "full coverage" even means ...
+	if (Z_SENSITIVE)
+		if (res.request.multisample && res.request.coverage < 4)
+			res.request.z_write = false;
+
+	vec3 zs = prim.z.xyz;
+	// TODO: Unknown how PS2 rounds interpolated Z.
+	// It is supposed to be fixed-point I think since it has Z32 (which is kinda nuts ...).
+	// So far I have not run into any game using 32-bit Z.
+	precise float z = roundEven(zs.x + (zs.y * i + zs.z * j));
+	if (is_zb_16bit)
+		z = clamp(z, 0.0, float(0xffff));
+	else if (is_zb_24bit)
+		z = clamp(z, 0.0, float(0xffffff));
+
+	// If we have a certain kind of primitive, we should be very careful to not interpolate towards the right or bottom.
+	// Game may not expect UVs to appear in that location. This generally affects UI rendering, where atlases are common.
+	// This will function more like MSAA rather than SSAA. We still get edge-antialiasing at least.
+	// Technically, we could also have a problem where UI elements are drawn at a negative offset that is less than one pixel.
+	// With multisampling, we end up getting coverage on unexpected pixels this way as well, but that case should be rare.
+	res.request.st_bb = false;
+	if (SUPER_SAMPLE && (prim_state & (SNAP_RASTER_BIT | SNAP_ATTR_BIT)) == SNAP_ATTR_BIT)
+	{
+		vec2 snap_ij = evaluate_barycentric_ij(prim.b, prim.c, prim.inv_area,
+				prim.error_i, prim.error_j, tile.fb_pixel_single_rate, SAMPLING_RATE_DIM_LOG2);
+		i = snap_ij.x;
+		j = snap_ij.y;
+		res.request.st_bb = true;
+	}
+
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+	last_z = z;
+	last_ij = vec2(i, j);
+#endif
+
+	res.request.z = z;
+	res.request.i = i;
+	res.request.j = j;
+
+	return res;
+}
+
+void write_z(float z)
+{
+	fb_depth = z;
+	fb_depth_dirty = true;
+	if (HIZ)
+		need_update_hiz = true;
+}
+
+vec4 modulate(vec4 a, vec4 b, bool tcc)
+{
+	vec4 ab = floor((a * b + float(0x40)) * (1.0 / 128.0));
+	ab = clamp(ab, vec4(0.0), vec4(255.0));
+	if (!tcc)
+		ab.a = a.a;
+	return ab;
+}
+
+vec4 highlight(vec4 a, vec4 b, bool tcc)
+{
+	vec4 ab = floor((a * b + float(0x40)) * (1.0 / 128.0));
+	ab = clamp(ab, vec4(0.0), vec4(255.0));
+	ab.rgb += a.a;
+	ab.a = tcc ? b.a + a.a : a.a;
+	ab = clamp(ab, vec4(0.0), vec4(255.0));
+	return ab;
+}
+
+vec4 highlight2(vec4 a, vec4 b, bool tcc)
+{
+	vec4 ab = floor((a * b + float(0x40)) * (1.0 / 128.0));
+	ab = clamp(ab, vec4(0.0), vec4(255.0));
+	ab.rgb += a.a;
+	ab.a = tcc ? b.a : a.a;
+	ab = clamp(ab, vec4(0.0), vec4(255.0));
+	return ab;
+}
+
+float texture_clamp(float coord, vec2 region, float LOD)
+{
+	vec2 clamp_coords = region;
+	clamp_coords = floor(ldexp(clamp_coords, ivec2(-LOD))); // Scale to LOD
+	clamp_coords += 0.5;
+	return clamp(coord, clamp_coords.x, clamp_coords.y);
+}
+
+vec4 feedback_texture(uint tex_index)
+{
+	ivec4 color;
+	if (is_palette_format(FEEDBACK_PSM))
+	{
+		uint color_index;
+		uint csa = bitfieldExtract(tex_index, 0, TEX_TEXTURE_INDEX_BITS - 1) * 16;
+		switch (FEEDBACK_PSM)
+		{
+			case PSMT8H:
+				color_index = bitfieldExtract(fb_color, 24, 8);
+				break;
+
+			case PSMT4HL:
+				color_index = bitfieldExtract(fb_color, 24, 4);
+				break;
+
+			case PSMT4HH:
+				color_index = bitfieldExtract(fb_color, 28, 4);
+				break;
+
+			default:
+				color_index = 0;
+				break;
+		}
+
+		color_index += csa;
+
+		if (FEEDBACK_CPSM == PSMCT32)
+		{
+			uint lo = uint(clut16.data[color_index]);
+			uint hi = uint(clut16.data[color_index + 256u]);
+			color = unpack_color(lo | (hi << 16));
+		}
+		else
+		{
+			uint lo = uint(clut16.data[color_index]);
+			color = unpack_color16(lo);
+		}
+	}
+	else
+	{
+		if (FEEDBACK_PSM == PSMCT24)
+		{
+			// 24-bit pack AEM and stuff into clut_offset?
+			color = ivec4(0xff, 0, 0xff, 0x80);
+		}
+		else
+		{
+			// 16-bit color is kept as quantized 32-bit in registers.
+			color = unpack_color(fb_color);
+		}
+	}
+
+	return vec4(color);
+}
+
+vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspective)
+{
+	uint tex_index = bitfieldExtract(tex_word, TEX_TEXTURE_INDEX_OFFSET, TEX_TEXTURE_INDEX_BITS);
+
+	if (FEEDBACK)
+		if ((tex_index & (1u << (TEX_TEXTURE_INDEX_BITS - 1))) != 0)
+			return feedback_texture(tex_index);
+
+	bool sampler_clamp_s = (tex_word & TEX_SAMPLER_CLAMP_S_BIT) != 0;
+	bool sampler_clamp_t = (tex_word & TEX_SAMPLER_CLAMP_T_BIT) != 0;
+	bool mag_linear = (tex_word & TEX_SAMPLER_MAG_LINEAR_BIT) != 0;
+	bool min_linear = (tex_word & TEX_SAMPLER_MIN_LINEAR_BIT) != 0;
+	bool trilinear = (tex_word & TEX_SAMPLER_MIPMAP_LINEAR_BIT) != 0;
+
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+	texture_mask |= 1u << tex_index;
+#endif
+
+	TexInfo tex_info = texture_info.data[tex_index];
+	vec4 size = tex_info.sizes;
+	vec4 region_coords = tex_info.region;
+	vec2 bias = tex_info.bias;
+
+	// LOD calculation
+
+	int max_miplevel = int(bitfieldExtract(tex_word, TEX_MAX_MIP_LEVEL_OFFSET, TEX_MAX_MIP_LEVEL_BITS));
+	float LOD = 0.0;
+	bool bilinear = mag_linear;
+
+	if (max_miplevel > 0 && perspective)
+	{
+		int K = bitfieldExtract(int(filtering), TEX2_K_OFFSET, TEX2_K_BITS);
+		bool fixed_LOD = bool(bitfieldExtract(filtering, TEX2_FIXED_LOD_OFFSET, TEX2_FIXED_LOD_BITS));
+
+		if (!fixed_LOD)
+		{
+			int L = int(bitfieldExtract(filtering, TEX2_L_OFFSET, TEX2_L_BITS));
+
+			precise float LOD_formula;
+			if (INVARIANT_FP)
+				LOD_formula = ldexp(-log2_approx(q), L) + float(K) * 0.0625;
+			else
+				LOD_formula = ldexp(-log2(q), L) + float(K) * 0.0625;
+
+			LOD = floor(LOD_formula * 16.0) * 0.0625; // 4-bit LOD precision
+			bilinear = LOD_formula >= 0.0 ? min_linear : mag_linear;
+		}
+		else
+		{
+			LOD = float(bitfieldExtract(K, 4, 8)); // K >> 4
+			bilinear = LOD >= 0.0 ? min_linear : mag_linear;
+		}
+	}
+
+	// LOD clamping
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+	last_stqf.w = LOD;
+#endif
+
+#if 0
+	// Seems somewhat speculative if this is how hardware works.
+	int width_log2 = findMSB(int(size.x));
+	int height_log2 = findMSB(int(size.y));
+
+	bool linear_minsize = width_log2 - int(LOD + 0.5) >= 3 && height_log2 - int(LOD + 0.5) >= 3;
+	trilinear = trilinear && linear_minsize;
+	bilinear = bilinear && linear_minsize;
+
+	int max_valid_miplevel = min(min(width_log2, height_log2), max_miplevel);
+	LOD = max(min(LOD, max_valid_miplevel), 0.0);
+	float fract_LOD = fract(LOD);
+
+	float LOD_1 = min(float(max_miplevel), floor(LOD));
+	float LOD_2 = min(float(max_miplevel), ceil(LOD));
+#else
+	// An out of range LOD should be fine. We sample the last level properly.
+	// The coordinate will be wrong, but it's 1x1 anyway, so we cannot sample wrong texel.
+	LOD = clamp(LOD, 0.0, float(max_miplevel));
+	float LOD_1 = floor(LOD);
+	float LOD_2 = ceil(LOD);
+	float fract_LOD = LOD - LOD_1;
+#endif
+
+	uint sampler_index = uint(bilinear);
+
+	if (!trilinear)
+	{
+		fract_LOD = 0.0;
+		LOD_1 = int(LOD + 0.5);
+		LOD_2 = LOD_1;
+	}
+
+	vec2 scale_1 = perspective ? ldexp(size.xy, ivec2(-LOD_1)) : vec2(1.0);
+	vec2 inv_scale_1 = ldexp(size.zw, ivec2(LOD_1));
+
+	precise vec2 uv_1 = uv * scale_1;
+
+	// Want a soft-floor here, not round behavior.
+	const float UV_EPSILON_PRE_SNAP = 1.0 / 16.0;
+	// We need to bias less than 1 / 512th texel, so that linear filter will RTE to correct subpixel.
+	// This is a 1 / 1024th pixel bias to counter-act any non-POT inv_scale_1 causing a round-down event.
+	const float UV_EPSILON_POST_SNAP = 16.0 / 1024.0;
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+	last_stqf.xy = vec2(uv_1) + UV_EPSILON_PRE_SNAP / 16.0;
+#endif
+
+	if (sampler_clamp_s)
+		uv_1.x = texture_clamp(uv_1.x, region_coords.xz, LOD_1);
+	if (sampler_clamp_t)
+		uv_1.y = texture_clamp(uv_1.y, region_coords.yw, LOD_1);
+
+	// Avoid micro-precision issues with UV and flooring + nearest.
+	// Exact rounding on hardware is somwhat unclear.
+	// SotC requires exact rounding precision and is hit particularly bad.
+	// If the epsilon is too high, then FF X save screen is screwed over, so ... uh, ye.
+	// We likely need a more principled approach that is actually HW accurate in fixed point.
+	uv_1 = (floor(uv_1 * 16.0 + UV_EPSILON_PRE_SNAP) + UV_EPSILON_POST_SNAP) * inv_scale_1 * 0.0625 + bias;
+
+	vec4 color_1;
+
+	// The sampler may be divergent if we have MMIN != MMAG. Most likely it will not and this
+	// waterfall resolves in one iteration.
+	color_1 = vec4(textureLod(nonuniformEXT(sampler2D(
+		bindless_textures[tex_index],
+		bindless_samplers[sampler_index])),
+		uv_1, LOD_1));
+
+	vec4 color = roundEven(255.0 * color_1);
+
+	if (fract_LOD != 0.0)
+	{
+		vec2 scale_2 = ldexp(size.xy, ivec2(-LOD_2));
+		vec2 inv_scale_2 = ldexp(size.zw, ivec2(LOD_2));
+
+		precise vec2 uv_2 = uv * scale_2;
+
+		if (sampler_clamp_s)
+			uv_2.x = texture_clamp(uv_2.x, region_coords.xz, LOD_2);
+		if (sampler_clamp_t)
+			uv_2.y = texture_clamp(uv_2.y, region_coords.yw, LOD_2);
+
+		uv_2 = (floor(uv_2 * 16.0 + UV_EPSILON_PRE_SNAP) + UV_EPSILON_POST_SNAP) * inv_scale_2 * 0.0625;
+
+		vec4 color_2;
+
+		color_2 = vec4(textureLod(nonuniformEXT(sampler2D(
+			bindless_textures[tex_index],
+			bindless_samplers[sampler_index])),
+			uv_2, LOD_2));
+
+		color_2 = roundEven(255.0 * color_2);
+		float weight = floor(fract_LOD * 16.0);
+		color = roundEven(((16.0 - weight) * color + color_2 * weight) * (1.0 / 16.0));
+	}
+
+	return color;
+}
+
+vec4 compute_combined_color(
+		uint primitive_index,
+		uint tex, uint combiner_mode, bool perspective, bool st_bb)
+{
+	float i = pending_shade_request.i;
+	float j = pending_shade_request.j;
+
+	TransformedAttributes attrs = transformed_attr.data[primitive_index];
+
+	vec4 stqf0 = attrs.stqf0;
+	vec4 stqf1 = attrs.stqf1;
+	vec4 stqf2 = attrs.stqf2;
+
+	precise vec4 stqf = stqf0 + stqf1 * i + stqf2 * j;
+	// Unsure if we should clip STQ here too to FP24.
+
+	if (NUM_SAMPLES > 1 && st_bb)
+		stqf.xy = clamp(stqf.xy, attrs.st_bb.xy, attrs.st_bb.zw);
+
+	// TODO: Figure out how we should handle Inf/NaN cases.
+	precise vec2 uv;
+
+	if (perspective)
+	{
+		if (INVARIANT_FP)
+			uv = stqf.xy * (sign(stqf.z) * rcp_float(abs(stqf.z)));
+		else
+			uv = stqf.xy / stqf.z;
+	}
+	else
+		uv = stqf.xy;
+
+	uv = clamp(uv, vec2(-2047.0), vec2(2047.0));
+
+	vec4 c0 = unpackUnorm4x8(attrs.rgba0);
+	vec4 c1 = unpackUnorm4x8(attrs.rgba1);
+	vec4 c2 = unpackUnorm4x8(attrs.rgba2);
+
+	precise vec4 color = roundEven(255.0 * (c0 + (c1 - c0) * i + (c2 - c0) * j));
+
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+	last_stqf.z = stqf.z;
+	last_rgba = color;
+#endif
+
+	bool fog_enable = (combiner_mode & COMBINER_FOG_BIT) != 0;
+	bool tcc = (combiner_mode & COMBINER_TCC_BIT) != 0;
+	bool tme = (combiner_mode & COMBINER_TME_BIT) != 0;
+	uint mode = bitfieldExtract(combiner_mode, COMBINER_MODE_OFFSET, COMBINER_MODE_BITS);
+
+	vec4 combined_color;
+	if (tme)
+	{
+		uint tex2 = primitive_attr.data[primitive_index].tex2;
+		vec4 sampled = sample_texture(tex, tex2, uv, stqf.z, perspective);
+		switch (mode)
+		{
+		case COMBINER_DECAL:
+			combined_color = sampled;
+			if (!tcc)
+				combined_color.a = color.a;
+			break;
+		case COMBINER_MODULATE:
+			combined_color = modulate(color, sampled, tcc);
+			break;
+		case COMBINER_HIGHLIGHT:
+			combined_color = highlight(color, sampled, tcc);
+			break;
+		case COMBINER_HIGHLIGHT2:
+			combined_color = highlight2(color, sampled, tcc);
+			break;
+		}
+	}
+	else
+		combined_color = color;
+
+	if (fog_enable)
+	{
+		vec3 fogcol = round(unpackUnorm4x8(primitive_attr.data[primitive_index].fogcol).rgb * 255.0);
+		float fog_coeff = roundEven(stqf.w);
+		combined_color.rgb =
+			floor((combined_color.rgb * fog_coeff) * (1.0 / 256.0)) +
+			floor(((255.0 - fog_coeff) * fogcol) * (1.0 / 256.0));
+	}
+
+	return combined_color;
+}
+
+bool alpha_test(uint atst, uint aref_u, float alpha)
+{
+	float aref = float(aref_u);
+	switch (atst)
+	{
+	case ATST_NEVER:
+		return false;
+
+	case ATST_LESS:
+		return alpha < aref;
+
+	case ATST_LEQUAL:
+		return alpha <= aref;
+
+	case ATST_EQUAL:
+		return alpha == aref;
+
+	case ATST_GEQUAL:
+		return alpha >= aref;
+
+	case ATST_GREATER:
+		return alpha > aref;
+
+	case ATST_NOTEQUAL:
+		return alpha != aref;
+
+	default: // ATST_ALWAYS
+		return true;
+	}
+}
+
+vec3 alpha_blend(vec4 source, vec4 fb_color, uint blend_mode, uint alpha_attribs)
+{
+	vec3 A = vec3(0.0);
+	vec3 B = vec3(0.0);
+	float C = 0.0;
+	vec3 D = vec3(0.0);
+
+	uint A_mode = bitfieldExtract(blend_mode, BLEND_MODE_A_MODE_OFFSET, BLEND_MODE_A_MODE_BITS);
+	uint B_mode = bitfieldExtract(blend_mode, BLEND_MODE_B_MODE_OFFSET, BLEND_MODE_B_MODE_BITS);
+	uint C_mode = bitfieldExtract(blend_mode, BLEND_MODE_C_MODE_OFFSET, BLEND_MODE_C_MODE_BITS);
+	uint D_mode = bitfieldExtract(blend_mode, BLEND_MODE_D_MODE_OFFSET, BLEND_MODE_D_MODE_BITS);
+	float fix = float(bitfieldExtract(alpha_attribs, ALPHA_AFIX_OFFSET, ALPHA_AFIX_BITS));
+
+	switch (A_mode)
+	{
+	case BLEND_RGB_SOURCE:
+		A = source.rgb;
+		break;
+
+	case BLEND_RGB_DEST:
+		A = fb_color.rgb;
+		break;
+
+	case BLEND_RGB_ZERO:
+		A = vec3(0.0);
+		break;
+
+	default:
+		break;
+	}
+
+	switch (B_mode)
+	{
+	case BLEND_RGB_SOURCE:
+		B = source.rgb;
+		break;
+
+	case BLEND_RGB_DEST:
+		B = fb_color.rgb;
+		break;
+
+	case BLEND_RGB_ZERO:
+		B = vec3(0.0);
+		break;
+
+	default:
+		break;
+	}
+
+	switch (C_mode)
+	{
+	case BLEND_ALPHA_SOURCE:
+		C = source.a;
+		break;
+
+	case BLEND_ALPHA_DEST:
+		if (is_fb_24bit)
+			C = 128.0;
+		else
+			C = fb_color.a;
+		break;
+
+	case BLEND_ALPHA_FIX:
+		C = fix;
+		break;
+
+	default:
+		break;
+	}
+
+	switch (D_mode)
+	{
+	case BLEND_RGB_SOURCE:
+		D = source.rgb;
+		break;
+
+	case BLEND_RGB_DEST:
+		D = fb_color.rgb;
+		break;
+
+	case BLEND_RGB_ZERO:
+		D = vec3(0.0);
+		break;
+
+	default:
+		break;
+	}
+
+	vec3 result = floor((A - B) * C * (1.0 / 128.0)) + D;
+	return clamp(result, 0.0, 511.0); // Result is stored with 9 bits. TODO: Do we actually clamp negative value?
+}
+
+void shade_resolve(uint primitive_index, uint state_index, uint tex)
+{
+	StateVector state = state_vectors.data[state_index];
+
+	bool z_pass;
+	if (Z_SENSITIVE && pending_shade_request.z_test)
+		z_pass = z_test_coverage(pending_shade_request.z, pending_shade_request.z_greater);
+	else
+		z_pass = true;
+
+	if (z_pass)
+	{
+		vec4 combined_color = compute_combined_color(primitive_index, tex, state.combiner,
+				pending_shade_request.perspective, pending_shade_request.st_bb);
+		vec4 unpacked_fb_color = round(unpackUnorm4x8(fb_color) * 255.0);
+
+		bool write_fb = true;
+		bool write_zb = true;
+		bool write_alpha = true;
+
+		uint alpha_attribs = primitive_attr.data[primitive_index].alpha;
+
+		bool alpha_testing = (state.blend_mode & BLEND_MODE_ATE_BIT) != 0;
+		uint alpha_test_mode = bitfieldExtract(state.blend_mode, BLEND_MODE_ATE_MODE_OFFSET, BLEND_MODE_ATE_MODE_BITS);
+		uint alpha_test_fail_mode = bitfieldExtract(state.blend_mode, BLEND_MODE_AFAIL_MODE_OFFSET, BLEND_MODE_AFAIL_MODE_BITS);
+		bool dest_alpha_testing = (state.blend_mode & BLEND_MODE_DATE_BIT) != 0;
+		bool dest_alpha_mode = (state.blend_mode & BLEND_MODE_DATM_BIT) != 0;
+		bool alpha_blending = (state.blend_mode & BLEND_MODE_ABE_BIT) != 0;
+		bool per_pixel_alpha_blending = (state.blend_mode & BLEND_MODE_PABE_BIT) != 0;
+		bool colclamp = (state.blend_mode & BLEND_MODE_COLCLAMP_BIT) != 0;
+		bool alpha_correction = (state.blend_mode & BLEND_MODE_FB_ALPHA_BIT) != 0;
+		bool dithering = (state.blend_mode & BLEND_MODE_DTHE_BIT) != 0;
+
+		if (HAS_AA1)
+		{
+			int coverage_alpha = 0x20 * pending_shade_request.coverage;
+			bool use_coverage = (combined_color.a == 128.0 || !alpha_blending) && pending_shade_request.multisample;
+			if (use_coverage)
+				combined_color.a = float(coverage_alpha);
+
+			// AA1 seems to force alpha blend?
+			if (pending_shade_request.multisample)
+				alpha_blending = true;
+		}
+
+		if (alpha_testing)
+		{
+			uint aref = bitfieldExtract(alpha_attribs, ALPHA_AREF_OFFSET, ALPHA_AREF_BITS);
+			bool alpha_test_pass = alpha_test(alpha_test_mode, aref, combined_color.w);
+
+			if (!alpha_test_pass)
+			{
+				switch (alpha_test_fail_mode)
+				{
+				case AFAIL_KEEP:
+					// no change to any buffers
+					return;
+
+				case AFAIL_FB_ONLY:
+					write_zb = false;
+					break;
+
+				case AFAIL_ZB_ONLY:
+					write_fb = false;
+					write_alpha = false;
+					break;
+
+				case AFAIL_RGB_ONLY:
+					if (is_fb_32bit)
+						write_alpha = false;
+
+					write_zb = false;
+					break;
+
+				default:
+					break;
+				}
+			}
+		}
+
+		if (!is_fb_24bit && write_fb && dest_alpha_testing)
+		{
+			// TODO: 16-bit formats
+			uint dest_alpha_bit = unpacked_fb_color.a >= 128.0 ? 1u : 0u;
+			if (uint(dest_alpha_mode) != dest_alpha_bit)
+				return;
+		}
+
+		if (per_pixel_alpha_blending && combined_color.a < 128.0)
+			alpha_blending = false;
+
+		vec4 blended_color = combined_color;
+		if (alpha_blending)
+			blended_color.rgb = alpha_blend(combined_color, unpacked_fb_color, state.blend_mode, alpha_attribs);
+
+		if (dithering)
+		{
+			// The dither format is 3-bit ints, 4 bits with padding, 4x4 matrix coordinates
+			int pos_x = tile.fb_pixel.x & 3;
+			int pos_y = tile.fb_pixel.y & 3;
+			int bit_index = ((pos_y * 4 + pos_x) * 4) & 31;
+			int dimx = pos_y < 2 ? int(state.dimx.x) : int(state.dimx.y);
+			blended_color.rgb += float(bitfieldExtract(dimx, bit_index, 3));
+		}
+
+		if (is_fb_24bit)
+			write_alpha = false;
+		if (!write_alpha)
+			blended_color.a = unpacked_fb_color.a;
+		if (!write_fb)
+			blended_color.rgb = unpacked_fb_color.rgb;
+
+		// If write_fb or write_alpha is false, they are always in-range anyway.
+		if (!colclamp)
+			blended_color = fract(blended_color / 256.0) * (256.0 / 255.0);
+		else
+			blended_color = blended_color * (1.0 / 255.0);
+
+		// Finally, snap to integer since we need to do bit-wise math.
+		uint packed_color = packUnorm4x8(blended_color);
+		packed_color |= uint(alpha_correction && write_alpha) << 31u;
+
+		uint fb_mask = primitive_attr.data[primitive_index].fbmsk;
+
+		// If we fully mask FB writes, it will never be dirty.
+		if (fb_mask != ~0u && (write_fb || write_alpha))
+		{
+			// FB-masking happens in RGBA32 domain.
+			if (fb_mask != 0)
+				fb_color = (packed_color & ~fb_mask) | (fb_color & fb_mask);
+			else
+				fb_color = packed_color;
+
+			// Quantize the 32-bit -> 16-bit -> 32-bit roundtrip through memory.
+			if (is_fb_16bit)
+				fb_color &= 0x80f8f8f8u;
+			fb_color_dirty = true;
+		}
+
+		if (Z_SENSITIVE && write_zb && pending_shade_request.z_write)
+			write_z(pending_shade_request.z);
+	}
+}
+
+void shade_resolve()
+{
+	// Scalarize on the state index, ensures all branches related to state become scalar.
+	bool has_work = pending_shade_request.coverage > 0;
+
+	uint prim_tex;
+	if (has_work)
+		prim_tex = primitive_attr.data[pending_primitive_index].tex;
+
+	while (subgroupAny(has_work))
+	{
+		if (has_work)
+		{
+			uint state_index = subgroupBroadcastFirst(pending_shade_request.state);
+			uint tex = subgroupBroadcastFirst(prim_tex);
+			if (state_index == pending_shade_request.state && prim_tex == tex)
+			{
+				has_work = false;
+				shade_resolve(pending_primitive_index, state_index, tex);
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+				shade_count++;
+				last_shade_prim = pending_primitive_index;
+#endif
+			}
+		}
+	}
+
+	pending_shade_request.coverage = 0;
+	pending_shade_request.z_write = false;
+}
+
+void set_pending_shade_request(ShadeRequest request, uint prim_index)
+{
+	pending_shade_request = request;
+	pending_primitive_index = prim_index;
+	if (Z_SENSITIVE)
+		check_pending_hiz();
+}
+
+bool primitive_intersects_tile(uint index)
+{
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+	if (index < registers.lo_primitive_index || index > registers.hi_primitive_index)
+		return false;
+#endif
+
+	PrimitiveSetup setup = primitive_setup.data[index];
+
+	ivec4 bb = clip_bounding_box(setup.bb, ivec4(tile.tile_lo, tile.tile_hi));
+	bool coverage = triangle_setup_intersects_tile(setup.a, setup.b, setup.c, bb);
+
+	if (HIZ && Z_SENSITIVE && coverage)
+	{
+		uint prim_state = primitive_attr.data[index].state;
+		bool z_test = state_is_z_test(prim_state);
+		bool z_write = state_is_z_write(prim_state);
+		bool z_greater = state_is_z_test_greater(prim_state);
+
+		// For this primitive, we can consider Hi-Z and cull early.
+		// We must consider that primitives in this subgroup can write Z.
+		// We can decrease Z if Z-write is enabled without Z-test.
+		float pixel_write_hi_z = (z_write && !z_test) ? setup.z_range.x : uintBitsToFloat(0x7f7fffff);
+
+		// Conservative HI for this primitive is the current Hi-Z minimum
+		// and minimum of any potential writes which can decrease Z.
+		float z_lo_for_primitive = min(fb_depth_hiz_lo, subgroupExclusiveMin(pixel_write_hi_z));
+
+		// Bounds check.
+		coverage = !z_test || setup.z_range.y > z_lo_for_primitive ||
+			(!z_greater && setup.z_range.y == z_lo_for_primitive);
+	}
+
+	return coverage;
+}
+
+void main()
+{
+	tile = get_tile_info();
+	begin_tile();
+
+	for (int i = 0; i < tile.coarse_primitive_count; i += int(gl_SubgroupSize))
+	{
+		int prim_index = i + int(gl_SubgroupInvocationID);
+		bool is_last_iteration = i + int(gl_SubgroupSize) >= tile.coarse_primitive_count;
+
+		// Bin primitives to tile.
+		bool binned_to_tile = false;
+		uint bin_primitive_index;
+		if (prim_index < tile.coarse_primitive_count)
+		{
+			bin_primitive_index = uint(coarse_primitive_list.data[tile.coarse_primitive_list_offset + prim_index]);
+			binned_to_tile = primitive_intersects_tile(bin_primitive_index);
+		}
+
+		// Iterate per binned primitive, do per pixel work now.
+		// Scalar loop.
+		uvec4 work_ballot = subgroupBallot(binned_to_tile);
+		bool has_work;
+
+		do
+		{
+			has_work = any(notEqual(work_ballot, uvec4(0)));
+			uint shade_primitive_index;
+			ShadeResultEarly pixel;
+			bool need_flush = false;
+
+			if (has_work)
+			{
+				// Scalar data
+				uint bit = subgroupBallotFindLSB(work_ballot);
+
+				if (gl_SubgroupSize == 64)
+				{
+					if (bit >= 32)
+						work_ballot.y &= work_ballot.y - 1;
+					else
+						work_ballot.x &= work_ballot.x - 1;
+					// Uniform shuffle should be fine?
+				}
+				else
+				{
+					work_ballot.x &= work_ballot.x - 1;
+				}
+
+				// Uniform shuffle should be fine, even on wave64.
+				shade_primitive_index = subgroupShuffle(bin_primitive_index, bit);
+
+				uint state_index = primitive_attr.data[shade_primitive_index].state;
+
+				pixel = shade_early(shade_primitive_index);
+
+				// Even if we need to update Z late, we can always test Z early,
+				// since we don't support programmable depth output.
+				// We cannot test Z early if there are pending Z writes in flight however ...
+				// This can happen if we have an alpha-tested primitive in the pending queue.
+				if (pixel.request.coverage > 0)
+				{
+					#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+					coverage_count++;
+					#endif
+
+					// TODO: only write Z if full coverage
+					// Check if it's safe to resolve Z immediately.
+					if (pixel.request.z_test && !pending_shade_request.z_write)
+					{
+						pixel.request.z_test = false;
+
+						if (z_test_coverage(pixel.request.z, pixel.request.z_greater))
+						{
+							if (pixel.request.z_write && pixel.opaque)
+							{
+								// Need to commit Z pixel early since otherwise,
+								// future depth tests will not be correct.
+								// We can defer color shading (which is the hard part) however.
+								pixel.request.z_write = false;
+								write_z(pixel.request.z);
+							}
+						}
+						else
+						{
+							pixel.request.coverage = 0;
+							pixel.request.z_write = false;
+						}
+					}
+					else if (pixel.request.z_write && !pixel.request.z_test && pixel.opaque)
+					{
+						// Forcefully replace Z, since there is no test.
+						// This pixel is also opaque, so any previous color shading is also irrelevant.
+						pixel.request.z_write = false;
+						pending_shade_request.z_write = false;
+						write_z(pixel.request.z);
+						#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+						last_z_passed = true;
+						#endif
+					}
+
+					// We might have to remove opaque flag.
+					bool pending_z_write_can_affect_result =
+						(pixel.request.z_test || !pixel.request.z_write) &&
+						pending_shade_request.z_write;
+
+					if (pending_z_write_can_affect_result)
+					{
+						// Demote the pixel to late-Z, it's no longer opaque and we cannot discard earlier pixels.
+						// We need to somehow observe the previous results.
+						pixel.opaque = false;
+					}
+				}
+
+				if (pixel.request.coverage > 0)
+				{
+					need_flush = !pixel.opaque && pending_shade_request.coverage > 0;
+
+					// If there is no hazard, we can overwrite the pending pixel.
+					// If not, defer the update until we run a loop iteration.
+					if (!need_flush)
+					{
+						set_pending_shade_request(pixel.request, shade_primitive_index);
+						pixel.request.coverage = 0;
+						pixel.request.z_write = false;
+					}
+				}
+			}
+			else if (is_last_iteration)
+			{
+				// Last iteration.
+				// Resolve any final pending shading request.
+				need_flush = pending_shade_request.coverage > 0;
+			}
+
+			// Scalar branch
+			if (subgroupAny(need_flush))
+			{
+				shade_resolve();
+				if (has_work && pixel.request.coverage > 0)
+					set_pending_shade_request(pixel.request, shade_primitive_index);
+			}
+		} while (has_work);
+
+		if (HIZ && Z_SENSITIVE && !is_last_iteration)
+			update_hiz();
+	}
+
+	end_tile();
+}

@@ -1,0 +1,73 @@
+#version 450
+
+// SPDX-FileCopyrightText: 2024 Arntzen Software AS
+// SPDX-FileContributor: Hans-Kristian Arntzen
+// SPDX-FileContributor: Runar Heyer
+// SPDX-License-Identifier: LGPL-3.0+
+
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+layout(local_size_x_id = 0) in;
+
+#define CONSTEXPR const
+#define PRIMITIVE_LIST_QUALIFIER writeonly
+#define PRIMITIVE_SETUP_QUALIFIER readonly
+#define NEED_CONSTANTS
+#define NEED_PRIMITIVE_SETUP
+#define NEED_PRIMITIVE_LIST
+#define NEED_PRIMITIVE_COUNTS
+#include "data_structures.h"
+#include "data_buffers.h"
+#include "intersect.h"
+
+layout(push_constant) uniform Registers
+{
+    ivec2 pixel_offset;
+    uint num_primitives;
+} registers;
+
+void main()
+{
+    // Only relevant on AMD Windows if we have to use varying size and driver selects wave32 on RDNA.
+    // This is fine for performance. The algorithm is much nicer if we can iterate inside one wave.
+    if (gl_SubgroupID != 0)
+        return;
+
+    ivec2 coarse_tile = ivec2(gl_WorkGroupID.xy);
+    ivec2 coarse_tile_base = coarse_tile << constants.coarse_tile_size_log2;
+    int coarse_tile_linear = coarse_tile.y * constants.coarse_fb_width + coarse_tile.x;
+    int coarse_primitive_list_offset = coarse_tile_linear * constants.coarse_primitive_list_stride;
+
+    ivec2 tile_lo = coarse_tile_base + registers.pixel_offset;
+    ivec2 tile_hi = tile_lo + ((1 << constants.coarse_tile_size_log2) - 1);
+
+    int write_offset = 0;
+
+    for (int i = 0; i < registers.num_primitives; i += int(gl_SubgroupSize))
+    {
+        int primitive_index = i + int(gl_SubgroupInvocationID);
+        bool binned = false;
+
+        if (primitive_index < registers.num_primitives)
+        {
+            ivec3 a = primitive_setup.data[primitive_index].a;
+            ivec3 b = primitive_setup.data[primitive_index].b;
+            ivec3 c = primitive_setup.data[primitive_index].c;
+
+            ivec4 bb = ivec4(primitive_setup.data[primitive_index].bb);
+            bb = clip_bounding_box(bb, ivec4(tile_lo, tile_hi));
+            binned = triangle_setup_intersects_tile(a, b, c, bb);
+        }
+
+        uvec4 bin_mask = subgroupBallot(binned);
+        int offset = int(subgroupBallotExclusiveBitCount(bin_mask));
+        if (binned)
+            coarse_primitive_list.data[coarse_primitive_list_offset + write_offset + offset] = uint16_t(primitive_index);
+        write_offset += int(subgroupBallotBitCount(bin_mask));
+    }
+
+    if (subgroupElect())
+        coarse_primitive_counts.data[coarse_tile_linear] = write_offset;
+}

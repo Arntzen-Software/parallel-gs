@@ -1,0 +1,87 @@
+From fbe2a5f938880887e6895cd9dc10e2994be10829 Mon Sep 17 00:00:00 2001
+From: Hans-Kristian Arntzen <post@arntzen-software.no>
+Date: Sun, 23 Jun 2024 14:54:43 +0200
+Subject: [PATCH] Add an ad-hoc GS stream format.
+
+---
+ pcsx2/GS/GS.cpp | 36 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
+index 648334be2..3fd32736c 100644
+--- a/pcsx2/GS/GS.cpp
++++ b/pcsx2/GS/GS.cpp
+@@ -56,6 +56,9 @@ Pcsx2Config::GSOptions GSConfig;
+ 
+ static GSRendererType GSCurrentRenderer;
+ 
++struct FileDeleter { void operator()(FILE *file) { if (file) fclose(file); } };
++std::unique_ptr<FILE, FileDeleter> g_gs_stream;
++
+ GSRendererType GSGetCurrentRenderer()
+ {
+ 	return GSCurrentRenderer;
+@@ -195,6 +198,11 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
+ 	g_gs_renderer->ResetPCRTC();
+ 	g_gs_renderer->UpdateRenderFixes();
+ 	g_perfmon.Reset();
++
++	const char *env = getenv("GS_STREAM");
++	if (env)
++		g_gs_stream.reset(fopen(env, "wb"));
++
+ 	return true;
+ }
+ 
+@@ -207,6 +215,8 @@ static void CloseGSRenderer()
+ 		g_gs_renderer->Destroy();
+ 		g_gs_renderer.reset();
+ 	}
++
++	g_gs_stream.reset();
+ }
+ 
+ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_renderer,
+@@ -389,6 +399,18 @@ void GSReadLocalMemoryUnsync(u8* mem, u32 qwc, u64 BITBLITBUF, u64 TRXPOS, u64 T
+ void GSgifTransfer(const u8* mem, u32 size)
+ {
+ 	g_gs_renderer->Transfer<3>(mem, size);
++
++	if (g_gs_stream)
++	{
++		auto *f = g_gs_stream.get();
++		const uint8_t type = 0;
++		const uint8_t path = 3;
++		fwrite(&type, sizeof(type), 1, f);
++		fwrite(&path, sizeof(path), 1, f);
++		size *= 16;
++		fwrite(&size, sizeof(size), 1, f);
++		fwrite(mem, size, 1, f);
++	}
+ }
+ 
+ void GSgifTransfer1(u8* mem, u32 addr)
+@@ -408,6 +430,20 @@ void GSgifTransfer3(u8* mem, u32 size)
+ 
+ void GSvsync(u32 field, bool registers_written)
+ {
++	if (g_gs_stream)
++	{
++		auto *f = g_gs_stream.get();
++
++		const uint8_t priv_type = 3;
++		fwrite(&priv_type, sizeof(priv_type), 1, f);
++		fwrite(g_gs_renderer->GetRegsMem(), sizeof(GSPrivRegSet), 1, f);
++
++		const uint8_t type = 1;
++		fwrite(&type, sizeof(type), 1, f);
++		const uint8_t u8_field = field;
++		fwrite(&u8_field, sizeof(u8_field), 1, f);
++	}
++
+ 	// Do not move the flush into the VSync() method. It's here because EE transfers
+ 	// get cleared in HW VSync, and may be needed for a buffered draw (FFX FMVs).
+ 	g_gs_renderer->Flush(GSState::VSYNC);
+-- 
+2.45.2
+

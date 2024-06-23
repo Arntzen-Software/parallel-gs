@@ -1,0 +1,416 @@
+#version 450
+
+// SPDX-FileCopyrightText: 2024 Arntzen Software AS
+// SPDX-FileContributor: Hans-Kristian Arntzen
+// SPDX-FileContributor: Runar Heyer
+// SPDX-License-Identifier: LGPL-3.0+
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+
+//#extension GL_EXT_spirv_intrinsics : require
+//spirv_execution_mode(extensions = ["SPV_KHR_float_controls"], capabilities = [4467], 4462, 32);
+
+#define USE_RCP_FIXED
+#define PRIMITIVE_LIST_QUALIFIER readonly
+#define PRIMITIVE_SETUP_QUALIFIER writeonly
+
+#define NEED_VERTEX_POSITION
+#define NEED_VERTEX_ATTRIBUTE
+#define NEED_PRIMITIVE_SETUP
+#define NEED_PRIMITIVE_ATTRIBUTE
+#define NEED_TRANSFORMED_ATTRIBUTE
+
+#include "data_buffers.h"
+#include "data_structures.h"
+#include "math_utils.h"
+#include "intersect.h"
+#include "utils.h"
+
+layout(local_size_x = 64) in;
+
+layout(constant_id = 0) const int SAMPLING_RATE_LOG2 = 0;
+
+layout(push_constant) uniform Registers
+{
+    uint num_primitives;
+} registers;
+
+bool tie_break_rule(ivec2 edge)
+{
+    return (edge.y > 0) || (edge.y == 0 && edge.x < 0);
+}
+
+int shift_int64_subpixels(ivec2 c)
+{
+    int msb = c.y << (32 - SUBPIXEL_RASTER_BITS);
+    int lsb = int(uint(c.x) >> SUBPIXEL_RASTER_BITS);
+    return msb | lsb;
+}
+
+ivec3 quantize_step(int a, int b, ivec2 c)
+{
+    return ivec3(a, b, shift_int64_subpixels(c));
+}
+
+bool order_less_than(ivec2 a, ivec2 b)
+{
+    if (b.y != a.y)
+        return a.y < b.y;
+    else
+        return a.x < b.x;
+}
+
+void swap(inout ivec2 x, inout ivec2 y)
+{
+    ivec2 tmp = x;
+    x = y;
+    y = tmp;
+}
+
+ivec2 smul32x32(int a, int b)
+{
+    ivec2 result;
+    imulExtended(a, b, result.y, result.x);
+    return result;
+}
+
+ivec2 sub64(ivec2 a, ivec2 b)
+{
+    uint borrow;
+    uint lsb = usubBorrow(a.x, b.x, borrow);
+    uint msb = a.y - b.y - borrow;
+    return ivec2(lsb, msb);
+}
+
+vec2 compute_z_range(float z0, float z1, float z2)
+{
+    float lo = min(min(z0, z1), z2);
+    float hi = max(max(z0, z1), z2);
+    return vec2(lo, hi);
+}
+
+vec2 unpack_uv(u16vec2 uv)
+{
+    return ldexp(vec2(uv), ivec2(-4));
+}
+
+void main_inner(uint index)
+{
+    ivec3 order = ivec3(0, 1, 2);
+
+    uint state_word = primitive_attr.data[index].state;
+    bool parallelogram = bitfieldExtract(state_word, STATE_BIT_PARALLELOGRAM, 1) != 0;
+    bool perspective = bitfieldExtract(state_word, STATE_BIT_PERSPECTIVE, 1) != 0;
+    bool iip = bitfieldExtract(state_word, STATE_BIT_IIP, 1) != 0;
+    bool fix = bitfieldExtract(state_word, STATE_BIT_FIX, 1) != 0;
+    bool sprite = bitfieldExtract(state_word, STATE_BIT_SPRITE, 1) != 0;
+    bool line = bitfieldExtract(state_word, STATE_BIT_LINE, 1) != 0;
+    bool multisample = state_is_multisample(state_word);
+
+    ivec2 a = vertex_position.data[3u * index + 0u].pos;
+    ivec2 b = vertex_position.data[3u * index + 1u].pos;
+    ivec2 c = vertex_position.data[3u * index + 2u].pos;
+    ivec4 primitive_bb = ivec4(primitive_attr.data[index].bb);
+
+    if (sprite)
+    {
+        c = ivec2(a.x, b.y);
+        b = ivec2(b.x, a.y);
+    }
+    else if (line)
+    {
+        // For now, construct a simple parallelogram line.
+        ivec2 ab = b - a;
+        ivec2 abs_d = abs(ab);
+
+        if (abs_d.x > abs_d.y)
+        {
+            // Horiz major. Ensure area is positive so we don't have to deal with reordering.
+            // Make sure the width is exactly 1 pixel, and tie-break rules ensure we only get one pixel
+            // hit. This emulates Bresenham rather well.
+            int y_delta = -sign(ab.x) << (SUBPIXEL_BITS - 1);
+            c.x = a.x;
+            c.y = a.y + y_delta;
+            a.y -= y_delta;
+            b.y -= y_delta;
+        }
+        else
+        {
+            // Vert major. Ensure area is positive so we don't have to deal with reordering.
+            int x_delta = sign(ab.y) << (SUBPIXEL_BITS - 1);
+            c.x = a.x + x_delta;
+            c.y = a.y;
+            a.x -= x_delta;
+            b.x -= x_delta;
+        }
+    }
+
+    if (!parallelogram)
+    {
+        // Unsure if PS2 primitives are rotationally invariant.
+        // They probably are as DDA tends to sort vertices.
+        // Parallelograms depend on their provoking vertex, so don't do anything funny here.
+        // Select provoking vertex as top, then left.
+        if (!order_less_than(b, c))
+        {
+            order = order.xzy;
+            swap(b, c);
+        }
+
+        if (!order_less_than(a, b))
+        {
+            order = order.yxz;
+            swap(a, b);
+        }
+    }
+
+    // Y or Z is selected as i/j target based on winding later.
+    ivec2 ab = b - a;
+    ivec2 ac = c - a;
+
+    ivec2 signed_area = sub64(smul32x32(ab.y, ac.x), smul32x32(ab.x, ac.y));
+
+    if (all(equal(signed_area, ivec2(0))))
+    {
+        // Degenerate, no pixels are rasterized.
+        ivec4 degenerate = ivec4(0, 0, -1, -1);
+        primitive_setup.data[index].bb = i16vec4(degenerate);
+        return;
+    }
+
+    // Signed area has a range of +/- 0xffff * 0xffff.
+
+    uint area;
+
+    if (signed_area.y < 0)
+    {
+        area = uint(-signed_area.x);
+        swap(ab, ac);
+        swap(b, c);
+        order = order.xzy;
+    }
+    else
+    {
+        area = uint(signed_area.x);
+    }
+
+    ivec2 bc = c - b;
+    ivec2 ca = -ac;
+
+    int dcdx = +ab.y;
+    int dcdy = -ab.x;
+    int dadx = +bc.y;
+    int dady = -bc.x;
+    int dbdx = +ca.y;
+    int dbdy = -ca.x;
+
+    ivec2 constant_c = sub64(smul32x32(-a.x, dcdx), smul32x32(a.y, dcdy));
+    ivec2 constant_a = sub64(smul32x32(-b.x, dadx), smul32x32(b.y, dady));
+    ivec2 constant_b = sub64(smul32x32(-c.x, dbdx), smul32x32(c.y, dbdy));
+
+    bool tie_break_a = tie_break_rule(bc);
+    bool tie_break_b = tie_break_rule(ca);
+    bool tie_break_c = tie_break_rule(ab);
+    int error_a = int(!tie_break_a);
+    int error_b = int(!tie_break_b);
+    int error_c = int(!tie_break_c);
+
+    constant_a = sub64(constant_a, ivec2(error_a, 0));
+    constant_b = sub64(constant_b, ivec2(error_b, 0));
+    constant_c = sub64(constant_c, ivec2(error_c, 0));
+
+    error_a += constant_a.x & (SUBPIXELS_RASTER - 1);
+    error_b += constant_b.x & (SUBPIXELS_RASTER - 1);
+    error_c += constant_c.x & (SUBPIXELS_RASTER - 1);
+
+    int error_flip_b = 0;
+    int error_flip_c = 0;
+    if (parallelogram)
+    {
+        int tie_break_offset = 1 - int(tie_break_b) - int(tie_break_c);
+        error_flip_b = tie_break_offset + error_b + error_a;
+        error_flip_c = tie_break_offset + error_c + error_a;
+        error_flip_b += SUBPIXELS_RASTER; // Ensure positive result. Compensate in raster.
+        error_flip_c += SUBPIXELS_RASTER; // Ensure positive result. Compensate in raster.
+        error_flip_b >>= SUBPIXEL_RASTER_BITS;
+        error_flip_c >>= SUBPIXEL_RASTER_BITS;
+    }
+
+    float inv_area = rcp_fixed(area);
+    precise float inv_area_scaled = inv_area * float(SUBPIXELS_RASTER);
+    precise float error_i = float(error_b) * inv_area;
+    precise float error_j = float(error_c) * inv_area;
+
+    float z0 = vertex_position.data[3u * index + order.x].z;
+    float z1, z2;
+
+    if (sprite)
+    {
+        z1 = z0;
+        z2 = z0;
+    }
+    else
+    {
+        z1 = vertex_position.data[3u * index + order.y].z;
+        if (line)
+            z2 = z0;
+        else
+            z2 = vertex_position.data[3u * index + order.z].z;
+    }
+
+    if (fix || sprite)
+        order = ivec3(0, 1, 2);
+
+    VertexAttribute attr0 = vertex_attr.data[3u * index + order.x];
+    VertexAttribute attr1 = vertex_attr.data[3u * index + order.y];
+    VertexAttribute attr2;
+    if (!sprite && !line)
+        attr2 = vertex_attr.data[3u * index + order.z];
+
+    vec4 stqf0, stqf1, stqf2;
+    if (perspective)
+    {
+        stqf0 = vec4(attr0.st, attr0.q, attr0.fog);
+        stqf1 = vec4(attr1.st, attr1.q, attr1.fog);
+        stqf0.xyz = clip_mantissa(stqf0.xyz);
+        stqf1.xyz = clip_mantissa(stqf1.xyz);
+        if (!sprite && !line)
+        {
+            stqf2 = vec4(attr2.st, attr2.q, attr2.fog);
+            stqf2.xyz = clip_mantissa(stqf2.xyz);
+        }
+    }
+    else
+    {
+        stqf0 = vec4(unpack_uv(attr0.uv), attr0.q, attr0.fog);
+        stqf1 = vec4(unpack_uv(attr1.uv), attr1.q, attr1.fog);
+        if (!sprite && !line)
+            stqf2 = vec4(unpack_uv(attr2.uv), attr2.q, attr2.fog);
+    }
+
+    // +U follows X, +V follows Y it seems ...
+    if (sprite)
+    {
+        // Need to apply the YZ flip ourselves since we're synthesizing the attributes.
+        if (signed_area.y < 0)
+        {
+            stqf2 = vec4(stqf1.x, stqf0.yzw);
+            stqf1 = vec4(stqf0.x, stqf1.y, stqf0.zw);
+        }
+        else
+        {
+            stqf2 = vec4(stqf0.x, stqf1.y, stqf0.zw);
+            stqf1 = vec4(stqf1.x, stqf0.yzw);
+        }
+    }
+    else if (line)
+    {
+        stqf2 = stqf0;
+    }
+
+    precise vec4 distqf = fix ? vec4(0.0) : (stqf1 - stqf0);
+    precise vec4 djstqf = fix ? vec4(0.0) : (stqf2 - stqf0);
+    transformed_attr.data[index].stqf0 = stqf0;
+    transformed_attr.data[index].stqf1 = distqf;
+    transformed_attr.data[index].stqf2 = djstqf;
+
+    if (iip && !sprite)
+    {
+        if (fix)
+            attr1.rgba = attr0.rgba;
+        if (fix || line)
+            attr2.rgba = attr0.rgba;
+        transformed_attr.data[index].rgba0 = attr0.rgba;
+        transformed_attr.data[index].rgba1 = attr1.rgba;
+        transformed_attr.data[index].rgba2 = attr2.rgba;
+    }
+    else
+    {
+        uint flat_rgba = vertex_attr.data[3u * index].rgba;
+        transformed_attr.data[index].rgba0 = flat_rgba;
+        transformed_attr.data[index].rgba1 = flat_rgba;
+        transformed_attr.data[index].rgba2 = flat_rgba;
+    }
+
+    transformed_attr.data[index].padding = 0; // Avoid striped cache-line writeback.
+
+    ivec3 plane_a = quantize_step(dadx, dady, constant_a);
+    ivec3 plane_b = quantize_step(dbdx, dbdy, constant_b);
+    ivec3 plane_c = quantize_step(dcdx, dcdy, constant_c);
+
+    plane_a.x = bitfieldInsert(plane_a.x << 6, int(parallelogram), 0, 1);
+    plane_a.x = bitfieldInsert(plane_a.x, error_flip_b, 2, 2);
+    plane_a.x = bitfieldInsert(plane_a.x, error_flip_c, 4, 2);
+
+    vec2 z_range = compute_z_range(z0, z1, z2);
+
+    primitive_setup.data[index].a = plane_a;
+    primitive_setup.data[index].inv_area = inv_area_scaled;
+    primitive_setup.data[index].b = plane_b;
+    primitive_setup.data[index].error_i = error_i;
+    primitive_setup.data[index].c = plane_c;
+    primitive_setup.data[index].error_j = error_j;
+    primitive_setup.data[index].z_range = z_range;
+    precise float diz = z1 - z0;
+    precise float djz = z2 - z0;
+    primitive_setup.data[index].z = vec4(z0, diz, djz, 0.0);
+
+    ivec2 d = parallelogram ? (b + c - a) : c;
+    ivec4 packed_bb = pack_bounding_box(a, b, c, d, multisample, SAMPLING_RATE_LOG2);
+
+    packed_bb = clip_bounding_box(packed_bb, ivec4(primitive_attr.data[index].bb));
+    primitive_setup.data[index].bb = i16vec4(packed_bb);
+
+    if (SAMPLING_RATE_LOG2 != 0 && !sprite && !line)
+    {
+        // Try to detect common patterns of flat UI primitives.
+        // In this case, we should aim to snap attribute interpolation to avoid common glitches.
+        // There is no point in upsampling UI elements anyway.
+        // Filtering it further will only look worse and less sharp than the native alternative.
+        bool should_interpolate_per_sample = false;
+
+        // If there is any proof of 3D-ness, like perspective, or different Z values, we're most likely rendering 3D.
+        if (perspective)
+            should_interpolate_per_sample = distqf.z != 0.0 || djstqf.z != 0.0;
+        if (!should_interpolate_per_sample)
+            should_interpolate_per_sample = z0 != z1 || z1 != z2;
+
+        if (!should_interpolate_per_sample)
+        {
+            primitive_attr.data[index].state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
+
+            // Also need to compute the ST bounding box.
+            // This is important for UI elements to make sure we don't interpolate outside the expected region.
+            // Compute ST at the single-sample bounding box.
+            ivec4 packed_bb_single = pack_bounding_box(a, b, c, d, false, 0);
+
+            // Sample IJ at all BB points. This forms our barycentric bounds.
+            // For rotated primitives, this will lead to way-out-of-bounds IJ, but that's fine.
+            // Rotated primitives are rarely UI elements.
+            vec2 ij00 = evaluate_barycentric_ij(plane_b, plane_c, inv_area_scaled, error_i, error_j,
+                                                packed_bb_single.xy, 0);
+            vec2 ij10 = evaluate_barycentric_ij(plane_b, plane_c, inv_area_scaled, error_i, error_j,
+                                                packed_bb_single.zy, 0);
+            vec2 ij01 = evaluate_barycentric_ij(plane_b, plane_c, inv_area_scaled, error_i, error_j,
+                                                packed_bb_single.xw, 0);
+            vec2 ij11 = evaluate_barycentric_ij(plane_b, plane_c, inv_area_scaled, error_i, error_j,
+                                                packed_bb_single.zw, 0);
+
+            vec2 st00 = stqf0.xy + distqf.xy * ij00.x + djstqf.xy * ij00.y;
+            vec2 st10 = stqf0.xy + distqf.xy * ij10.x + djstqf.xy * ij10.y;
+            vec2 st01 = stqf0.xy + distqf.xy * ij01.x + djstqf.xy * ij01.y;
+            vec2 st11 = stqf0.xy + distqf.xy * ij11.x + djstqf.xy * ij11.y;
+
+            vec2 lo_st = min(min(st00, st10), min(st01, st11));
+            vec2 hi_st = max(max(st00, st10), max(st01, st11));
+            transformed_attr.data[index].st_bb = vec4(lo_st, hi_st);
+        }
+    }
+}
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    if (index < registers.num_primitives)
+        main_inner(index);
+}

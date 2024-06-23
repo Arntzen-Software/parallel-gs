@@ -1,0 +1,6 @@
+/build
+/cmake-build*
+/.idea
+*.iml
+/build-steamrt
+/output-steamrt

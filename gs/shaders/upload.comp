@@ -1,0 +1,143 @@
+#version 450
+
+// SPDX-FileCopyrightText: 2024 Arntzen Software AS
+// SPDX-FileContributor: Hans-Kristian Arntzen
+// SPDX-FileContributor: Runar Heyer
+// SPDX-License-Identifier: LGPL-3.0+
+
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_8bit_storage : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(constant_id = 0) const uint TEXTURE_FMT = 0;
+layout(constant_id = 1) const uint VRAM_MASK = 4 * 1024 * 1024 - 1;
+layout(constant_id = 2) const uint CLUT_FMT = 0;
+
+#include "utils.h"
+#include "swizzle_utils.h"
+#include "data_structures.h"
+
+layout(std430, set = 0, binding = 0) readonly buffer VRAM32
+{
+	uint data[];
+} vram32;
+
+layout(std430, set = 0, binding = 0) readonly buffer VRAM16
+{
+	uint16_t data[];
+} vram16;
+
+layout(std430, set = 0, binding = 0) readonly buffer VRAM8
+{
+	uint8_t data[];
+} vram8;
+
+layout(std430, set = 0, binding = BINDING_CLUT) readonly buffer CLUT16
+{
+	uint16_t data[];
+} clut16;
+
+layout(rgba8, set = 0, binding = 1) writeonly uniform image2D uImage;
+
+layout(push_constant) uniform Registers
+{
+	ivec2 offset;
+	ivec2 resolution;
+	uint addr_block;
+	uint stride_block;
+	uint clut_offset;
+	uint aem;
+	uint ta0;
+	uint ta1;
+	uint instance;
+	int umsk, ufix, vmsk, vfix;
+} registers;
+
+const bool is_tex_32bit = TEXTURE_FMT == PSMCT32 || TEXTURE_FMT == PSMZ32;
+const bool is_tex_24bit = TEXTURE_FMT == PSMCT24 || TEXTURE_FMT == PSMZ24;
+const bool is_tex_16bit = TEXTURE_FMT == PSMCT16 || TEXTURE_FMT == PSMCT16S ||
+	TEXTURE_FMT == PSMZ16 || TEXTURE_FMT == PSMZ16S;
+const bool is_tex_8bit = TEXTURE_FMT == PSMT8;
+const bool is_clut_16bit = CLUT_FMT == PSMCT16 || CLUT_FMT == PSMCT16S;
+
+const uint CLUT_SIZE_16 = CLUT_SIZE / 2;
+
+uint wrap_clut(uint index)
+{
+	return index & (CLUT_SIZE_16 - 1);
+}
+
+uint get_clut_color(uint index, uint offset)
+{
+	uint buffer_index = wrap_clut(offset * 16 + index);
+	uint instance_offset = registers.instance * CLUT_SIZE_16;
+	uint col;
+
+	if (is_clut_16bit)
+	{
+		uint pal_color = uint(clut16.data[buffer_index + instance_offset]);
+		col = rgba16_to_rgba32(pal_color, registers.aem, registers.ta0, registers.ta1);
+	}
+	else
+	{
+		col = uint(clut16.data[buffer_index + instance_offset]);
+		col |= uint(clut16.data[buffer_index + instance_offset + 256u]) << 16u;
+	}
+
+	return col;
+}
+
+void main()
+{
+	ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+
+	// Offset is done at this deliberate location (after mask, before OR)
+	// so that REGION_REPEAT does not apply a double offset.
+	int tex_coord_x = ((coord.x & registers.umsk) + registers.offset.x) | registers.ufix;
+	int tex_coord_y = ((coord.y & registers.vmsk) + registers.offset.y) | registers.vfix;
+	uint addr = swizzle_PS2(tex_coord_x, tex_coord_y, registers.addr_block, registers.stride_block, TEXTURE_FMT, VRAM_MASK);
+
+	uint payload = 0;
+
+	if (is_tex_24bit)
+	{
+		uint col = vram32.data[addr];
+		payload = rgb24_to_rgba32(col, registers.aem, registers.ta0);
+	}
+	else if (is_tex_16bit)
+	{
+		uint col = uint(vram16.data[addr]);
+		payload = rgba16_to_rgba32(col, registers.aem, registers.ta0, registers.ta1);
+	}
+	else if (is_tex_8bit)
+	{
+		uint index = uint(vram8.data[addr]);
+		payload = get_clut_color(index, registers.clut_offset);
+	}
+	else if (TEXTURE_FMT == PSMT8H)
+	{
+		uint index = uint(vram8.data[(addr << 2) + 3]);
+		payload = get_clut_color(index, registers.clut_offset);
+	}
+	else if (TEXTURE_FMT == PSMT4)
+	{
+		int nibble_address = bitfieldExtract(int(addr), 0, 1) & 0x1;
+		uint raw_byte = uint(vram8.data[addr >> 1]);
+		uint nibble = bitfieldExtract(raw_byte, nibble_address << 2, 4);
+		payload = get_clut_color(nibble, registers.clut_offset);
+	}
+	else if (TEXTURE_FMT == PSMT4HH || TEXTURE_FMT == PSMT4HL)
+	{
+		uint raw_word = uint(vram32.data[addr]);
+		int nibble_offset = TEXTURE_FMT == PSMT4HH ? 28 : 24;
+		uint nibble = bitfieldExtract(raw_word, nibble_offset, 4);
+		payload = get_clut_color(nibble, registers.clut_offset);
+	}
+	else
+		payload = vram32.data[addr];
+
+	if (all(lessThan(coord, registers.resolution)))
+	{
+		vec4 color = unpackUnorm4x8(payload);
+		imageStore(uImage, coord, color);
+	}
+}

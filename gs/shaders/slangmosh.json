@@ -1,0 +1,73 @@
+{
+	"include": [ "../../Granite/assets/shaders/inc" ],
+	"shaders": [
+		{
+			"name": "binning",
+			"path": "binning.comp",
+			"compute": true
+		},
+		{
+			"name": "upload",
+			"path": "upload.comp",
+			"compute": true
+		},
+		{
+
+			"name": "clut_write",
+			"path": "clut_write.comp",
+			"compute": true
+		},
+		{
+
+			"name": "vram_copy",
+			"path": "vram_copy.comp",
+			"compute": true
+		},
+		{
+			"name": "triangle_setup",
+			"path": "triangle_setup.comp",
+			"compute": true
+		},
+		{
+			"name": "ubershader",
+			"path": "ubershader.comp",
+			"compute": true,
+			"variants": [
+				{ "define": "FEEDBACK_COLOR", "count": 2, "resolve": false },
+				{ "define": "FEEDBACK_DEPTH", "count": 2, "resolve": false }
+			]
+		},
+		{
+			"name": "quad",
+			"path": "quad.vert"
+		},
+		{
+			"name": "sample_circuit",
+			"path": "sample_circuit.frag"
+		},
+		{
+			"name": "blit_circuit",
+			"path": "blit_circuit.frag"
+		},
+		{
+			"name": "weave",
+			"path": "weave.frag"
+		},
+		{
+			"name": "sharpen_vert",
+			"path": "../../Granite/assets/shaders/post/ffx-fsr/sharpen.vert"
+		},
+		{
+			"name": "sharpen_frag",
+			"path": "../../Granite/assets/shaders/post/ffx-fsr/sharpen.frag"
+		},
+		{
+			"name": "upscale_vert",
+			"path": "../../Granite/assets/shaders/post/ffx-fsr/upscale.vert"
+		},
+		{
+			"name": "upscale_frag",
+			"path": "../../Granite/assets/shaders/post/ffx-fsr/upscale.frag"
+		}
+	]
+}
