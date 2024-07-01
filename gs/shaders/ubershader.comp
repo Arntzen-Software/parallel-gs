@@ -557,8 +557,8 @@ void end_tile()
 		else
 			fb_color = packUnorm4x8(subgroupClusteredAdd(unpackUnorm4x8(fb_color), 2) / 2.0);
 
-		fb_color_dirty = subgroupBallotBitExtract(ballot_color, gl_SubgroupInvocationID);
-		fb_depth_dirty = subgroupBallotBitExtract(ballot_depth, gl_SubgroupInvocationID);
+		fb_color_dirty = subgroupInverseBallot(ballot_color);
+		fb_depth_dirty = subgroupInverseBallot(ballot_depth);
 	}
 
 	bool is_first_sample = !SUPER_SAMPLE || sample_index == 0;
