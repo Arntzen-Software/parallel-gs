@@ -1194,7 +1194,7 @@ void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const Render
 	uint32_t stride = rp.debug_capture_stride ? rp.debug_capture_stride : rp.num_primitives;
 	for (uint32_t i = 0; i < rp.num_primitives; i += stride)
 	{
-		const uint32_t range[] = { i, i + stride - 1 };
+		const uint32_t range[] = { i, std::min<uint32_t>(rp.num_primitives, i + stride) - 1 };
 		cmd.push_constants(range, 0, sizeof(range));
 
 		if (device->consumes_debug_markers())
