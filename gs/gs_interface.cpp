@@ -348,6 +348,7 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 	page.page_height = clut_page.page_height;
 	page.page_stride = clut_page.page_stride;
 	page.block_mask = clut_page.block_mask;
+	page.write_mask = clut_page.write_mask;
 
 	tracker.mark_texture_read(page);
 	tracker.register_cached_clut_clobber(page);
