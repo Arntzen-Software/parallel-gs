@@ -700,7 +700,7 @@ struct SMODE1Bits
 	FIELD32(VCKSEL, 2);
 	FIELD32(VHP, 1);
 	PAD32(27);
-	enum { CMOD_NTSC = 2, CMOD_PAL = 3 };
+	enum { CMOD_PROGRESSIVE = 0, CMOD_NTSC = 2, CMOD_PAL = 3 };
 	enum { LC_ANALOG = 32 };
 	enum { CLOCK_DIVIDER_ANALOG = 4 };
 };

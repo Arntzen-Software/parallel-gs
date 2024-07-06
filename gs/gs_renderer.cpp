@@ -1965,7 +1965,9 @@ Vulkan::ImageHandle GSRenderer::vsync(const PrivRegisterState &priv, const VSync
 	uint32_t mode_width = 0;
 	uint32_t mode_height = 0;
 
-	if (priv.smode1.CMOD == SMODE1Bits::CMOD_NTSC && priv.smode1.LC == SMODE1Bits::LC_ANALOG)
+	if ((priv.smode1.CMOD == SMODE1Bits::CMOD_NTSC ||
+	     (priv.smode1.CMOD == SMODE1Bits::CMOD_PROGRESSIVE && !priv.smode2.INT)) &&
+	    priv.smode1.LC == SMODE1Bits::LC_ANALOG)
 	{
 		// Constants from GSdx. Just need to be tweaked so that games look alright.
 		if (overscan)
