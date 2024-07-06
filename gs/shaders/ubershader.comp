@@ -357,7 +357,7 @@ void begin_tile()
 				fb_color_dirty = true;
 		}
 
-		fb_color = rgba16_to_rgba32(col, 0u, 0x80u, 0u);
+		fb_color = rgba16_to_rgba32(col, 0u, 0u, 0x80u);
 	}
 	else
 	{
