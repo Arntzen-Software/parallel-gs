@@ -416,7 +416,7 @@ private:
 	template <bool quad, unsigned num_vertices>
 	ColorFeedbackMode deduce_color_feedback_mode(const VertexPosition *pos, const VertexAttribute *attr,
 	                                             const ContextState &ctx, const PRIMBits &prim,
-	                                             ivec4 &uv_bb);
+	                                             ivec4 &uv_bb, const ivec4 &bb);
 
 	template <bool list_primitive, bool fan_primitive, bool quad, unsigned num_vertices>
 	void drawing_kick_primitive(bool adc);

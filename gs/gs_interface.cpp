@@ -1428,7 +1428,7 @@ void GSInterface::update_color_feedback_state()
 template <bool quad, unsigned num_vertices>
 GSInterface::ColorFeedbackMode
 GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexAttribute *attr,
-                                        const ContextState &ctx, const PRIMBits &prim, ivec4 &uv_bb)
+                                        const ContextState &ctx, const PRIMBits &prim, ivec4 &uv_bb, const ivec4 &bb)
 {
 	// Sprite and triangle is fine. Line is not ok.
 	constexpr bool can_feedback = num_vertices == 3 || (quad && num_vertices == 2);
@@ -1495,23 +1495,21 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 	if (needs_perspective || ctx.tex1.desc.MMAG == TEX1Bits::LINEAR)
 		return ColorFeedbackMode::Sliced;
 
-	// Check if we get clamping.
-	// Need to be careful, we only care about clamping rect if it's meaningful.
-	// If clamping rect covers the entire texture, there is no problem.
-	// If we have per-pixel sampling, there cannot be any clamping in practice due to scissor.
+	// Based on the primitive BB, if the region clamp contains the full primitive BB, we cannot observe clamping,
+	// so ignore the effect. If we fall within the texture size, we cannot observe REPEAT wrapping either.
 	if (uint32_t(ctx.clamp.desc.WMS) == CLAMPBits::REGION_CLAMP)
 	{
 		int minu = int(ctx.clamp.desc.MINU);
-		int maxu = int(ctx.clamp.desc.MAXU) + 1; // Avoid bottom-right rule killing us.
-		if ((minu && uv_bb.x < minu) || ((maxu < width - 1) && uv_bb.z > maxu))
+		int maxu = int(ctx.clamp.desc.MAXU);
+		if (bb.x < minu || bb.z > maxu || bb.z >= width)
 			return ColorFeedbackMode::Sliced;
 	}
 
 	if (uint32_t(ctx.clamp.desc.WMT) == CLAMPBits::REGION_CLAMP)
 	{
 		int minv = int(ctx.clamp.desc.MINV);
-		int maxv = int(ctx.clamp.desc.MAXV) + 1; // Avoid bottom-right rule killing us.
-		if ((minv && uv_bb.y < minv) || ((maxv < height - 1) && uv_bb.w > maxv))
+		int maxv = int(ctx.clamp.desc.MAXV);
+		if (bb.y < minv || bb.w > maxv || bb.w >= height)
 			return ColorFeedbackMode::Sliced;
 	}
 
@@ -1631,7 +1629,7 @@ void GSInterface::drawing_kick_append()
 	auto feedback_mode = ColorFeedbackMode::None;
 	ivec4 uv_bb = {};
 	if (render_pass.is_color_feedback)
-		feedback_mode = deduce_color_feedback_mode<quad, num_vertices>(pos, attr, ctx, prim.desc, uv_bb);
+		feedback_mode = deduce_color_feedback_mode<quad, num_vertices>(pos, attr, ctx, prim.desc, uv_bb, bb);
 
 	// If there's a partial transfer in-flight, flush it.
 	// The write should technically happen as soon as we write HWREG.
