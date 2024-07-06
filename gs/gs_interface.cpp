@@ -1914,12 +1914,14 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 	if (transfer_state.host_to_local_active &&
 	    transfer_state.host_to_local_payload.size() > transfer_state.last_flushed_qwords)
 	{
+#ifdef PARALLEL_GS_DEBUG
 		if (transfer_state.copy.bitbltbuf.bits != registers.bitbltbuf.bits)
 			LOGW("Mismatch in bitbltbuf state.\n");
 		if (transfer_state.copy.trxpos.bits != registers.trxpos.bits)
 			LOGW("Mismatch in trxpos state.\n");
 		if (transfer_state.copy.trxreg.bits != registers.trxreg.bits)
 			LOGW("Mismatch in trxreg state.\n");
+#endif
 
 		auto dst_rect = compute_page_rect(transfer_state.copy.bitbltbuf.desc.DBP,
 										  transfer_state.copy.trxpos.desc.DSAX,
