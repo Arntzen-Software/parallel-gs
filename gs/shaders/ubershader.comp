@@ -718,7 +718,7 @@ void write_z(float z)
 
 vec4 modulate(vec4 a, vec4 b, bool tcc)
 {
-	vec4 ab = floor((a * b + float(0x40)) * (1.0 / 128.0));
+	vec4 ab = floor(a * b * (1.0 / 128.0));
 	ab = clamp(ab, vec4(0.0), vec4(255.0));
 	if (!tcc)
 		ab.a = a.a;
@@ -727,7 +727,7 @@ vec4 modulate(vec4 a, vec4 b, bool tcc)
 
 vec4 highlight(vec4 a, vec4 b, bool tcc)
 {
-	vec4 ab = floor((a * b + float(0x40)) * (1.0 / 128.0));
+	vec4 ab = floor(a * b * (1.0 / 128.0));
 	ab = clamp(ab, vec4(0.0), vec4(255.0));
 	ab.rgb += a.a;
 	ab.a = tcc ? b.a + a.a : a.a;
@@ -737,7 +737,7 @@ vec4 highlight(vec4 a, vec4 b, bool tcc)
 
 vec4 highlight2(vec4 a, vec4 b, bool tcc)
 {
-	vec4 ab = floor((a * b + float(0x40)) * (1.0 / 128.0));
+	vec4 ab = floor(a * b * (1.0 / 128.0));
 	ab = clamp(ab, vec4(0.0), vec4(255.0));
 	ab.rgb += a.a;
 	ab.a = tcc ? b.a : a.a;
