@@ -879,7 +879,13 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 		// If game explicitly clamps the rect to a small region, it's likely doing well-defined feedbacks.
 		// E.g. Tales of Abyss main menu ping-pong blurs.
 		// This code is quite flawed, and I'm not sure what the correct solution is yet.
-		if (desc.clamp.desc.WMS == CLAMPBits::REGION_CLAMP && desc.clamp.desc.WMT == CLAMPBits::REGION_CLAMP)
+		if (PRIMType(prim.desc.PRIM) == PRIMType::Sprite)
+		{
+			// If game is using sprites, it's more likely than not it's doing explicit mip blurs, etc, so cache those.
+			// The main problem we always want to avoid is heavy random triangle soup geometry that does feedback.
+			cache_texture = true;
+		}
+		else if (desc.clamp.desc.WMS == CLAMPBits::REGION_CLAMP && desc.clamp.desc.WMT == CLAMPBits::REGION_CLAMP)
 		{
 			ivec4 clamped_uv_bb(
 					int(desc.clamp.desc.MINU),
@@ -899,7 +905,7 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 		{
 			// Questionable, but it seems almost impossible to do this correctly and fast.
 			// Need to emulate the PS2 texture cache exactly, which is just insane.
-			// This should be fine.
+			// This should be fine in most cases.
 			cache_texture = false;
 		}
 	}
