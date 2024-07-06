@@ -1277,8 +1277,10 @@ void shade_resolve(uint primitive_index, uint state_index, uint tex)
 		if (dithering)
 		{
 			// The dither format is 3-bit ints, 4 bits with padding, 4x4 matrix coordinates
-			int pos_x = tile.fb_pixel.x & 3;
-			int pos_y = tile.fb_pixel.y & 3;
+			// We want same dither strength for every super-sample,
+			// otherwise the super-sample blur will cancel out the dither when rendering to 16-bit.
+			int pos_x = (tile.fb_pixel.x >> SAMPLING_RATE_DIM_LOG2) & 3;
+			int pos_y = (tile.fb_pixel.y >> SAMPLING_RATE_DIM_LOG2) & 3;
 			int bit_index = ((pos_y * 4 + pos_x) * 4) & 31;
 			int dimx = pos_y < 2 ? int(state.dimx.x) : int(state.dimx.y);
 			blended_color.rgb += float(bitfieldExtract(dimx, bit_index, 3));
