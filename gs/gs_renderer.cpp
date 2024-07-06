@@ -1955,6 +1955,7 @@ Vulkan::ImageHandle GSRenderer::vsync(const PrivRegisterState &priv, const VSync
 
 	bool is_interlaced = priv.smode2.INT;
 	bool alternative_sampling = is_interlaced && !priv.smode2.FFMD;
+	bool force_deinterlace = priv.smode2.FFMD && priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
 	if (alternative_sampling && force_progressive)
 		is_interlaced = false;
 
@@ -1985,7 +1986,7 @@ Vulkan::ImageHandle GSRenderer::vsync(const PrivRegisterState &priv, const VSync
 			scan_offset_y = 25;
 		}
 
-		if (!is_interlaced)
+		if (!is_interlaced && !force_deinterlace)
 		{
 			mode_height *= 2;
 			scan_offset_y *= 2;
@@ -2012,7 +2013,7 @@ Vulkan::ImageHandle GSRenderer::vsync(const PrivRegisterState &priv, const VSync
 			scan_offset_y = 36;
 		}
 
-		if (!is_interlaced)
+		if (!is_interlaced && !force_deinterlace)
 		{
 			mode_height *= 2;
 			scan_offset_y *= 2;
@@ -2334,7 +2335,7 @@ Vulkan::ImageHandle GSRenderer::vsync(const PrivRegisterState &priv, const VSync
 
 	cmd.end_render_pass();
 
-	if (is_interlaced)
+	if (is_interlaced || force_deinterlace)
 	{
 		vsync_last_fields[info.phase] = merged;
 
