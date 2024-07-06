@@ -19,7 +19,7 @@ layout(set = 0, binding = 0) readonly buffer VRAM32
 
 layout(set = 0, binding = 0) readonly buffer VRAM16
 {
-    uint data[];
+    uint16_t data[];
 } vram16;
 
 layout(push_constant) uniform Registers
