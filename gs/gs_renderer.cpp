@@ -1149,7 +1149,6 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 		cmd.set_specialization_constant(7, 0);
 	}
 
-	// HIZ doesn't seem to be all that useful on PS2 content after all.
 	cmd.set_specialization_constant(5, variant_flags);
 
 	uint32_t width = rp.coarse_tiles_width << rp.coarse_tile_size_log2;

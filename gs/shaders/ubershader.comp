@@ -66,7 +66,6 @@ const bool SUPER_SAMPLE = NUM_SAMPLES > 1;
 
 const bool FEEDBACK = (VARIANT_FLAGS & VARIANT_FLAG_FEEDBACK_BIT) != 0;
 const bool INVARIANT_FP = (VARIANT_FLAGS & VARIANT_FLAG_INVARIANT_FP_BIT) != 0;
-const bool HIZ = (VARIANT_FLAGS & VARIANT_FLAG_HIZ_BIT) != 0;
 const bool HAS_AA1 = (VARIANT_FLAGS & VARIANT_FLAG_HAS_AA1_BIT) != 0;
 const bool HAS_SCANMSK = (VARIANT_FLAGS & VARIANT_FLAG_HAS_SCANMSK_BIT) != 0;
 
@@ -265,11 +264,8 @@ TileInfo tile;
 
 uint fb_color;
 float fb_depth;
-float fb_depth_hiz_lo;
-
 bool fb_color_dirty;
 bool fb_depth_dirty;
-bool need_update_hiz;
 
 ShadeRequest pending_shade_request;
 uint pending_primitive_index;
@@ -315,23 +311,6 @@ bool pending_shade_request_can_decrease_z()
 	return Z_SENSITIVE && pending_shade_request.z_write &&
 		!pending_shade_request.z_test &&
 		pending_shade_request.z < fb_depth;
-}
-
-void check_pending_hiz()
-{
-	if (!need_update_hiz)
-		need_update_hiz = pending_shade_request_can_decrease_z();
-}
-
-void update_hiz()
-{
-	if (subgroupAny(need_update_hiz))
-	{
-		float pending_hi_z = pending_shade_request_can_decrease_z() ?
-			pending_shade_request.z : fb_depth;
-		fb_depth_hiz_lo = subgroupMin(pending_hi_z);
-		need_update_hiz = false;
-	}
 }
 
 void begin_tile()
@@ -428,13 +407,6 @@ void begin_tile()
 
 	pending_shade_request.coverage = 0;
 	pending_shade_request.z_write = false;
-
-	if (HIZ)
-	{
-		need_update_hiz = Z_SENSITIVE;
-		if (Z_SENSITIVE)
-			update_hiz();
-	}
 
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
 	imageStore(FeedbackColor, ivec3(tile.fb_pixel - (constants.base_pixel << SAMPLING_RATE_DIM_LOG2), 1), unpackUnorm4x8(fb_color));
@@ -712,8 +684,6 @@ void write_z(float z)
 {
 	fb_depth = z;
 	fb_depth_dirty = true;
-	if (HIZ)
-		need_update_hiz = true;
 }
 
 vec4 modulate(vec4 a, vec4 b, bool tcc)
@@ -1359,8 +1329,6 @@ void set_pending_shade_request(ShadeRequest request, uint prim_index)
 {
 	pending_shade_request = request;
 	pending_primitive_index = prim_index;
-	if (Z_SENSITIVE)
-		check_pending_hiz();
 }
 
 bool primitive_intersects_tile(uint index)
@@ -1373,30 +1341,7 @@ bool primitive_intersects_tile(uint index)
 	PrimitiveSetup setup = primitive_setup.data[index];
 
 	ivec4 bb = clip_bounding_box(setup.bb, ivec4(tile.tile_lo, tile.tile_hi));
-	bool coverage = triangle_setup_intersects_tile(setup.a, setup.b, setup.c, bb);
-
-	if (HIZ && Z_SENSITIVE && coverage)
-	{
-		uint prim_state = primitive_attr.data[index].state;
-		bool z_test = state_is_z_test(prim_state);
-		bool z_write = state_is_z_write(prim_state);
-		bool z_greater = state_is_z_test_greater(prim_state);
-
-		// For this primitive, we can consider Hi-Z and cull early.
-		// We must consider that primitives in this subgroup can write Z.
-		// We can decrease Z if Z-write is enabled without Z-test.
-		float pixel_write_hi_z = (z_write && !z_test) ? setup.z_range.x : uintBitsToFloat(0x7f7fffff);
-
-		// Conservative HI for this primitive is the current Hi-Z minimum
-		// and minimum of any potential writes which can decrease Z.
-		float z_lo_for_primitive = min(fb_depth_hiz_lo, subgroupExclusiveMin(pixel_write_hi_z));
-
-		// Bounds check.
-		coverage = !z_test || setup.z_range.y > z_lo_for_primitive ||
-			(!z_greater && setup.z_range.y == z_lo_for_primitive);
-	}
-
-	return coverage;
+	return triangle_setup_intersects_tile(setup.a, setup.b, setup.c, bb);
 }
 
 void main()
@@ -1542,9 +1487,6 @@ void main()
 					set_pending_shade_request(pixel.request, shade_primitive_index);
 			}
 		} while (has_work);
-
-		if (HIZ && Z_SENSITIVE && !is_last_iteration)
-			update_hiz();
 	}
 
 	end_tile();
