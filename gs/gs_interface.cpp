@@ -2284,6 +2284,12 @@ void GSInterface::a_d_RGBAQ(uint64_t payload)
 	TRACE("RGBAQ", registers.rgbaq);
 }
 
+void GSInterface::a_d_RGBAQUndocumented(uint64_t payload)
+{
+	// Ridge Racer V.
+	a_d_RGBAQ(payload);
+}
+
 void GSInterface::a_d_ST(uint64_t payload)
 {
 	registers.st.bits = payload;
