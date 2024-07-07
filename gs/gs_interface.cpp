@@ -912,6 +912,11 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 		cache_texture = false;
 	}
 
+	auto TW = uint32_t(desc.tex0.desc.TW);
+	auto TH = uint32_t(desc.tex0.desc.TH);
+	uint32_t width = 1u << TW;
+	uint32_t height = 1u << TH;
+
 	// In sliced mode with clamping, we can clamp harder based on uv_bb.
 	// In this path, we're guaranteed to not hit wrapping with region clamp.
 	// For repeat, give up. Should not happen (hopefully).
@@ -927,9 +932,10 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 			desc.clamp.desc.MAXU = std::min<int>(
 					int(desc.clamp.desc.MAXU), std::max<int>(uv_bb.z, int(desc.clamp.desc.MINU)));
 		}
-		else
+		else if (desc.clamp.desc.WMS == CLAMPBits::CLAMP || (uv_bb.z < int(width) && uv_bb.x >= 0))
 		{
 			// Invent a clamp.
+			// If we have repeat, we must observe those semantics accurately.
 			desc.clamp.desc.WMS = CLAMPBits::REGION_CLAMP;
 			desc.clamp.desc.MINU = std::max<int>(0, uv_bb.x);
 			desc.clamp.desc.MAXU = uv_bb.z;
@@ -943,9 +949,10 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 			desc.clamp.desc.MAXV = std::min<int>(
 					int(desc.clamp.desc.MAXV), std::max<int>(uv_bb.w, int(desc.clamp.desc.MINV)));
 		}
-		else
+		else if (desc.clamp.desc.WMT == CLAMPBits::CLAMP || (uv_bb.w < int(height) && uv_bb.y >= 0))
 		{
 			// Invent a clamp.
+			// If we have repeat, we must observe those semantics accurately.
 			desc.clamp.desc.WMT = CLAMPBits::REGION_CLAMP;
 			desc.clamp.desc.MINV = std::max<int>(0, uv_bb.y);
 			desc.clamp.desc.MAXV = uv_bb.w;
@@ -970,11 +977,6 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 			desc.clamp.desc.WMT = CLAMPBits::CLAMP;
 		}
 	}
-
-	auto TW = uint32_t(desc.tex0.desc.TW);
-	auto TH = uint32_t(desc.tex0.desc.TH);
-	uint32_t width = 1u << TW;
-	uint32_t height = 1u << TH;
 
 	// No point in uploading mips if we never access it.
 	if (!desc.tex1.desc.mmin_has_mipmap())
