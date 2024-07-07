@@ -497,9 +497,7 @@ void GSInterface::vertex_kick_xyz(Reg64<XYZBits> xyz)
 
 	pos.pos.x = int(xyz.desc.X);
 	pos.pos.y = int(xyz.desc.Y);
-	// TODO: Z should be fixed point always.
-	// For 24-bit, FP should be fine (every 24-bit uint can be converted to FP32 losslessly), but not for 32-bit.
-	pos.z = float(xyz.desc.Z);
+	pos.z = xyz.desc.Z;
 
 	attr.st.x = registers.st.desc.S;
 	attr.st.y = registers.st.desc.T;
@@ -521,9 +519,7 @@ void GSInterface::vertex_kick_xyzf(Reg64<XYZFBits> xyzf)
 
 	pos.pos.x = int(xyzf.desc.X);
 	pos.pos.y = int(xyzf.desc.Y);
-	// TODO: Z should be fixed point always.
-	// For 24-bit, FP should be fine (every 24-bit uint can be converted to FP32 losslessly), but not for 32-bit.
-	pos.z = float(xyzf.desc.Z);
+	pos.z = xyzf.desc.Z;
 
 	attr.st.x = registers.st.desc.S;
 	attr.st.y = registers.st.desc.T;

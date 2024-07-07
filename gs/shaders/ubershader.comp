@@ -93,7 +93,7 @@ struct ShadeRequest
 	bool perspective;
 	bool z_greater;
 	bool st_bb;
-	float z;
+	uint z;
 	uint state;
 	float i, j;
 };
@@ -263,7 +263,7 @@ TileInfo get_tile_info()
 TileInfo tile;
 
 uint fb_color;
-float fb_depth;
+uint fb_depth;
 bool fb_color_dirty;
 bool fb_depth_dirty;
 
@@ -285,7 +285,7 @@ uint coverage_count = 0u;
 uint texture_mask = 0u;
 vec4 last_stqf = vec4(0.0);
 vec4 last_rgba = vec4(0.0);
-float last_z = 0.0;
+uint last_z = 0;
 vec2 last_ij = vec2(0.0);
 bool last_z_passed = false;
 
@@ -297,7 +297,7 @@ layout(push_constant) uniform Registers
 #endif
 ////
 
-bool z_test_coverage(float z, bool z_test_greater)
+bool z_test_coverage(uint z, bool z_test_greater)
 {
 	bool ret = z_test_greater ? z > fb_depth : z >= fb_depth;
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
@@ -360,7 +360,7 @@ void begin_tile()
 	{
 		if (is_zb_16bit)
 		{
-			fb_depth = float(uint(vram16.data[tile.fb_index_depth]));
+			fb_depth = uint(vram16.data[tile.fb_index_depth]);
 
 			if (SUPER_SAMPLE)
 			{
@@ -369,7 +369,7 @@ void begin_tile()
 				{
 					// Load super-sampled data instead.
 					uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
-					fb_depth = float(uint(vram16.data[tile.fb_index_depth + vram_offset]));
+					fb_depth = uint(vram16.data[tile.fb_index_depth + vram_offset]);
 				}
 				else
 					fb_depth_dirty = true;
@@ -380,7 +380,7 @@ void begin_tile()
 			uint z_uint = vram32.data[tile.fb_index_depth];
 			if (is_zb_24bit)
 				z_uint &= 0xffffffu;
-			fb_depth = float(z_uint);
+			fb_depth = z_uint;
 
 			if (SUPER_SAMPLE)
 			{
@@ -395,7 +395,7 @@ void begin_tile()
 					z_uint = vram32.data[tile.fb_index_depth + vram_offset];
 					if (is_zb_24bit)
 						z_uint &= 0xffffffu;
-					fb_depth = float(z_uint);
+					fb_depth = z_uint;
 				}
 				else
 					fb_depth_dirty = true;
@@ -403,7 +403,7 @@ void begin_tile()
 		}
 	}
 	else
-		fb_depth = 0.0;
+		fb_depth = 0;
 
 	pending_shade_request.coverage = 0;
 	pending_shade_request.z_write = false;
@@ -415,9 +415,9 @@ void begin_tile()
 #endif
 
 #if defined(FEEDBACK_DEPTH) && FEEDBACK_DEPTH
-	imageStore(FeedbackDepth, ivec3(tile.fb_pixel - (constants.base_pixel << SAMPLING_RATE_DIM_LOG2), 1), uvec4(uint(fb_depth)));
+	imageStore(FeedbackDepth, ivec3(tile.fb_pixel - (constants.base_pixel << SAMPLING_RATE_DIM_LOG2), 1), uvec4(fb_depth));
 	if (NUM_SAMPLES == 2 || NUM_SAMPLES == 8)
-		imageStore(FeedbackDepth, ivec3(tile.fb_pixel ^ ivec2(1, 0) - (constants.base_pixel << SAMPLING_RATE_DIM_LOG2), 1), uvec4(uint(fb_depth)));
+		imageStore(FeedbackDepth, ivec3(tile.fb_pixel ^ ivec2(1, 0) - (constants.base_pixel << SAMPLING_RATE_DIM_LOG2), 1), uvec4(fb_depth));
 #endif
 }
 
@@ -452,9 +452,9 @@ void end_tile()
 #endif
 
 #if defined(FEEDBACK_DEPTH) && FEEDBACK_DEPTH
-	imageStore(FeedbackDepth, ivec3(feedback_pixel, 0), uvec4(uint(fb_depth)));
+	imageStore(FeedbackDepth, ivec3(feedback_pixel, 0), uvec4(fb_depth));
 	if (NUM_SAMPLES == 2 || NUM_SAMPLES == 8)
-		imageStore(FeedbackDepth, ivec3(feedback_pixel, 0) ^ ivec3(1, 0, 0), uvec4(uint(fb_depth)));
+		imageStore(FeedbackDepth, ivec3(feedback_pixel, 0) ^ ivec3(1, 0, 0), uvec4(fb_depth));
 #endif
 
 	uint sample_index = gl_SubgroupInvocationID & (NUM_SAMPLES - 1);
@@ -483,13 +483,13 @@ void end_tile()
 				if (is_zb_16bit)
 				{
 					uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
-					vram16.data[tile.fb_index_depth + vram_offset] = uint16_t(uint(fb_depth));
+					vram16.data[tile.fb_index_depth + vram_offset] = uint16_t(fb_depth);
 				}
 				else
 				{
 					// Don't care about masking writes here.
 					uint vram_offset = (sample_index + 2u) * VRAM_SIZE_32;
-					vram32.data[tile.fb_index_depth + vram_offset] = uint(fb_depth);
+					vram32.data[tile.fb_index_depth + vram_offset] = fb_depth;
 				}
 			}
 		}
@@ -570,12 +570,12 @@ void end_tile()
 				if (is_zb_24bit)
 				{
 					uint old_z = vram32.data[tile.fb_index_depth];
-					old_z = bitfieldInsert(old_z, uint(fb_depth), 0, 24);
+					old_z = bitfieldInsert(old_z, fb_depth, 0, 24);
 					vram32.data[tile.fb_index_depth] = old_z;
 				}
 				else
 				{
-					vram32.data[tile.fb_index_depth] = uint(fb_depth);
+					vram32.data[tile.fb_index_depth] = fb_depth;
 				}
 			}
 		}
@@ -643,15 +643,24 @@ ShadeResultEarly shade_early(uint primitive_index)
 		if (res.request.multisample && res.request.coverage < 4)
 			res.request.z_write = false;
 
-	vec3 zs = prim.z.xyz;
-	// TODO: Unknown how PS2 rounds interpolated Z.
-	// It is supposed to be fixed-point I think since it has Z32 (which is kinda nuts ...).
-	// So far I have not run into any game using 32-bit Z.
-	precise float z = roundEven(zs.x + (zs.y * i + zs.z * j));
+	uvec3 zs = prim.z.xyz;
+	uint z = zs.x;
+	float dzdi = uintBitsToFloat(zs.y);
+	float dzdj = uintBitsToFloat(zs.z);
+
+	// TODO: Unknown how PS2 rounds interpolated Z. Best effort accuracy.
+	// Maximum representable FP32 value that is <= UINT32_MAX.
+	// Ensures that the uint cast behaves as expected.
+	const float MAX_Z_FP32_DELTA = 4294967040.0;
+	uint dz = uint(clamp(roundEven(dzdi * i + dzdj * j), 0.0, MAX_Z_FP32_DELTA));
+	// Avoid overflow in 32-bit in case the FP math is inaccurate and rounds up near UINT32_MAX.
+	dz = min(dz, 0xffffffffu - z);
+	z += dz;
+
 	if (is_zb_16bit)
-		z = clamp(z, 0.0, float(0xffff));
+		z = clamp(z, 0, 0xffff);
 	else if (is_zb_24bit)
-		z = clamp(z, 0.0, float(0xffffff));
+		z = clamp(z, 0, 0xffffff);
 
 	// If we have a certain kind of primitive, we should be very careful to not interpolate towards the right or bottom.
 	// Game may not expect UVs to appear in that location. This generally affects UI rendering, where atlases are common.
@@ -680,7 +689,7 @@ ShadeResultEarly shade_early(uint primitive_index)
 	return res;
 }
 
-void write_z(float z)
+void write_z(uint z)
 {
 	fb_depth = z;
 	fb_depth_dirty = true;

@@ -29,9 +29,8 @@ struct PrimitiveSetup
 	ivec3 a; float inv_area;
 	ivec3 b; float error_i;
 	ivec3 c; float error_j;
-	vec2 z_range;
-	i16vec4 bb; // Also serves as scissor.
-	vec4 z; // Pack it here since we need to read it in early-Z. Better for cache.
+	ivec4 bb; // Also serves as scissor.
+	uvec4 z; // Pack it here since we need to read it in early-Z. Better for cache.
 };
 
 // Each primitive's attribute setup consumes 80 bytes.
@@ -51,7 +50,7 @@ struct TransformedAttributes
 // Affects rasterization.
 struct VertexPosition
 {
-	ivec2 pos; float z; int padding;
+	ivec2 pos; uint z; int padding;
 };
 
 // Varyings, not accessed until we need to actually shade.

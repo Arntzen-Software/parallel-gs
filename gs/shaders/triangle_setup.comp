@@ -52,9 +52,11 @@ ivec3 quantize_step(int a, int b, ivec2 c)
     return ivec3(a, b, shift_int64_subpixels(c));
 }
 
-bool order_less_than(ivec2 a, ivec2 b)
+bool order_less_than(ivec2 a, ivec2 b, uint az, uint bz)
 {
-    if (b.y != a.y)
+    if (bz != az)
+        return az < bz;
+    else if (b.y != a.y)
         return a.y < b.y;
     else
         return a.x < b.x;
@@ -63,6 +65,13 @@ bool order_less_than(ivec2 a, ivec2 b)
 void swap(inout ivec2 x, inout ivec2 y)
 {
     ivec2 tmp = x;
+    x = y;
+    y = tmp;
+}
+
+void swap(inout uint x, inout uint y)
+{
+    uint tmp = x;
     x = y;
     y = tmp;
 }
@@ -80,13 +89,6 @@ ivec2 sub64(ivec2 a, ivec2 b)
     uint lsb = usubBorrow(a.x, b.x, borrow);
     uint msb = a.y - b.y - borrow;
     return ivec2(lsb, msb);
-}
-
-vec2 compute_z_range(float z0, float z1, float z2)
-{
-    float lo = min(min(z0, z1), z2);
-    float hi = max(max(z0, z1), z2);
-    return vec2(lo, hi);
 }
 
 vec2 unpack_uv(u16vec2 uv)
@@ -107,9 +109,15 @@ void main_inner(uint index)
     bool line = bitfieldExtract(state_word, STATE_BIT_LINE, 1) != 0;
     bool multisample = state_is_multisample(state_word);
 
-    ivec2 a = vertex_position.data[3u * index + 0u].pos;
-    ivec2 b = vertex_position.data[3u * index + 1u].pos;
-    ivec2 c = vertex_position.data[3u * index + 2u].pos;
+    VertexPosition v0 = vertex_position.data[3u * index + 0u];
+    VertexPosition v1 = vertex_position.data[3u * index + 1u];
+    VertexPosition v2 = vertex_position.data[3u * index + 2u];
+    ivec2 a = v0.pos;
+    ivec2 b = v1.pos;
+    ivec2 c = v2.pos;
+    uint za = v0.z;
+    uint zb = v1.z;
+    uint zc = v2.z;
     ivec4 primitive_bb = ivec4(primitive_attr.data[index].bb);
 
     if (sprite)
@@ -145,22 +153,25 @@ void main_inner(uint index)
         }
     }
 
-    if (!parallelogram)
+    if (!parallelogram && !fix)
     {
         // Unsure if PS2 primitives are rotationally invariant.
         // They probably are as DDA tends to sort vertices.
         // Parallelograms depend on their provoking vertex, so don't do anything funny here.
         // Select provoking vertex as top, then left.
-        if (!order_less_than(b, c))
+        // We want lowest Z to be provoking to increase Z interpolation accuracy, especially in 32-bit Z.
+        if (!order_less_than(b, c, zb, zc))
         {
             order = order.xzy;
             swap(b, c);
+            swap(zb, zc);
         }
 
-        if (!order_less_than(a, b))
+        if (!order_less_than(a, b, za, zb))
         {
             order = order.yxz;
             swap(a, b);
+            swap(za, zb);
         }
     }
 
@@ -173,8 +184,7 @@ void main_inner(uint index)
     if (all(equal(signed_area, ivec2(0))))
     {
         // Degenerate, no pixels are rasterized.
-        ivec4 degenerate = ivec4(0, 0, -1, -1);
-        primitive_setup.data[index].bb = i16vec4(degenerate);
+        primitive_setup.data[index].bb = ivec4(0, 0, -1, -1);
         return;
     }
 
@@ -187,6 +197,7 @@ void main_inner(uint index)
         area = uint(-signed_area.x);
         swap(ab, ac);
         swap(b, c);
+        swap(zb, zc);
         order = order.xzy;
     }
     else
@@ -241,21 +252,14 @@ void main_inner(uint index)
     precise float error_i = float(error_b) * inv_area;
     precise float error_j = float(error_c) * inv_area;
 
-    float z0 = vertex_position.data[3u * index + order.x].z;
-    float z1, z2;
-
     if (sprite)
     {
-        z1 = z0;
-        z2 = z0;
+        zb = za;
+        zc = za;
     }
-    else
+    else if (line)
     {
-        z1 = vertex_position.data[3u * index + order.y].z;
-        if (line)
-            z2 = z0;
-        else
-            z2 = vertex_position.data[3u * index + order.z].z;
+        zc = za;
     }
 
     if (fix || sprite)
@@ -342,24 +346,22 @@ void main_inner(uint index)
     plane_a.x = bitfieldInsert(plane_a.x, error_flip_b, 2, 2);
     plane_a.x = bitfieldInsert(plane_a.x, error_flip_c, 4, 2);
 
-    vec2 z_range = compute_z_range(z0, z1, z2);
-
     primitive_setup.data[index].a = plane_a;
     primitive_setup.data[index].inv_area = inv_area_scaled;
     primitive_setup.data[index].b = plane_b;
     primitive_setup.data[index].error_i = error_i;
     primitive_setup.data[index].c = plane_c;
     primitive_setup.data[index].error_j = error_j;
-    primitive_setup.data[index].z_range = z_range;
-    precise float diz = z1 - z0;
-    precise float djz = z2 - z0;
-    primitive_setup.data[index].z = vec4(z0, diz, djz, 0.0);
+    // This will be fine as long as we assume that the primitive doesn't have an insane range in 32-bit Z.
+    // We get ideal accuracy on the lowest Z, i.e. closer to far plane, which should be ideal, since that's where
+    // precision is needed.
+    primitive_setup.data[index].z = uvec4(za, floatBitsToUint(float(zb - za)), floatBitsToUint(float(zc - za)), 0);
 
     ivec2 d = parallelogram ? (b + c - a) : c;
     ivec4 packed_bb = pack_bounding_box(a, b, c, d, multisample, SAMPLING_RATE_LOG2);
 
     packed_bb = clip_bounding_box(packed_bb, ivec4(primitive_attr.data[index].bb));
-    primitive_setup.data[index].bb = i16vec4(packed_bb);
+    primitive_setup.data[index].bb = packed_bb;
 
     if (SAMPLING_RATE_LOG2 != 0 && !sprite && !line)
     {
@@ -373,7 +375,7 @@ void main_inner(uint index)
         if (perspective)
             should_interpolate_per_sample = distqf.z != 0.0 || djstqf.z != 0.0;
         if (!should_interpolate_per_sample)
-            should_interpolate_per_sample = z0 != z1 || z1 != z2;
+            should_interpolate_per_sample = za != zb || zb != zc;
 
         if (!should_interpolate_per_sample)
         {
