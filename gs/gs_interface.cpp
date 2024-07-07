@@ -446,8 +446,6 @@ void GSInterface::handle_miptbl_gen(uint32_t ctx_index)
 		return;
 
 	// Auto-generate MIPTBL1 when TEX0 is written, and MTBA is set.
-	// This formula is probably completely wrong.
-	// Untested.
 
 	uint32_t base = tex0.TBP0;
 	uint32_t TW = tex0.TW;
@@ -460,18 +458,16 @@ void GSInterface::handle_miptbl_gen(uint32_t ctx_index)
 	uint32_t num_blocks = (W >> layout.block_width_log2) * (H >> layout.block_height_log2);
 	base += num_blocks;
 
+	num_blocks /= 4;
+	row_length_64 /= 2;
 	ctx.miptbl_1_3.desc.TBP1 = base;
 	ctx.miptbl_1_3.desc.TBW1 = row_length_64;
-
-	num_blocks /= 4;
-	row_length_64 /= 2;
 	base += num_blocks;
 
-	ctx.miptbl_1_3.desc.TBP2 = base;
-	ctx.miptbl_1_3.desc.TBW2 = row_length_64;
-
 	num_blocks /= 4;
 	row_length_64 /= 2;
+	ctx.miptbl_1_3.desc.TBP2 = base;
+	ctx.miptbl_1_3.desc.TBW2 = row_length_64;
 	base += num_blocks;
 
 	ctx.miptbl_1_3.desc.TBP3 = base;
