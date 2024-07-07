@@ -1512,13 +1512,16 @@ void GSRenderer::upload_texture(const TextureDescriptor &desc, const Vulkan::Ima
 	info.umsk = UINT32_MAX;
 	info.vmsk = UINT32_MAX;
 
-	if (uint32_t(desc.clamp.desc.WMS) == CLAMPBits::REGION_REPEAT)
+	bool s_region_repeat = uint32_t(desc.clamp.desc.WMS) == CLAMPBits::REGION_REPEAT;
+	bool t_region_repeat = uint32_t(desc.clamp.desc.WMT) == CLAMPBits::REGION_REPEAT;
+
+	if (s_region_repeat)
 	{
 		info.umsk = uint32_t(desc.clamp.desc.MINU);
 		info.ufix = uint32_t(desc.clamp.desc.MAXU);
 	}
 
-	if (uint32_t(desc.clamp.desc.WMT) == CLAMPBits::REGION_REPEAT)
+	if (t_region_repeat)
 	{
 		info.vmsk = uint32_t(desc.clamp.desc.MINV);
 		info.vfix = uint32_t(desc.clamp.desc.MAXV);
@@ -1590,17 +1593,20 @@ void GSRenderer::upload_texture(const TextureDescriptor &desc, const Vulkan::Ima
 
 		if (levels > 1)
 		{
-			if (uint32_t(desc.clamp.desc.WMS) == CLAMPBits::REGION_REPEAT)
+			if (s_region_repeat)
 			{
 				info.ufix >>= 1;
 				info.umsk >>= 1;
 			}
 
-			if (uint32_t(desc.clamp.desc.WMT) == CLAMPBits::REGION_REPEAT)
+			if (t_region_repeat)
 			{
 				info.vfix >>= 1;
 				info.vmsk >>= 1;
 			}
+
+			info.off_x >>= 1;
+			info.off_y >>= 1;
 		}
 	}
 
