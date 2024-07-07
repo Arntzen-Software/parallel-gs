@@ -4,6 +4,7 @@
 #include <vector>
 #include <stdio.h>
 #include "gs_registers.hpp"
+#include "gs_renderer.hpp"
 #include "image.hpp"
 
 namespace ParallelGS
@@ -40,7 +41,7 @@ public:
 	bool open(const char *path, uint32_t vram_size, GSInterface *iface);
 	bool open_raw(const char *path, uint32_t vram_size, GSInterface *iface);
 	bool iterate_until_vsync();
-	Vulkan::ImageHandle consume_vsync_image();
+	ScanoutResult consume_vsync_result();
 	bool restart();
 
 private:
@@ -48,7 +49,7 @@ private:
 	GSInterface *iface = nullptr;
 	std::unique_ptr<FILE, FileDeleter> file;
 	std::vector<GIFTagBits> gif_tag_buffer;
-	Vulkan::ImageHandle vsync_image;
+	ScanoutResult vsync_result = {};
 	uint32_t vram_size;
 	bool is_raw = false;
 

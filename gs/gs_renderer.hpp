@@ -17,6 +17,14 @@
 
 namespace ParallelGS
 {
+struct ScanoutResult
+{
+	Vulkan::ImageHandle image;
+	// For bob-deinterlace. In whole pixels.
+	// Will generally be phase 0 -> +0.25, phase 1 -> -0.25.
+	float phase_offset;
+};
+
 struct FlushStats
 {
 	VkDeviceSize allocated_scratch_memory;
@@ -217,7 +225,7 @@ public:
 	void *begin_host_vram_access();
 	void end_host_write_vram_access();
 
-	Vulkan::ImageHandle vsync(const PrivRegisterState &priv, const VSyncInfo &info);
+	ScanoutResult vsync(const PrivRegisterState &priv, const VSyncInfo &info);
 
 	static TexRect compute_effective_texture_rect(const TextureDescriptor &desc);
 

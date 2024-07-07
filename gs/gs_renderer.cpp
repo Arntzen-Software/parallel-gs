@@ -1920,7 +1920,7 @@ GSRenderer::SamplingRect GSRenderer::compute_circuit_rect(const PrivRegisterStat
 	return rect;
 }
 
-Vulkan::ImageHandle GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &info)
+ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &info)
 {
 	if (!device)
 		return {};
@@ -2325,16 +2325,27 @@ Vulkan::ImageHandle GSRenderer::vsync(const PrivRegisterState &priv, const VSync
 
 	cmd.end_render_pass();
 
+	ScanoutResult result = {};
+
 	if (is_interlaced || force_deinterlace)
 	{
-		vsync_last_fields[info.phase] = merged;
+		if (info.weave_deinterlace)
+		{
+			vsync_last_fields[info.phase] = merged;
 
-		cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-		                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+			cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
-		// Crude de-interlace. Get something working for now.
-		merged = weave_deinterlace(cmd, info);
+			// Crude de-interlace. Get something working for now.
+			merged = weave_deinterlace(cmd, info);
+		}
+		else
+		{
+			// Can fuse bob into any upscaler for best effect.
+			result.phase_offset = info.phase == 0 ? +0.25f : -0.25f;
+		}
 	}
 	else
 	{
@@ -2354,8 +2365,9 @@ Vulkan::ImageHandle GSRenderer::vsync(const PrivRegisterState &priv, const VSync
 
 	// TODO: EXTWRITE
 
+	result.image = std::move(merged);
 	flush_submit(0);
-	return merged;
+	return result;
 }
 
 Vulkan::ImageHandle GSRenderer::weave_deinterlace(Vulkan::CommandBuffer &cmd, const VSyncInfo &vsync)

@@ -3088,7 +3088,7 @@ void GSInterface::set_debug_mode(const DebugMode &mode)
 	debug_mode = mode;
 }
 
-Vulkan::ImageHandle GSInterface::vsync(const VSyncInfo &info)
+ScanoutResult GSInterface::vsync(const VSyncInfo &info)
 {
 	return renderer.vsync(priv_registers, info);
 }

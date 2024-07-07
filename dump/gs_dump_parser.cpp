@@ -165,7 +165,7 @@ bool GSDumpParser::iterate_until_vsync()
 			vsync.anti_blur = true;
 			vsync.overscan = false;
 			iface->flush();
-			vsync_image = iface->vsync(vsync);
+			vsync_result = iface->vsync(vsync);
 			return true;
 		}
 
@@ -185,11 +185,11 @@ bool GSDumpParser::iterate_until_vsync()
 	return !eof;
 }
 
-Vulkan::ImageHandle GSDumpParser::consume_vsync_image()
+ScanoutResult GSDumpParser::consume_vsync_result()
 {
-	Vulkan::ImageHandle h;
-	std::swap(h, vsync_image);
-	return h;
+	ScanoutResult result = {};
+	std::swap(result, vsync_result);
+	return result;
 }
 
 uint8_t GSDumpParser::read_u8()
