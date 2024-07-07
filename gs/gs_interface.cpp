@@ -1406,14 +1406,9 @@ void GSInterface::update_color_feedback_state()
 		return;
 
 	uint32_t width = 1u << uint32_t(ctx.tex0.desc.TW);
-	uint32_t height = 1u << uint32_t(ctx.tex0.desc.TH);
 
 	// Ensures that image covers entire frame buffer.
 	if (ctx.frame.desc.FBW * BUFFER_WIDTH_SCALE > width)
-		return;
-
-	// There is no framebuffer height, but we can deduce it based on scissor Y max.
-	if (ctx.scissor.desc.SCAY1 >= height)
 		return;
 
 	// If we're in feedback, we have to recheck state every draw. We expect that anyway
@@ -1489,7 +1484,7 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 	// We'll allow equal, since bottom-right pixels won't get rendered usually.
 	// Any line with linear filtering is probably not pixel feedback.
 	// Anything with perspective won't work with Pixel mode either.
-	if (needs_perspective || ctx.tex1.desc.MMAG == TEX1Bits::LINEAR)
+	if (needs_perspective)
 		return ColorFeedbackMode::Sliced;
 
 	// Based on the primitive BB, if the region clamp contains the full primitive BB, we cannot observe clamping,
@@ -1525,11 +1520,19 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 	int min_delta2 = min(min_delta.x, min_delta.y);
 	int max_delta2 = max(max_delta.x, max_delta.y);
 
-	// The UV offset must be in range of [0, 2^SUBPIXEL_BITS - 1]. This guarantees snapping with NEAREST.
-	// 8 is ideal. That means pixel centers during interpolation will land exactly in the center of the texel.
-	// In theory we could allow LINEAR if uv delta was exactly 8 for all vertices.
-	if (min_delta2 < 0 || max_delta2 >= (1 << SUBPIXEL_BITS))
-		return ColorFeedbackMode::Sliced;
+	if (ctx.tex1.desc.MMAG == TEX1Bits::LINEAR)
+	{
+		// Must land on pixel center for LINEAR to work.
+		if (min_delta2 != (1 << (SUBPIXEL_BITS - 1)) || max_delta2 != (1 << (SUBPIXEL_BITS - 1)))
+			return ColorFeedbackMode::Sliced;
+	}
+	else
+	{
+		// The UV offset must be in range of [0, 2^SUBPIXEL_BITS - 1]. This guarantees snapping with NEAREST.
+		// 8 is ideal. That means pixel centers during interpolation will land exactly in the center of the texel.
+		if (min_delta2 < 0 || max_delta2 >= (1 << SUBPIXEL_BITS))
+			return ColorFeedbackMode::Sliced;
+	}
 
 	// Perf go brrrrrrr.
 	return ColorFeedbackMode::Pixel;
