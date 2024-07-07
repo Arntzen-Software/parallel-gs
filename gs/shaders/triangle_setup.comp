@@ -120,6 +120,28 @@ void main_inner(uint index)
     uint zc = v2.z;
     ivec4 primitive_bb = ivec4(primitive_attr.data[index].bb);
 
+    if ((!parallelogram || line) && !fix)
+    {
+        // Unsure if PS2 primitives are rotationally invariant.
+        // They probably are as DDA tends to sort vertices.
+        // Parallelograms depend on their provoking vertex, so don't do anything funny here.
+        // Select provoking vertex as top, then left.
+        // We want lowest Z to be provoking to increase Z interpolation accuracy, especially in 32-bit Z.
+        if (!line && !order_less_than(b, c, zb, zc))
+        {
+            order = order.xzy;
+            swap(b, c);
+            swap(zb, zc);
+        }
+
+        if (!order_less_than(a, b, za, zb))
+        {
+            order = order.yxz;
+            swap(a, b);
+            swap(za, zb);
+        }
+    }
+
     if (sprite)
     {
         c = ivec2(a.x, b.y);
@@ -150,28 +172,6 @@ void main_inner(uint index)
             c.y = a.y;
             a.x -= x_delta;
             b.x -= x_delta;
-        }
-    }
-
-    if (!parallelogram && !fix)
-    {
-        // Unsure if PS2 primitives are rotationally invariant.
-        // They probably are as DDA tends to sort vertices.
-        // Parallelograms depend on their provoking vertex, so don't do anything funny here.
-        // Select provoking vertex as top, then left.
-        // We want lowest Z to be provoking to increase Z interpolation accuracy, especially in 32-bit Z.
-        if (!order_less_than(b, c, zb, zc))
-        {
-            order = order.xzy;
-            swap(b, c);
-            swap(zb, zc);
-        }
-
-        if (!order_less_than(a, b, za, zb))
-        {
-            order = order.yxz;
-            swap(a, b);
-            swap(za, zb);
         }
     }
 
