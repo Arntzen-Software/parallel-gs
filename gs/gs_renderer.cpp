@@ -1512,13 +1512,13 @@ void GSRenderer::upload_texture(const TextureDescriptor &desc, const Vulkan::Ima
 	info.umsk = UINT32_MAX;
 	info.vmsk = UINT32_MAX;
 
-	if (uint32_t(desc.clamp.desc.WMS) == 3)
+	if (uint32_t(desc.clamp.desc.WMS) == CLAMPBits::REGION_REPEAT)
 	{
 		info.umsk = uint32_t(desc.clamp.desc.MINU);
 		info.ufix = uint32_t(desc.clamp.desc.MAXU);
 	}
 
-	if (uint32_t(desc.clamp.desc.WMT) == 3)
+	if (uint32_t(desc.clamp.desc.WMT) == CLAMPBits::REGION_REPEAT)
 	{
 		info.vmsk = uint32_t(desc.clamp.desc.MINV);
 		info.vfix = uint32_t(desc.clamp.desc.MAXV);
@@ -1587,6 +1587,21 @@ void GSRenderer::upload_texture(const TextureDescriptor &desc, const Vulkan::Ima
 
 		cmd.push_constants(&info, 0, sizeof(info));
 		cmd.dispatch((info.width + 7) / 8, (info.height + 7) / 8, 1);
+
+		if (levels > 1)
+		{
+			if (uint32_t(desc.clamp.desc.WMS) == CLAMPBits::REGION_REPEAT)
+			{
+				info.ufix >>= 1;
+				info.umsk >>= 1;
+			}
+
+			if (uint32_t(desc.clamp.desc.WMT) == CLAMPBits::REGION_REPEAT)
+			{
+				info.vfix >>= 1;
+				info.vmsk >>= 1;
+			}
+		}
 	}
 
 	cmd.set_specialization_constant_mask(0);
