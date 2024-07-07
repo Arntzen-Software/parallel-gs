@@ -1261,7 +1261,6 @@ void shade_resolve(uint primitive_index, uint state_index, uint tex)
 
 		if (!is_fb_24bit && write_fb && dest_alpha_testing)
 		{
-			// TODO: 16-bit formats
 			uint dest_alpha_bit = unpacked_fb_color.a >= 128.0 ? 1u : 0u;
 			if (uint(dest_alpha_mode) != dest_alpha_bit)
 				return;
