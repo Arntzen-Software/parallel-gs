@@ -585,40 +585,30 @@ static Extent1D compute_effective_texture_extent(uint32_t extent, uint32_t wrap_
 	// Try to make an optimized region texture.
 	if (wrap_mode == CLAMPBits::REGION_CLAMP)
 	{
-		// If we have wrap-around, don't try anything funny, upload the entire texture.
-		if (hi < extent)
-		{
-			lo = std::min<uint32_t>(lo, hi);
-			auto effective_extent = hi + 1;
-			extent = std::min<uint32_t>(effective_extent, extent);
-			extent -= std::min<uint32_t>(lo, extent);
-			base = lo;
-		}
+		lo = std::min<uint32_t>(lo, hi);
+		extent = std::max<uint32_t>(hi, lo) - lo + 1;
+		base = lo;
 	}
 	else if (wrap_mode == CLAMPBits::REGION_REPEAT)
 	{
 		auto msk = lo;
 		auto fix = hi;
 
-		// If we're trying to address outside the texture, this is kinda non-sense, and we need to bail.
-		if (fix < extent)
+		if (msk == 0)
 		{
-			if (msk == 0)
-			{
-				extent = 1;
-				base = fix;
-			}
-			else
-			{
-				uint32_t msk_msb = 31 - leading_zeroes(msk);
-				uint32_t fix_lsb = trailing_zeroes(fix);
+			extent = 1;
+			base = fix;
+		}
+		else
+		{
+			uint32_t msk_msb = 31 - leading_zeroes(msk);
+			uint32_t fix_lsb = trailing_zeroes(fix);
 
-				// If LSB > MSB, we can rewrite (x & A) | B -> (x & A) + B.
-				if (fix_lsb > msk_msb)
-				{
-					extent = std::min<uint32_t>(1u << (msk_msb + 1), extent);
-					base = fix;
-				}
+			// If LSB > MSB, we can rewrite (x & A) | B -> (x & A) + B.
+			if (fix_lsb > msk_msb)
+			{
+				extent = std::min<uint32_t>(1u << (msk_msb + 1), extent);
+				base = fix;
 			}
 		}
 	}

@@ -1412,12 +1412,6 @@ void GSInterface::update_color_feedback_state()
 	uint32_t width = 1u << uint32_t(ctx.tex0.desc.TW);
 	uint32_t height = 1u << uint32_t(ctx.tex0.desc.TH);
 
-	// Wrap-around effect. Min/Max analysis will break and get really messy, so don't bother.
-	if (uint32_t(ctx.clamp.desc.WMS) == CLAMPBits::REGION_CLAMP && uint32_t(ctx.clamp.desc.MAXU) >= width)
-		return;
-	if (uint32_t(ctx.clamp.desc.WMT) == CLAMPBits::REGION_CLAMP && uint32_t(ctx.clamp.desc.MAXV) >= height)
-		return;
-
 	// Ensures that image covers entire frame buffer.
 	if (ctx.frame.desc.FBW * BUFFER_WIDTH_SCALE > width)
 		return;
@@ -1503,12 +1497,12 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 		return ColorFeedbackMode::Sliced;
 
 	// Based on the primitive BB, if the region clamp contains the full primitive BB, we cannot observe clamping,
-	// so ignore the effect. If we fall within the texture size, we cannot observe REPEAT wrapping either.
+	// so ignore the effect.
 	if (uint32_t(ctx.clamp.desc.WMS) == CLAMPBits::REGION_CLAMP)
 	{
 		int minu = int(ctx.clamp.desc.MINU);
 		int maxu = int(ctx.clamp.desc.MAXU);
-		if (bb.x < minu || bb.z > maxu || bb.z >= width)
+		if (bb.x < minu || bb.z > maxu)
 			return ColorFeedbackMode::Sliced;
 	}
 
@@ -1516,7 +1510,7 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 	{
 		int minv = int(ctx.clamp.desc.MINV);
 		int maxv = int(ctx.clamp.desc.MAXV);
-		if (bb.y < minv || bb.w > maxv || bb.w >= height)
+		if (bb.y < minv || bb.w > maxv)
 			return ColorFeedbackMode::Sliced;
 	}
 
