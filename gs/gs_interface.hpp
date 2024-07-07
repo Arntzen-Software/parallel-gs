@@ -295,6 +295,7 @@ private:
 		bool z_sensitive = false;
 		bool z_write = false;
 		bool is_color_feedback = false;
+		bool is_awkward_color_feedback = false;
 		bool is_potential_color_feedback = false;
 		bool is_potential_depth_feedback = false;
 		bool has_color_feedback = false;
@@ -368,7 +369,8 @@ private:
 	{
 		None,
 		Pixel,
-		Sliced
+		Sliced,
+		BypassHazards
 	};
 
 	uint32_t drawing_kick_update_texture(ColorFeedbackMode feedback_mode, const ivec4 &uv_bb, const ivec4 &bb);

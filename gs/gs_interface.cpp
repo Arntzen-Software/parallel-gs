@@ -906,6 +906,11 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 			cache_texture = false;
 		}
 	}
+	else if (feedback_mode == ColorFeedbackMode::BypassHazards)
+	{
+		// Ignore hazards for these.
+		cache_texture = false;
+	}
 
 	// In sliced mode with clamping, we can clamp harder based on uv_bb.
 	// In this path, we're guaranteed to not hit wrapping with region clamp.
@@ -1349,11 +1354,32 @@ void GSInterface::update_color_feedback_state()
 	auto &prim = registers.prim;
 	auto &ctx = registers.ctx[prim.desc.CTXT];
 	render_pass.is_color_feedback = false;
+	render_pass.is_awkward_color_feedback = false;
 	render_pass.is_potential_color_feedback = false;
 	render_pass.is_potential_depth_feedback = false;
 
 	if (!prim.desc.TME)
 		return;
+
+	// Mip-mapping is too weird to deal with.
+	if (ctx.tex1.desc.has_mipmap())
+		return;
+
+	auto tex_psm = uint32_t(ctx.tex0.desc.PSM);
+	const bool equal_address = uint32_t(ctx.tex0.desc.TBP0) == ctx.frame.desc.FBP * BLOCKS_PER_PAGE;
+
+	if (equal_address)
+	{
+		if (swizzle_compat_key(tex_psm) != swizzle_compat_key(ctx.frame.desc.PSM) ||
+		    uint32_t(ctx.tex0.desc.TBW) != ctx.frame.desc.FBW)
+		{
+			// If we have overlapping address, but the swizzling format is off, this is pure mayhem, and we force-disable caching.
+			// It makes zero sense to try anything reasonable here.
+			render_pass.is_color_feedback = true;
+			render_pass.is_awkward_color_feedback = true;
+			return;
+		}
+	}
 
 	if (ctx.clamp.desc.WMS == CLAMPBits::REGION_REPEAT || ctx.clamp.desc.WMT == CLAMPBits::REGION_REPEAT)
 	{
@@ -1361,13 +1387,7 @@ void GSInterface::update_color_feedback_state()
 		return;
 	}
 
-	// Mip-mapping is too weird to deal with.
-	if (ctx.tex1.desc.has_mipmap())
-		return;
-
-	auto tex_psm = uint32_t(ctx.tex0.desc.PSM);
-
-	if (uint32_t(ctx.tex0.desc.TBP0) != ctx.frame.desc.FBP * BLOCKS_PER_PAGE)
+	if (!equal_address)
 	{
 		// If TBP < FBP we may still have a potential feedback caused by game using randomly large TW/TH
 		// and not using REGION_CLAMP properly. E.g. a 1024x1024 texture with 32-bit will cover the entirety of VRAM.
@@ -1398,13 +1418,6 @@ void GSInterface::update_color_feedback_state()
 		return;
 	}
 
-	if (uint32_t(ctx.tex0.desc.TBW) != ctx.frame.desc.FBW)
-		return;
-
-	// For feedback, we assume that the texture format has same bpp and swizzle format.
-	if (swizzle_compat_key(tex_psm) != swizzle_compat_key(ctx.frame.desc.PSM))
-		return;
-
 	uint32_t width = 1u << uint32_t(ctx.tex0.desc.TW);
 
 	// Ensures that image covers entire frame buffer.
@@ -1426,6 +1439,9 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 	constexpr bool can_feedback = num_vertices == 3 || (quad && num_vertices == 2);
 	if (!can_feedback)
 		return ColorFeedbackMode::None;
+
+	if (render_pass.is_awkward_color_feedback)
+		return ColorFeedbackMode::BypassHazards;
 
 	int width = 1 << int(ctx.tex0.desc.TW);
 	int height = 1 << int(ctx.tex0.desc.TH);
