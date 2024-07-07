@@ -578,7 +578,7 @@ struct Extent1D
 	uint32_t extent;
 };
 
-static Extent1D compute_effective_texture_extent(uint32_t extent, uint32_t wrap_mode, uint32_t lo, uint32_t hi)
+static Extent1D compute_effective_texture_extent(uint32_t extent, uint32_t wrap_mode, uint32_t lo, uint32_t hi, uint32_t levels)
 {
 	uint32_t base = 0;
 
@@ -587,6 +587,18 @@ static Extent1D compute_effective_texture_extent(uint32_t extent, uint32_t wrap_
 	{
 		lo = std::min<uint32_t>(lo, hi);
 		extent = std::max<uint32_t>(hi, lo) - lo + 1;
+
+		if (levels > 1)
+		{
+			uint32_t max_level = levels - 1;
+			uint32_t mask = (1u << max_level) - 1u;
+
+			// Snap extent and lo such that any mip level we use, we won't cause any issues with non-even mip size.
+			extent += lo & mask;
+			lo &= ~mask;
+			extent = (extent + mask) & ~mask;
+		}
+
 		base = lo;
 	}
 	else if (wrap_mode == CLAMPBits::REGION_REPEAT)
@@ -641,25 +653,22 @@ TexRect GSRenderer::compute_effective_texture_rect(const TextureDescriptor &desc
 
 	TexRect rect = { 0, 0, width, height, levels };
 
-	if (levels == 1)
-	{
-		auto effective_u = compute_effective_texture_extent(
-				width,
-				uint32_t(desc.clamp.desc.WMS),
-				uint32_t(desc.clamp.desc.MINU),
-				uint32_t(desc.clamp.desc.MAXU));
+	auto effective_u = compute_effective_texture_extent(
+			width,
+			uint32_t(desc.clamp.desc.WMS),
+			uint32_t(desc.clamp.desc.MINU),
+			uint32_t(desc.clamp.desc.MAXU), levels);
 
-		auto effective_v = compute_effective_texture_extent(
-				height,
-				uint32_t(desc.clamp.desc.WMT),
-				uint32_t(desc.clamp.desc.MINV),
-				uint32_t(desc.clamp.desc.MAXV));
+	auto effective_v = compute_effective_texture_extent(
+			height,
+			uint32_t(desc.clamp.desc.WMT),
+			uint32_t(desc.clamp.desc.MINV),
+			uint32_t(desc.clamp.desc.MAXV), levels);
 
-		rect.x = effective_u.base;
-		rect.y = effective_v.base;
-		rect.width = std::min<uint32_t>(rect.width, effective_u.extent);
-		rect.height = std::min<uint32_t>(rect.height, effective_v.extent);
-	}
+	rect.x = effective_u.base;
+	rect.y = effective_v.base;
+	rect.width = std::min<uint32_t>(rect.width, effective_u.extent);
+	rect.height = std::min<uint32_t>(rect.height, effective_v.extent);
 
 	return rect;
 }
