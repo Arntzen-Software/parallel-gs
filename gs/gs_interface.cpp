@@ -876,7 +876,23 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 		{
 			// If game is using sprites, it's more likely than not it's doing explicit mip blurs, etc, so cache those.
 			// The main problem we always want to avoid is heavy random triangle soup geometry that does feedback.
-			cache_texture = true;
+
+			// Channel shuffles are special PS2 hacks that abuse the swizzle layout of 16-bit formats.
+			// X coordinate [0, 8) and [8, 15) map to each halve of a 32-bit color word.
+			// This can be used to copy R/G into B/A or vice versa.
+			// If we detect this case, assume it's not a real feedback.
+			// If we don't detect this, it's 20+ RPs per shuffle, which is brutal.
+			bool is_assumed_channel_shuffle = false;
+
+			if (ctx.frame.desc.PSM == PSMCT16 || ctx.frame.desc.PSM == PSMCT16S || ctx.frame.desc.PSM == PSMZ16)
+			{
+				// If all pixels land within the same 8-pixel column, this is a clear channel shuffle case.
+				// Also sanity check that uv_bb is horizontally XOR 8 pixels to be even more safe.
+				if ((bb.x & ~7) == (bb.z & ~7) && (uv_bb.x ^ 8) == bb.x && uv_bb.y == bb.y)
+					is_assumed_channel_shuffle = true;
+			}
+
+			cache_texture = !is_assumed_channel_shuffle;
 		}
 		else if (desc.clamp.desc.WMS == CLAMPBits::REGION_CLAMP && desc.clamp.desc.WMT == CLAMPBits::REGION_CLAMP)
 		{
