@@ -1513,7 +1513,7 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 	if (ctx.tex1.desc.MMAG != 0)
 	{
 		uv_min -= ivec2(1 << (SUBPIXEL_BITS - 1));
-		uv_max += ivec2((1 << SUBPIXEL_BITS) - 1);
+		uv_max += ivec2((1 << (SUBPIXEL_BITS - 1)) - 1);
 	}
 
 	// This can safely become a REGION_CLAMP.
