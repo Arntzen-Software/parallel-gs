@@ -1415,8 +1415,18 @@ void GSInterface::update_color_feedback_state()
 		                               render_pass.is_potential_color_feedback,
 		                               render_pass.is_potential_depth_feedback);
 
-		// Cannot rely on render_pass.z_write fully since this is called before we commit Z-state.
-		bool has_z_write = render_pass.z_write || (state_is_z_sensitive() && ctx.zbuf.desc.ZMSK == 0);
+		bool existing_z_write = render_pass.z_write;
+		if (existing_z_write)
+		{
+			// Only accept existing Z writes in the render pass if we keep appending to it,
+			// i.e. there are no FB pointer changes. Otherwise, we may falsely consider it a feedback.
+			existing_z_write = render_pass.frame.words[0] == ctx.frame.words[0] &&
+			                   render_pass.zbuf.desc.PSM == ctx.zbuf.desc.PSM &&
+			                   render_pass.zbuf.desc.ZBP == ctx.zbuf.desc.ZBP;
+		}
+
+		// Cannot rely on existing_z_write fully since this is called before we commit Z-state.
+		bool has_z_write = existing_z_write || (state_is_z_sensitive() && ctx.zbuf.desc.ZMSK == 0);
 
 		uint32_t tex_write_mask = psm_word_write_mask(tex_psm);
 		uint32_t fb_write_mask = psm_word_write_mask(render_pass.frame.desc.PSM);
