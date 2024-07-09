@@ -1989,19 +1989,18 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	     (priv.smode1.CMOD == SMODE1Bits::CMOD_PROGRESSIVE && !priv.smode2.INT)) &&
 	    priv.smode1.LC == SMODE1Bits::LC_ANALOG)
 	{
-		// Constants from GSdx. Just need to be tweaked so that games look alright.
 		if (overscan)
 		{
 			mode_width = 711;
 			mode_height = 240;
-			scan_offset_x = 498;
+			scan_offset_x = 150;
 			scan_offset_y = 17;
 		}
 		else
 		{
 			mode_width = 640;
 			mode_height = 224;
-			scan_offset_x = 636; // This seems to be what games use.
+			scan_offset_x = 159;
 			scan_offset_y = 25;
 		}
 
@@ -2011,24 +2010,28 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			scan_offset_y *= 2;
 		}
 
-		clock_divider = SMODE1Bits::CLOCK_DIVIDER_ANALOG;
+		clock_divider = priv.smode1.CMOD == SMODE1Bits::CMOD_PROGRESSIVE ?
+		                SMODE1Bits::CLOCK_DIVIDER_COMPONENT : SMODE1Bits::CLOCK_DIVIDER_COMPOSITE;
 		insert_label(cmd, "NTSC, field %u", info.phase);
+		if (priv.smode1.CMOD == SMODE1Bits::CMOD_PROGRESSIVE)
+			insert_label(cmd, "Progressive scan", info.phase);
 	}
 	else if (priv.smode1.CMOD == SMODE1Bits::CMOD_PAL && priv.smode1.LC == SMODE1Bits::LC_ANALOG)
 	{
-		// Constants from GSdx. Just need to be tweaked so that games look alright.
+		// TODO: Does PAL output support progressive scan? I seem to recall PAL PS2s would output NTSC progressive
+		// back in the day, but most TVs supported it ...
 		if (overscan)
 		{
 			mode_width = 711;
 			mode_height = 288;
-			scan_offset_x = 532;
+			scan_offset_x = 133;
 			scan_offset_y = 21;
 		}
 		else
 		{
 			mode_width = 640;
 			mode_height = 256;
-			scan_offset_x = 676;
+			scan_offset_x = 169;
 			scan_offset_y = 36;
 		}
 
@@ -2038,7 +2041,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			scan_offset_y *= 2;
 		}
 
-		clock_divider = SMODE1Bits::CLOCK_DIVIDER_ANALOG;
+		clock_divider = SMODE1Bits::CLOCK_DIVIDER_COMPOSITE;
 		insert_label(cmd, "PAL, field %u", info.phase);
 	}
 	else
@@ -2288,7 +2291,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		if (!is_interlaced)
 			height = (height + 1) & ~1;
 
-		int off_x = (int(priv.display2.DX) - scan_offset_x) / int(clock_divider);
+		int off_x = int(priv.display2.DX) / int(clock_divider) - scan_offset_x;
 		int off_y = ((int(priv.display2.DY) + int(alternative_sampling && !is_interlaced)) >> int(is_interlaced)) - scan_offset_y;
 
 		VkViewport vp = {};
@@ -2310,7 +2313,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 		uint32_t width = (priv.display1.DW + 1) / clock_divider;
 		uint32_t height = (priv.display1.DH + 1 + int(is_interlaced)) >> int(is_interlaced);
-		int off_x = (int(priv.display1.DX) - scan_offset_x) / int(clock_divider);
+		int off_x = int(priv.display1.DX) / int(clock_divider) - scan_offset_x;
 		int off_y = ((int(priv.display1.DY) + int(alternative_sampling && !is_interlaced)) >> int(is_interlaced)) - scan_offset_y;
 
 		if (!is_interlaced)
