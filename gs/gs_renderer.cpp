@@ -2377,6 +2377,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		{
 			// Can fuse bob into any upscaler for best effect.
 			result.phase_offset = info.phase == 0 ? +0.25f : -0.25f;
+			cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, info.dst_layout,
+			                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			                  info.dst_stage, info.dst_access);
 		}
 	}
 	else

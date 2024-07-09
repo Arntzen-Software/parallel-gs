@@ -162,7 +162,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 	void on_device_created(const DeviceCreatedEvent &e)
 	{
 		// We will cycle through many memory contexts per frame most likely.
-		e.get_device().init_frame_contexts(12);
+		// FIXME: Beyond 8, we'll run into race conditions with Granite's temporary hashmap. Just cap to 8 for now.
+		e.get_device().init_frame_contexts(8);
 
 		iface = std::make_unique<GSInterface>();
 
