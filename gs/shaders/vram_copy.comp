@@ -161,25 +161,16 @@ void main()
 		// Find corresponding second nibble within the column so two pixels (nibbles) can be written at once
 		ivec2 coord_hi = coord ^ ivec2(4, 2);
 
-		// If second nibble coord is out of bounds there's no second nibble, so read VRAM byte instead
-		bool single_nibble = coord_hi.x >= transfer.width || coord_hi.y >= transfer.height;
-
-		uint source_data_hi;
-		if (single_nibble)
-			source_data_hi = int(vram8.data[dest_addr >> 1]);
-
 		if (TRANSFER_DIR == HOST_TO_LOCAL)
 		{
 			if (source_addr >= 2 * transfer8.data.length())
 				return;
 
-			int source_data_lo = int(transfer8.data[source_addr >> 1]);
+			uint source_data_lo = uint(transfer8.data[source_addr >> 1]);
 			uint source_addr_hi = coord_hi.y * transfer.width + coord_hi.x;
+			uint source_data_hi = uint(transfer8.data[source_addr_hi >> 1]);
 
-			if (!single_nibble)
-				source_data_hi = int(transfer8.data[source_addr_hi >> 1]);
-
-			if ((source_addr_hi & 0x1u) == 0)
+			if ((source_addr_hi & 1u) == 0)
 				source_data_hi <<= 4;
 			else
 				source_data_lo >>= 4;
@@ -190,26 +181,15 @@ void main()
 		{
 			if (SOURCE_FMT == PSMT4)
 			{
-				if (single_nibble)
-				{
-					uint source_data_lo = uint(transfer8.data[source_addr >> 1]);
-					vram8.data[dest_addr >> 1] = uint8_t(bitfieldInsert(source_data_hi, source_data_lo, 0, 4));
-				}
-				else
-					vram8.data[dest_addr >> 1] = transfer8.data[source_addr >> 1];
+				vram8.data[dest_addr >> 1] = transfer8.data[source_addr >> 1];
 			}
 			else if (SOURCE_FMT == PSMT4HH || SOURCE_FMT == PSMT4HL)
 			{
 				int source_offset = SOURCE_FMT == PSMT4HL ? 24 : 28;
-				int source_data_lo = bitfieldExtract(int(transfer32.data[source_addr]), source_offset, 4);
-
-				if (!single_nibble)
-				{
-					uint pair_addr = swizzle_PS2(coord_hi.x + transfer.source_x, coord_hi.y + transfer.source_y,
-						transfer.source_addr, transfer.source_stride, SOURCE_FMT, VRAM_MASK);
-					source_data_hi = bitfieldExtract(int(transfer32.data[pair_addr]), source_offset, 4) << 4;
-				}
-
+				uint source_data_lo = bitfieldExtract(transfer32.data[source_addr], source_offset, 4);
+				uint pair_addr = swizzle_PS2(coord_hi.x + transfer.source_x, coord_hi.y + transfer.source_y,
+					transfer.source_addr, transfer.source_stride, SOURCE_FMT, VRAM_MASK);
+				uint source_data_hi = bitfieldExtract(int(transfer32.data[pair_addr]), source_offset, 4) << 4;
 				vram8.data[dest_addr >> 1] = uint8_t(bitfieldInsert(source_data_hi, source_data_lo, 0, 4));
 			}
 		}

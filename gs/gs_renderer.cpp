@@ -1250,9 +1250,10 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd, const CopyDescriptor
 	bool is_fused_nibble = desc.bitbltbuf.desc.DPSM == PSMT4;
 
 	// If the address offsets are quirky (i.e., do not align to an 8x8 block),
-	// the fused nibble approach is not going to work.
+	// the fused nibble approach is not going to work (without extremely hackery).
 	// Fallback to atomics in this case to get sub-byte writes.
-	if (is_fused_nibble && ((desc.trxpos.desc.DSAX | desc.trxpos.desc.DSAY) & 7) != 0)
+	if (is_fused_nibble && ((desc.trxpos.desc.DSAX | desc.trxpos.desc.DSAY |
+	                         desc.trxreg.desc.RRW | desc.trxreg.desc.RRH) & 7) != 0)
 		is_fused_nibble = false;
 
 	const uint32_t workgroup_size = is_fused_nibble ? 32 : 64;
