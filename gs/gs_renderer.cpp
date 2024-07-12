@@ -1913,8 +1913,8 @@ GSRenderer::SamplingRect GSRenderer::compute_circuit_rect(const PrivRegisterStat
 	uint32_t MAGH = display.MAGH + 1;
 	uint32_t MAGV = display.MAGV + 1;
 
-	rect.image_extent.width = std::max<uint32_t>(1, DW / MAGH);
-	rect.image_extent.height = std::max<uint32_t>(1, DH / MAGV);
+	rect.image_extent.width = DW / MAGH;
+	rect.image_extent.height = DH / MAGV;
 
 	rect.valid_extent.width = rect.image_extent.width;
 
@@ -2205,9 +2205,13 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		auto rect = compute_circuit_rect(priv, phase, priv.display1, force_progressive);
 		image_info.width = rect.image_extent.width;
 		image_info.height = rect.image_extent.height;
-		circuit1 = device->create_image(image_info);
-		sample_crtc_circuit(cmd, *circuit1, priv.dispfb1, rect);
-		device->set_name(*circuit1, "Circuit1");
+
+		if (image_info.width && image_info.height)
+		{
+			circuit1 = device->create_image(image_info);
+			sample_crtc_circuit(cmd, *circuit1, priv.dispfb1, rect);
+			device->set_name(*circuit1, "Circuit1");
+		}
 	}
 
 	if (EN2)
@@ -2228,9 +2232,13 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		auto rect = compute_circuit_rect(priv, phase, priv.display2, force_progressive);
 		image_info.width = rect.image_extent.width;
 		image_info.height = rect.image_extent.height;
-		circuit2 = device->create_image(image_info);
-		sample_crtc_circuit(cmd, *circuit2, priv.dispfb2, rect);
-		device->set_name(*circuit2, "Circuit2");
+
+		if (image_info.width && image_info.height)
+		{
+			circuit2 = device->create_image(image_info);
+			sample_crtc_circuit(cmd, *circuit2, priv.dispfb2, rect);
+			device->set_name(*circuit2, "Circuit2");
+		}
 	}
 
 	image_info.width = mode_width;
@@ -2295,16 +2303,19 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		int off_x = int(priv.display2.DX) / int(clock_divider) - scan_offset_x;
 		int off_y = ((int(priv.display2.DY) + int(alternative_sampling && !is_interlaced)) >> int(is_interlaced)) - scan_offset_y;
 
-		VkViewport vp = {};
-		vp.x = float(off_x);
-		vp.y = float(off_y);
-		vp.width = float(width);
-		vp.height = float(height);
-		vp.minDepth = 0.0f;
-		vp.maxDepth = 1.0f;
-		cmd.set_viewport(vp);
+		if (width && height)
+		{
+			VkViewport vp = {};
+			vp.x = float(off_x);
+			vp.y = float(off_y);
+			vp.width = float(width);
+			vp.height = float(height);
+			vp.minDepth = 0.0f;
+			vp.maxDepth = 1.0f;
+			cmd.set_viewport(vp);
 
-		cmd.draw(3);
+			cmd.draw(3);
+		}
 	}
 
 	if (circuit1)
@@ -2320,40 +2331,43 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		if (!is_interlaced)
 			height = (height + 1) & ~1;
 
-		VkViewport vp = {};
-		vp.x = float(off_x);
-		vp.y = float(off_y);
-		vp.width = float(width);
-		vp.height = float(height);
-		vp.minDepth = 0.0f;
-		vp.maxDepth = 1.0f;
-		cmd.set_viewport(vp);
-
-		if (MMOD == PMODEBits::MMOD_ALPHA_ALP)
+		if (width && height)
 		{
-			// Constant blend factor blend.
-			if (ALP != 0xff)
+			VkViewport vp = {};
+			vp.x = float(off_x);
+			vp.y = float(off_y);
+			vp.width = float(width);
+			vp.height = float(height);
+			vp.minDepth = 0.0f;
+			vp.maxDepth = 1.0f;
+			cmd.set_viewport(vp);
+
+			if (MMOD == PMODEBits::MMOD_ALPHA_ALP)
 			{
+				// Constant blend factor blend.
+				if (ALP != 0xff)
+				{
+					cmd.set_blend_enable(true);
+					cmd.set_blend_op(VK_BLEND_OP_ADD);
+					cmd.set_blend_factors(VK_BLEND_FACTOR_CONSTANT_ALPHA, VK_BLEND_FACTOR_ONE,
+						VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA, VK_BLEND_FACTOR_ZERO);
+
+					float alp = float(uint32_t(priv.pmode.ALP)) * (1.0f / 255.0f);
+					const float alps[4] = { alp, alp, alp, alp };
+					cmd.set_blend_constants(alps);
+				}
+			}
+			else
+			{
+				// Normal alpha-blend.
 				cmd.set_blend_enable(true);
 				cmd.set_blend_op(VK_BLEND_OP_ADD);
-				cmd.set_blend_factors(VK_BLEND_FACTOR_CONSTANT_ALPHA, VK_BLEND_FACTOR_ONE,
-				                      VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA, VK_BLEND_FACTOR_ZERO);
-
-				float alp = float(uint32_t(priv.pmode.ALP)) * (1.0f / 255.0f);
-				const float alps[4] = { alp, alp, alp, alp };
-				cmd.set_blend_constants(alps);
+				cmd.set_blend_factors(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE,
+					VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ZERO);
 			}
-		}
-		else
-		{
-			// Normal alpha-blend.
-			cmd.set_blend_enable(true);
-			cmd.set_blend_op(VK_BLEND_OP_ADD);
-			cmd.set_blend_factors(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE,
-			                      VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ZERO);
-		}
 
-		cmd.draw(3);
+			cmd.draw(3);
+		}
 	}
 
 	cmd.end_render_pass();
