@@ -10,6 +10,7 @@
 
 #ifdef __cplusplus
 #define INLINE inline
+namespace ParallelGS {
 #else
 #define INLINE
 #endif
@@ -329,8 +330,8 @@ INLINE uint swizzle_PS2(uint x, uint y, uint base_pointer, uint page_stride, uin
 {
 	LocalDataStructure data_structure = get_data_structure(storage_format);
 
-	const uint block_size = BLOCK_ALIGNMENT_BYTES;
-	const uint column_size = BLOCK_ALIGNMENT_BYTES / 4;
+	const uint block_size = PGS_BLOCK_ALIGNMENT_BYTES;
+	const uint column_size = PGS_BLOCK_ALIGNMENT_BYTES / 4;
 
 	uint page_x = x >> data_structure.page_width_log2;
 	uint page_y = y >> data_structure.page_height_log2;
@@ -372,7 +373,7 @@ INLINE uint swizzle_PS2(uint x, uint y, uint base_pointer, uint page_stride, uin
 		uint pixel_index =
 				(pixel_x & 0x1u) | ((pixel_y & 0x1u) << 1) | ((pixel_x & 0x2u) << 1) | ((pixel_x & 0x4u) << 1);
 
-		buffer_index = page_index * PAGE_ALIGNMENT_BYTES + block_index * block_size +
+		buffer_index = page_index * PGS_PAGE_ALIGNMENT_BYTES + block_index * block_size +
 					   column_index * column_size + pixel_index * bytes_per_pixel;
 		buffer_index = (buffer_index & vram_mask) >> 2;
 		break;
@@ -395,7 +396,7 @@ INLINE uint swizzle_PS2(uint x, uint y, uint base_pointer, uint page_stride, uin
 		uint pixel_index =
 				(pixel_x & 0x1u) | ((pixel_y & 0x1u) << 1) | ((pixel_x & 0x2u) << 1) | ((pixel_x & 0x4u) << 1);
 
-		buffer_index = page_index * PAGE_ALIGNMENT_BYTES + block_index * block_size +
+		buffer_index = page_index * PGS_PAGE_ALIGNMENT_BYTES + block_index * block_size +
 					   column_index * column_size + pixel_index * bytes_per_pixel;
 		buffer_index = (buffer_index & vram_mask) >> 2;
 		break;
@@ -414,7 +415,7 @@ INLINE uint swizzle_PS2(uint x, uint y, uint base_pointer, uint page_stride, uin
 		uint pixel_index = ((pixel_x & 0x8u) >> 3) | ((pixel_x & 0x1u) << 1) | ((pixel_y & 0x1u) << 2) |
 						   ((pixel_x & 0x2u) << 2) | ((pixel_x & 0x4u) << 2);
 
-		buffer_index = page_index * PAGE_ALIGNMENT_BYTES +
+		buffer_index = page_index * PGS_PAGE_ALIGNMENT_BYTES +
 					   block_index * block_size + column_index * column_size + pixel_index * bytes_per_pixel;
 		buffer_index = (buffer_index & vram_mask) >> 1;
 		break;
@@ -434,7 +435,7 @@ INLINE uint swizzle_PS2(uint x, uint y, uint base_pointer, uint page_stride, uin
 		uint pixel_index = ((pixel_x & 0x8u) >> 3) | ((pixel_x & 0x1u) << 1) | ((pixel_y & 0x1u) << 2) |
 						   ((pixel_x & 0x2u) << 2) | ((pixel_x & 0x4u) << 2);
 
-		buffer_index = page_index * PAGE_ALIGNMENT_BYTES + block_index * block_size +
+		buffer_index = page_index * PGS_PAGE_ALIGNMENT_BYTES + block_index * block_size +
 					   column_index * column_size + pixel_index * bytes_per_pixel;
 		buffer_index = (buffer_index & vram_mask) >> 1;
 		break;
@@ -453,7 +454,7 @@ INLINE uint swizzle_PS2(uint x, uint y, uint base_pointer, uint page_stride, uin
 		uint pixel_index = ((pixel_x & 0x8u) >> 3) | ((pixel_x & 0x1u) << 1) | ((pixel_y & 0x1u) << 2) |
 						   ((pixel_x & 0x2u) << 2) | ((pixel_x & 0x4u) << 2);
 
-		buffer_index = page_index * PAGE_ALIGNMENT_BYTES +
+		buffer_index = page_index * PGS_PAGE_ALIGNMENT_BYTES +
 					   block_index * block_size + column_index * column_size + pixel_index * bytes_per_pixel;
 		buffer_index = (buffer_index & vram_mask) >> 1;
 		break;
@@ -473,7 +474,7 @@ INLINE uint swizzle_PS2(uint x, uint y, uint base_pointer, uint page_stride, uin
 		uint pixel_index = ((pixel_x & 0x8u) >> 3) | ((pixel_x & 0x1u) << 1) | ((pixel_y & 0x1u) << 2) |
 						   ((pixel_x & 0x2u) << 2) | ((pixel_x & 0x4u) << 2);
 
-		buffer_index = page_index * PAGE_ALIGNMENT_BYTES + block_index * block_size +
+		buffer_index = page_index * PGS_PAGE_ALIGNMENT_BYTES + block_index * block_size +
 					   column_index * column_size + pixel_index * bytes_per_pixel;
 		buffer_index = (buffer_index & vram_mask) >> 1;
 		break;
@@ -492,7 +493,7 @@ INLINE uint swizzle_PS2(uint x, uint y, uint base_pointer, uint page_stride, uin
 						   ((((pixel_x & 0x4u) << 3) ^ ((pixel_y & 0x2u) << 4)) ^ (column_index & 0x1u) << 5);
 
 		buffer_index =
-				page_index * PAGE_ALIGNMENT_BYTES + block_index * block_size +
+				page_index * PGS_PAGE_ALIGNMENT_BYTES + block_index * block_size +
 				column_index * column_size + pixel_index;
 		buffer_index = buffer_index & vram_mask; // Byte address
 		break;
@@ -510,7 +511,7 @@ INLINE uint swizzle_PS2(uint x, uint y, uint base_pointer, uint page_stride, uin
 						   ((pixel_x & 0x1u) << 3) | ((pixel_y & 0x1u) << 4) | ((pixel_x & 0x2u) << 4) |
 						   ((((pixel_x & 0x4u) << 4) ^ ((pixel_y & 0x2u) << 5)) ^ (column_index & 0x1u) << 6);
 
-		buffer_index = ((page_index * PAGE_ALIGNMENT_BYTES + block_index * block_size +
+		buffer_index = ((page_index * PGS_PAGE_ALIGNMENT_BYTES + block_index * block_size +
 						 column_index * column_size) << 1) + pixel_index;
 		buffer_index = buffer_index & ((vram_mask << 1) | 1); // Nibble address
 		break;
@@ -520,4 +521,7 @@ INLINE uint swizzle_PS2(uint x, uint y, uint base_pointer, uint page_stride, uin
 	return buffer_index;
 }
 
+#ifdef __cplusplus
+}
+#endif
 #endif

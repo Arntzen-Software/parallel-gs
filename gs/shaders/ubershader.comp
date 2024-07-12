@@ -121,7 +121,7 @@ TileInfo get_tile_info()
 	TileInfo info;
 
 	ivec2 work_group_id = ivec2(gl_WorkGroupID.yz);
-	ivec2 fb_tile_base = work_group_id * ivec2(FB_SWIZZLE_WIDTH, FB_SWIZZLE_HEIGHT);
+	ivec2 fb_tile_base = work_group_id * ivec2(PGS_FB_SWIZZLE_WIDTH, PGS_FB_SWIZZLE_HEIGHT);
 	ivec2 coarse_tile = fb_tile_base >> constants.coarse_tile_size_log2;
 	int coarse_tile_linear = coarse_tile.y * constants.coarse_fb_width + coarse_tile.x;
 	info.coarse_primitive_list_offset = coarse_tile_linear * constants.coarse_primitive_list_stride;
@@ -234,7 +234,7 @@ TileInfo get_tile_info()
 	info.fb_index = int(swizzle_PS2(
 		info.fb_pixel.x >> SAMPLING_RATE_DIM_LOG2,
 		info.fb_pixel.y >> SAMPLING_RATE_DIM_LOG2,
-		constants.fb_color_page * BLOCKS_PER_PAGE,
+		constants.fb_color_page * PGS_BLOCKS_PER_PAGE,
 		constants.fb_page_stride, FB_FMT, VRAM_MASK));
 
 	if (Z_SENSITIVE)
@@ -242,7 +242,7 @@ TileInfo get_tile_info()
 		info.fb_index_depth = int(swizzle_PS2(
 			info.fb_pixel.x >> SAMPLING_RATE_DIM_LOG2,
 			info.fb_pixel.y >> SAMPLING_RATE_DIM_LOG2,
-			constants.fb_depth_page * BLOCKS_PER_PAGE,
+			constants.fb_depth_page * PGS_BLOCKS_PER_PAGE,
 			constants.fb_page_stride, ZB_FMT, VRAM_MASK));
 	}
 	else

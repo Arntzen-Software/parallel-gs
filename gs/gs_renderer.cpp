@@ -701,7 +701,7 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 		         psm_to_str(desc.tex0.desc.PSM),
 		         desc.rect.width, desc.rect.height,
 		         desc.rect.x, desc.rect.y,
-		         uint32_t(desc.tex0.desc.TBP0) * BLOCK_ALIGNMENT_BYTES,
+		         uint32_t(desc.tex0.desc.TBP0) * PGS_BLOCK_ALIGNMENT_BYTES,
 		         desc.palette_bank,
 		         uint32_t(desc.tex0.desc.CSA),
 		         psm_to_str(uint32_t(desc.tex0.desc.CSM)));
@@ -1289,10 +1289,10 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd, const CopyDescriptor
 		if (desc.trxdir.desc.XDIR == HOST_TO_LOCAL)
 		{
 			insert_label(cmd, "VRAMUpload - 0x%x - %s - %u x %u (stride %u) + (%u, %u)",
-			             desc.bitbltbuf.desc.DBP * BLOCK_ALIGNMENT_BYTES,
+			             desc.bitbltbuf.desc.DBP * PGS_BLOCK_ALIGNMENT_BYTES,
 			             psm_to_str(desc.bitbltbuf.desc.DPSM),
 			             desc.trxreg.desc.RRW, desc.trxreg.desc.RRH,
-			             desc.bitbltbuf.desc.DBW * BUFFER_WIDTH_SCALE,
+			             desc.bitbltbuf.desc.DBW * PGS_BUFFER_WIDTH_SCALE,
 			             desc.trxpos.desc.DSAX, desc.trxpos.desc.DSAY);
 
 			if (desc.host_data_size < desc.host_data_size_required || desc.host_data_size_offset)
@@ -1304,17 +1304,17 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd, const CopyDescriptor
 		else if (desc.trxdir.desc.XDIR == LOCAL_TO_LOCAL)
 		{
 			insert_label(cmd, "LocalCopyDst - 0x%x - %s - %u x %u (stride %u) + (%u, %u)",
-			             desc.bitbltbuf.desc.DBP * BLOCK_ALIGNMENT_BYTES,
+			             desc.bitbltbuf.desc.DBP * PGS_BLOCK_ALIGNMENT_BYTES,
 			             psm_to_str(desc.bitbltbuf.desc.DPSM),
 			             desc.trxreg.desc.RRW, desc.trxreg.desc.RRH,
-			             desc.bitbltbuf.desc.DBW * BUFFER_WIDTH_SCALE,
+			             desc.bitbltbuf.desc.DBW * PGS_BUFFER_WIDTH_SCALE,
 			             desc.trxpos.desc.DSAX, desc.trxpos.desc.DSAY);
 
 			insert_label(cmd, "LocalCopySrc - 0x%x - %s - %u x %u (stride %u) + (%u, %u)",
-			             desc.bitbltbuf.desc.SBP * BLOCK_ALIGNMENT_BYTES,
+			             desc.bitbltbuf.desc.SBP * PGS_BLOCK_ALIGNMENT_BYTES,
 			             psm_to_str(desc.bitbltbuf.desc.SPSM),
 			             desc.trxreg.desc.RRW, desc.trxreg.desc.RRH,
-			             desc.bitbltbuf.desc.SBW * BUFFER_WIDTH_SCALE,
+			             desc.bitbltbuf.desc.SBW * PGS_BUFFER_WIDTH_SCALE,
 			             desc.trxpos.desc.SSAX, desc.trxpos.desc.SSAY);
 		}
 	}
@@ -1417,9 +1417,9 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 		             rp.base_x, rp.base_y,
 		             1u << rp.coarse_tile_size_log2,
 		             1u << rp.coarse_tile_size_log2,
-		             rp.fb.frame.desc.FBP * PAGE_ALIGNMENT_BYTES,
+		             rp.fb.frame.desc.FBP * PGS_PAGE_ALIGNMENT_BYTES,
 		             psm_to_str(rp.fb.frame.desc.PSM),
-		             (rp.z_sensitive ? rp.fb.z.desc.ZBP * PAGE_ALIGNMENT_BYTES : ~0u),
+		             (rp.z_sensitive ? rp.fb.z.desc.ZBP * PGS_PAGE_ALIGNMENT_BYTES : ~0u),
 		             psm_to_str(depth_psm),
 		             reason_to_str(rp.flush_reason));
 
@@ -1565,9 +1565,9 @@ void GSRenderer::upload_texture(const TextureDescriptor &desc, const Vulkan::Ima
 		{
 			insert_label(cmd,
 			             "Cache mip %u - 0x%x - %s - %u x %u (stride %u) + (%u, %u) - CPSM %s - CSA %u - bank %u / %u - %016llx",
-			             level, info.addr_block * BLOCK_ALIGNMENT_BYTES,
+			             level, info.addr_block * PGS_BLOCK_ALIGNMENT_BYTES,
 			             psm_to_str(uint32_t(desc.tex0.desc.PSM)),
-			             info.width, info.height, info.stride_block * BUFFER_WIDTH_SCALE,
+			             info.width, info.height, info.stride_block * PGS_BUFFER_WIDTH_SCALE,
 			             info.off_x, info.off_y,
 			             psm_to_str(uint32_t(desc.tex0.desc.CPSM)),
 			             uint32_t(desc.tex0.desc.CSA),
@@ -1749,7 +1749,7 @@ void GSRenderer::flush_palette_upload()
 			auto &upload = palette_uploads[i];
 			insert_label(cmd, "Bank %u - 0x%x - %s - %u colors - CSA %u - CSM %u - COU/V %u, %u",
 			             uint32_t(base_clut_instance + 1 + i) % CLUTInstances,
-			             uint32_t(upload.tex0.desc.CBP) * BLOCK_ALIGNMENT_BYTES,
+			             uint32_t(upload.tex0.desc.CBP) * PGS_BLOCK_ALIGNMENT_BYTES,
 			             psm_to_str(uint32_t(upload.tex0.desc.CPSM)),
 			             ((uint32_t(upload.tex0.desc.PSM) == PSMT8 ||
 			               uint32_t(upload.tex0.desc.PSM) == PSMT8H) ? 256 : 16),
@@ -2108,7 +2108,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 		insert_label(cmd,
 		             "EXTBUF: 0x%x - stride %u - EMODA %u - EMODC %u - FBIN %u - WDX/Y %u, %u - WFFMD %u",
-		             priv.extbuf.EXBP * PAGE_ALIGNMENT_BYTES,
+		             priv.extbuf.EXBP * PGS_PAGE_ALIGNMENT_BYTES,
 		             priv.extbuf.EXBW,
 		             priv.extbuf.EMODA,
 		             priv.extbuf.EMODC,
@@ -2193,9 +2193,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		{
 			insert_label(cmd,
 			             "EN1: 0x%x - %s - stride %u - DBX/Y %u, %u - DX/Y %u, %u - DW/H %u, %u - MAGH/V %u, %u",
-			             priv.dispfb1.FBP * PAGE_ALIGNMENT_BYTES,
+			             priv.dispfb1.FBP * PGS_PAGE_ALIGNMENT_BYTES,
 			             psm_to_str(priv.dispfb1.PSM),
-			             priv.dispfb1.FBW * BUFFER_WIDTH_SCALE,
+			             priv.dispfb1.FBW * PGS_BUFFER_WIDTH_SCALE,
 			             priv.dispfb1.DBX, priv.dispfb1.DBY,
 			             priv.display1.DX, priv.display1.DY,
 			             priv.display1.DW, priv.display1.DH,
@@ -2216,9 +2216,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		{
 			insert_label(cmd,
 			             "EN2: 0x%x - %s - stride %u - DBX/Y %u, %u - DX/Y %u, %u - DW/H %u, %u - MAGH/V %u, %u",
-			             priv.dispfb2.FBP * PAGE_ALIGNMENT_BYTES,
+			             priv.dispfb2.FBP * PGS_PAGE_ALIGNMENT_BYTES,
 			             psm_to_str(priv.dispfb2.PSM),
-			             priv.dispfb2.FBW * BUFFER_WIDTH_SCALE,
+			             priv.dispfb2.FBW * PGS_BUFFER_WIDTH_SCALE,
 			             priv.dispfb2.DBX, priv.dispfb2.DBY,
 			             priv.display2.DX, priv.display2.DY,
 			             priv.display2.DW, priv.display2.DH,

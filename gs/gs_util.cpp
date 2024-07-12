@@ -41,10 +41,10 @@ void compute_has_potential_feedback(const TEX0Bits &tex0,
 	uint32_t height = 1u << uint32_t(tex0.TH);
 
 	auto base_block = uint32_t(tex0.TBP0);
-	uint32_t base_page = base_block / BLOCKS_PER_PAGE;
+	uint32_t base_page = base_block / PGS_BLOCKS_PER_PAGE;
 
-	uint32_t fb_base_block = fb_base_page * BLOCKS_PER_PAGE;
-	uint32_t z_base_block = z_base_page * BLOCKS_PER_PAGE;
+	uint32_t fb_base_block = fb_base_page * PGS_BLOCKS_PER_PAGE;
+	uint32_t z_base_block = z_base_page * PGS_BLOCKS_PER_PAGE;
 
 	// Consider wrap-around in VRAM. Not 100% sure if PS2 does that, but assume it does.
 	if (fb_base_block < base_block)
@@ -57,7 +57,7 @@ void compute_has_potential_feedback(const TEX0Bits &tex0,
 	uint32_t last_page = base_page + last_page_x + last_page_y * page_stride;
 	// Consider misalignment in the page, which could cause straddle.
 	// Don't care too much about accuracy here since it's not necessary.
-	if (base_block % BLOCKS_PER_PAGE)
+	if (base_block % PGS_BLOCKS_PER_PAGE)
 		last_page++;
 
 	color_feedback = last_page >= fb_base_page;

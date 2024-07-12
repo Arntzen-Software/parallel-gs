@@ -146,7 +146,7 @@ void GSDumpGenerator::write_image_upload(uint32_t addr, uint32_t fmt,
 	BITBLTBUFBits bitblt = {};
 	bitblt.DPSM = fmt;
 	bitblt.SPSM = fmt;
-	bitblt.DBP = addr / BLOCK_ALIGNMENT_BYTES;
+	bitblt.DBP = addr / PGS_BLOCK_ALIGNMENT_BYTES;
 	bitblt.DBW = width / 64;
 
 	write_register(RegisterAddr::BITBLTBUF, bitblt);

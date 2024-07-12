@@ -32,10 +32,10 @@ static void write_point_primitive(GSDumpGenerator &iface, int x0, int y0)
 
 	vertices[1].rgbaq.R = 0xff;
 
-	vertices[0].xyz.X = x0 << SUBPIXEL_BITS;
-	vertices[0].xyz.Y = y0 << SUBPIXEL_BITS;
-	vertices[1].xyz.X = (x0 << SUBPIXEL_BITS) + 9;
-	vertices[1].xyz.Y = (y0 << SUBPIXEL_BITS) + 9;
+	vertices[0].xyz.X = x0 << PGS_SUBPIXEL_BITS;
+	vertices[0].xyz.Y = y0 << PGS_SUBPIXEL_BITS;
+	vertices[1].xyz.X = (x0 << PGS_SUBPIXEL_BITS) + 9;
+	vertices[1].xyz.Y = (y0 << PGS_SUBPIXEL_BITS) + 9;
 
 	PRIMBits prim = {};
 	prim.TME = 1;
@@ -69,10 +69,10 @@ static void write_sprite_primitive(GSDumpGenerator &iface, int x0, int y0, int x
 		vert.rgbaq.A = 0xff;
 	}
 
-	vertices[0].xyz.X = x0 << SUBPIXEL_BITS;
-	vertices[0].xyz.Y = y0 << SUBPIXEL_BITS;
-	vertices[1].xyz.X = x1 << SUBPIXEL_BITS;
-	vertices[1].xyz.Y = y1 << SUBPIXEL_BITS;
+	vertices[0].xyz.X = x0 << PGS_SUBPIXEL_BITS;
+	vertices[0].xyz.Y = y0 << PGS_SUBPIXEL_BITS;
+	vertices[1].xyz.X = x1 << PGS_SUBPIXEL_BITS;
+	vertices[1].xyz.Y = y1 << PGS_SUBPIXEL_BITS;
 
 	//vertices[1].rgbaq.R = 0;
 
@@ -115,10 +115,10 @@ static void write_line_primitive(GSDumpGenerator &iface, int x0, int y0, int x1,
 		vert.rgbaq.A = 0x80;
 	}
 
-	vertices[0].xyz.X = x0 << SUBPIXEL_BITS;
-	vertices[0].xyz.Y = y0 << SUBPIXEL_BITS;
-	vertices[1].xyz.X = x1 << SUBPIXEL_BITS;
-	vertices[1].xyz.Y = y1 << SUBPIXEL_BITS;
+	vertices[0].xyz.X = x0 << PGS_SUBPIXEL_BITS;
+	vertices[0].xyz.Y = y0 << PGS_SUBPIXEL_BITS;
+	vertices[1].xyz.X = x1 << PGS_SUBPIXEL_BITS;
+	vertices[1].xyz.Y = y1 << PGS_SUBPIXEL_BITS;
 
 	vertices[0].xyz.X -= 7;
 	vertices[0].xyz.Y -= 7;
@@ -179,12 +179,12 @@ static void write_quad_primitive(GSDumpGenerator &iface, int x0, int y0, int x1,
 	vertices[2].st.T = 1.0f;
 	vertices[2].st.Q = 0.5f;
 
-	vertices[0].xyz.X = x0 << SUBPIXEL_BITS;
-	vertices[0].xyz.Y = y0 << SUBPIXEL_BITS;
-	vertices[1].xyz.X = x1 << SUBPIXEL_BITS;
-	vertices[1].xyz.Y = y0 << SUBPIXEL_BITS;
-	vertices[2].xyz.X = x0 << SUBPIXEL_BITS;
-	vertices[2].xyz.Y = y1 << SUBPIXEL_BITS;
+	vertices[0].xyz.X = x0 << PGS_SUBPIXEL_BITS;
+	vertices[0].xyz.Y = y0 << PGS_SUBPIXEL_BITS;
+	vertices[1].xyz.X = x1 << PGS_SUBPIXEL_BITS;
+	vertices[1].xyz.Y = y0 << PGS_SUBPIXEL_BITS;
+	vertices[2].xyz.X = x0 << PGS_SUBPIXEL_BITS;
+	vertices[2].xyz.Y = y1 << PGS_SUBPIXEL_BITS;
 
 	if (is_fg)
 	{
@@ -249,7 +249,7 @@ static void setup_frame_buffer(GSDumpGenerator &iface)
 
 	ZBUFBits zbuf = {};
 	zbuf.ZMSK = 0;
-	zbuf.ZBP = 0x100000 / PAGE_ALIGNMENT_BYTES;
+	zbuf.ZBP = 0x100000 / PGS_PAGE_ALIGNMENT_BYTES;
 	iface.write_register(RegisterAddr::ZBUF_1, zbuf);
 
 	SCISSORBits scissor = {};
@@ -290,7 +290,7 @@ static void upload_palettes(GSDumpGenerator &iface)
 	};
 
 	iface.write_image_upload(PALETTE_ADDR, PSMCT16, 8, 2, texture, sizeof(texture));
-	iface.write_image_upload(PALETTE_ADDR + BLOCK_ALIGNMENT_BYTES, PSMCT16, 8, 2, texture1, sizeof(texture1));
+	iface.write_image_upload(PALETTE_ADDR + PGS_BLOCK_ALIGNMENT_BYTES, PSMCT16, 8, 2, texture1, sizeof(texture1));
 }
 
 static void run_test(GSDumpGenerator &iface)
@@ -313,7 +313,7 @@ static void run_test(GSDumpGenerator &iface)
 	iface.write_register(RegisterAddr::TEXFLUSH, uint64_t(0));
 
 	TEX0Bits tex0 = {};
-	tex0.TBP0 = TEXTURE_ADDR / BLOCK_ALIGNMENT_BYTES;
+	tex0.TBP0 = TEXTURE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
 	tex0.TBW = 8 / 64;
 	tex0.PSM = PSMT8;
 	tex0.TW = 3;
@@ -325,16 +325,16 @@ static void run_test(GSDumpGenerator &iface)
 	tex0.CLD = 1;
 
 	tex0.CSA = 0;
-	tex0.CBP = PALETTE_ADDR / BLOCK_ALIGNMENT_BYTES;
+	tex0.CBP = PALETTE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
 	iface.write_register(RegisterAddr::TEX0_1, tex0);
 
 	tex0.CSA = 1;
-	tex0.CBP = (PALETTE_ADDR + BLOCK_ALIGNMENT_BYTES) / BLOCK_ALIGNMENT_BYTES;
+	tex0.CBP = (PALETTE_ADDR + PGS_BLOCK_ALIGNMENT_BYTES) / PGS_BLOCK_ALIGNMENT_BYTES;
 	iface.write_register(RegisterAddr::TEX0_1, tex0);
 
 	tex0.CLD = 0;
 	tex0.CSA = 0;
-	tex0.CBP = PALETTE_ADDR / BLOCK_ALIGNMENT_BYTES;
+	tex0.CBP = PALETTE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
 	iface.write_register(RegisterAddr::TEX0_1, tex0);
 
 #if 0

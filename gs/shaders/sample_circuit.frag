@@ -43,7 +43,7 @@ void main()
     uvec2 coord = uvec2(gl_FragCoord.xy) * uvec2(1u, registers.phase_stride) +
         uvec2(registers.dbx, registers.dby + registers.phase);
 
-    uint addr = swizzle_PS2(coord.x, coord.y, registers.fbp * BLOCKS_PER_PAGE, registers.fbw, PSM, VRAM_MASK);
+    uint addr = swizzle_PS2(coord.x, coord.y, registers.fbp * PGS_BLOCKS_PER_PAGE, registers.fbw, PSM, VRAM_MASK);
 
     uint payload = 0;
 

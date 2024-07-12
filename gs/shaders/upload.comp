@@ -59,17 +59,17 @@ const bool is_tex_16bit = TEXTURE_FMT == PSMCT16 || TEXTURE_FMT == PSMCT16S ||
 const bool is_tex_8bit = TEXTURE_FMT == PSMT8;
 const bool is_clut_16bit = CLUT_FMT == PSMCT16 || CLUT_FMT == PSMCT16S;
 
-const uint CLUT_SIZE_16 = CLUT_SIZE / 2;
+const uint PGS_CLUT_SIZE_16 = PGS_CLUT_SIZE / 2;
 
 uint wrap_clut(uint index)
 {
-	return index & (CLUT_SIZE_16 - 1);
+	return index & (PGS_CLUT_SIZE_16 - 1);
 }
 
 uint get_clut_color(uint index, uint offset)
 {
 	uint buffer_index = wrap_clut(offset * 16 + index);
-	uint instance_offset = registers.instance * CLUT_SIZE_16;
+	uint instance_offset = registers.instance * PGS_CLUT_SIZE_16;
 	uint col;
 
 	if (is_clut_16bit)

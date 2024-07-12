@@ -34,8 +34,8 @@ bool triangle_setup_intersects_tile(ivec3 a, ivec3 b, ivec3 c, ivec4 bb)
 
 	if (intersects_quad)
 	{
-		lo = lo << RASTER_SUBSAMPLE_BITS;
-		hi = (hi << RASTER_SUBSAMPLE_BITS) | ((1 << RASTER_SUBSAMPLE_BITS) - 1);
+		lo = lo << PGS_RASTER_SUBSAMPLE_BITS;
+		hi = (hi << PGS_RASTER_SUBSAMPLE_BITS) | ((1 << PGS_RASTER_SUBSAMPLE_BITS) - 1);
 
 		// Try to intersect overlapped area conservatively.
 		ivec2 optimal_a = mix(lo, hi, greaterThanEqual(a.xy, ivec2(0)));
@@ -80,15 +80,15 @@ ivec4 pack_bounding_box(ivec2 a, ivec2 b, ivec2 c, ivec2 d, bool multisample, in
 	// If multisampling snap to previous whole pixel, otherwise snap lo to next whole pixel.
 	// Ignore for higher sampling rates since multisampling on top of super-sampling is just silly.
 	if (multisample && sample_rate_log2 == 0)
-		lo >>= SUBPIXEL_BITS;
+		lo >>= PGS_SUBPIXEL_BITS;
 	else
-		lo = (lo + ((SUBPIXELS - 1) >> sample_rate_log2)) >> SUBPIXEL_BITS;
+		lo = (lo + ((PGS_SUBPIXELS - 1) >> sample_rate_log2)) >> PGS_SUBPIXEL_BITS;
 
 	// Top-left rule. Bottom/right pixels can never generate coverage.
 	hi -= 1;
 
 	// Snap hi to previous whole pixel.
-	hi >>= SUBPIXEL_BITS;
+	hi >>= PGS_SUBPIXEL_BITS;
 
 	return ivec4(lo, hi);
 }
@@ -113,7 +113,7 @@ bool evaluate_multi_coverage_single(PrimitiveSetup setup, bool parallelogram, iv
 vec2 evaluate_barycentric_ij(ivec3 setup_b, ivec3 setup_c, float inv_area,
                              float error_i, float error_j, ivec2 coord, int sample_rate_log2)
 {
-	ivec2 sample_coord = coord << (RASTER_SUBSAMPLE_BITS - sample_rate_log2);
+	ivec2 sample_coord = coord << (PGS_RASTER_SUBSAMPLE_BITS - sample_rate_log2);
 	int b = idot3(setup_b, sample_coord);
 	int c = idot3(setup_c, sample_coord);
 	precise float i = float(b) * inv_area + error_i;
@@ -155,7 +155,7 @@ int evaluate_coverage(PrimitiveSetup setup, ivec2 coord, out float i, out float 
 	int parallelogram_c_offset = int(bitfieldExtract(uint(setup.a.x), 4, 2)) - 1;
 	setup.a.x >>= 6;
 
-	ivec2 sample_coord = coord << (RASTER_SUBSAMPLE_BITS - sample_rate_log2);
+	ivec2 sample_coord = coord << (PGS_RASTER_SUBSAMPLE_BITS - sample_rate_log2);
 	ivec2 offset = ivec2(parallelogram_b_offset, parallelogram_c_offset);
 
 	int coverage_count = 0;

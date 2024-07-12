@@ -40,17 +40,17 @@ layout(push_constant) uniform Registers
 
 shared uint tmp_clut[512];
 
-const uint CLUT_SIZE_16 = CLUT_SIZE / 2;
+const uint PGS_CLUT_SIZE_16 = PGS_CLUT_SIZE / 2;
 
 uint wrap_clut(uint index)
 {
-	return index & (CLUT_SIZE_16 - 1);
+	return index & (PGS_CLUT_SIZE_16 - 1);
 }
 
 void main()
 {
 	// Copy from previous instance to allow a CLUT entry to be partially overwritten and used later
-	uint read_index = registers.read_index * CLUT_SIZE_16;
+	uint read_index = registers.read_index * PGS_CLUT_SIZE_16;
 	tmp_clut[gl_LocalInvocationIndex] = uint(clut16.data[read_index]);
 	tmp_clut[gl_LocalInvocationIndex + 256u] = uint(clut16.data[read_index + 256u]);
 	barrier();
@@ -101,9 +101,9 @@ void main()
 
 		// Flush current CLUT state.
 		barrier();
-		clut16.data[gl_LocalInvocationIndex + clut.instance * CLUT_SIZE_16] =
+		clut16.data[gl_LocalInvocationIndex + clut.instance * PGS_CLUT_SIZE_16] =
 			uint16_t(tmp_clut[gl_LocalInvocationIndex]);
-		clut16.data[gl_LocalInvocationIndex + clut.instance * CLUT_SIZE_16 + 256u] =
+		clut16.data[gl_LocalInvocationIndex + clut.instance * PGS_CLUT_SIZE_16 + 256u] =
 			uint16_t(tmp_clut[gl_LocalInvocationIndex + 256u]);
 		barrier();
 	}

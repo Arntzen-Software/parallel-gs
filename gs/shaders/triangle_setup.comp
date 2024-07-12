@@ -42,8 +42,8 @@ bool tie_break_rule(ivec2 edge)
 
 int shift_int64_subpixels(ivec2 c)
 {
-    int msb = c.y << (32 - SUBPIXEL_RASTER_BITS);
-    int lsb = int(uint(c.x) >> SUBPIXEL_RASTER_BITS);
+    int msb = c.y << (32 - PGS_SUBPIXEL_RASTER_BITS);
+    int lsb = int(uint(c.x) >> PGS_SUBPIXEL_RASTER_BITS);
     return msb | lsb;
 }
 
@@ -158,7 +158,7 @@ void main_inner(uint index)
             // Horiz major. Ensure area is positive so we don't have to deal with reordering.
             // Make sure the width is exactly 1 pixel, and tie-break rules ensure we only get one pixel
             // hit. This emulates Bresenham rather well.
-            int y_delta = -sign(ab.x) << (SUBPIXEL_BITS - 1);
+            int y_delta = -sign(ab.x) << (PGS_SUBPIXEL_BITS - 1);
             c.x = a.x;
             c.y = a.y + y_delta;
             a.y -= y_delta;
@@ -167,7 +167,7 @@ void main_inner(uint index)
         else
         {
             // Vert major. Ensure area is positive so we don't have to deal with reordering.
-            int x_delta = sign(ab.y) << (SUBPIXEL_BITS - 1);
+            int x_delta = sign(ab.y) << (PGS_SUBPIXEL_BITS - 1);
             c.x = a.x + x_delta;
             c.y = a.y;
             a.x -= x_delta;
@@ -230,9 +230,9 @@ void main_inner(uint index)
     constant_b = sub64(constant_b, ivec2(error_b, 0));
     constant_c = sub64(constant_c, ivec2(error_c, 0));
 
-    error_a += constant_a.x & (SUBPIXELS_RASTER - 1);
-    error_b += constant_b.x & (SUBPIXELS_RASTER - 1);
-    error_c += constant_c.x & (SUBPIXELS_RASTER - 1);
+    error_a += constant_a.x & (PGS_SUBPIXELS_RASTER - 1);
+    error_b += constant_b.x & (PGS_SUBPIXELS_RASTER - 1);
+    error_c += constant_c.x & (PGS_SUBPIXELS_RASTER - 1);
 
     int error_flip_b = 0;
     int error_flip_c = 0;
@@ -241,14 +241,14 @@ void main_inner(uint index)
         int tie_break_offset = 1 - int(tie_break_b) - int(tie_break_c);
         error_flip_b = tie_break_offset + error_b + error_a;
         error_flip_c = tie_break_offset + error_c + error_a;
-        error_flip_b += SUBPIXELS_RASTER; // Ensure positive result. Compensate in raster.
-        error_flip_c += SUBPIXELS_RASTER; // Ensure positive result. Compensate in raster.
-        error_flip_b >>= SUBPIXEL_RASTER_BITS;
-        error_flip_c >>= SUBPIXEL_RASTER_BITS;
+        error_flip_b += PGS_SUBPIXELS_RASTER; // Ensure positive result. Compensate in raster.
+        error_flip_c += PGS_SUBPIXELS_RASTER; // Ensure positive result. Compensate in raster.
+        error_flip_b >>= PGS_SUBPIXEL_RASTER_BITS;
+        error_flip_c >>= PGS_SUBPIXEL_RASTER_BITS;
     }
 
     float inv_area = rcp_fixed(area);
-    precise float inv_area_scaled = inv_area * float(SUBPIXELS_RASTER);
+    precise float inv_area_scaled = inv_area * float(PGS_SUBPIXELS_RASTER);
     precise float error_i = float(error_b) * inv_area;
     precise float error_j = float(error_c) * inv_area;
 

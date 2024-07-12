@@ -94,8 +94,8 @@ void GSInterface::flush_render_pass(FlushReason reason)
 		rp.num_textures = render_pass.tex_infos.size();
 
 		// Somewhat arbitrary. Try to balance binning load.
-		uint32_t tile_width = ((render_pass.bb.z - render_pass.bb.x) >> FB_SWIZZLE_WIDTH_LOG2) + 1;
-		uint32_t tile_height = ((render_pass.bb.w - render_pass.bb.y) >> FB_SWIZZLE_HEIGHT_LOG2) + 1;
+		uint32_t tile_width = ((render_pass.bb.z - render_pass.bb.x) >> PGS_FB_SWIZZLE_WIDTH_LOG2) + 1;
+		uint32_t tile_height = ((render_pass.bb.w - render_pass.bb.y) >> PGS_FB_SWIZZLE_HEIGHT_LOG2) + 1;
 		uint32_t binning_cost = tile_width * tile_height * rp.num_primitives;
 		if (binning_cost < 10 * 1000)
 			rp.coarse_tile_size_log2 = 3;
@@ -715,12 +715,12 @@ void GSInterface::update_texture_page_rects_and_read()
 		{
 			assert(tex.rect.levels == 1);
 			auto &rect = tex.page_rects[level];
-			auto tex_base_page = uint32_t(ctx.tex0.desc.TBP0) / BLOCKS_PER_PAGE;
+			auto tex_base_page = uint32_t(ctx.tex0.desc.TBP0) / PGS_BLOCKS_PER_PAGE;
 
 			// Clamp the hazard region so we don't falsely invalidate the texture.
 			rect = {};
 			rect.base_page = tex_base_page;
-			rect.page_width = vram_size / PAGE_ALIGNMENT_BYTES;
+			rect.page_width = vram_size / PGS_PAGE_ALIGNMENT_BYTES;
 			rect.page_height = 1;
 			rect.page_stride = 0;
 			rect.block_mask = UINT32_MAX;
@@ -730,7 +730,7 @@ void GSInterface::update_texture_page_rects_and_read()
 			{
 				uint32_t fb_base_page = ctx.frame.desc.FBP;
 				if (fb_base_page <= tex_base_page)
-					fb_base_page += vram_size / PAGE_ALIGNMENT_BYTES;
+					fb_base_page += vram_size / PGS_PAGE_ALIGNMENT_BYTES;
 				rect.page_width = std::min<uint32_t>(rect.page_width, fb_base_page - tex_base_page);
 			}
 
@@ -738,7 +738,7 @@ void GSInterface::update_texture_page_rects_and_read()
 			{
 				uint32_t z_base_page = ctx.zbuf.desc.ZBP;
 				if (z_base_page <= tex_base_page)
-					z_base_page += vram_size / PAGE_ALIGNMENT_BYTES;
+					z_base_page += vram_size / PGS_PAGE_ALIGNMENT_BYTES;
 				rect.page_width = std::min<uint32_t>(rect.page_width, z_base_page - tex_base_page);
 			}
 		}
@@ -1380,7 +1380,7 @@ void GSInterface::update_color_feedback_state()
 		return;
 
 	auto tex_psm = uint32_t(ctx.tex0.desc.PSM);
-	const bool equal_address = uint32_t(ctx.tex0.desc.TBP0) == ctx.frame.desc.FBP * BLOCKS_PER_PAGE;
+	const bool equal_address = uint32_t(ctx.tex0.desc.TBP0) == ctx.frame.desc.FBP * PGS_BLOCKS_PER_PAGE;
 
 	if (equal_address)
 	{
@@ -1411,7 +1411,7 @@ void GSInterface::update_color_feedback_state()
 		// This will break if game actually intended to sample like this, but it seems extremely unlikely in practice.
 
 		compute_has_potential_feedback(ctx.tex0.desc, ctx.frame.desc.FBP, ctx.zbuf.desc.ZBP,
-		                               vram_size / PAGE_ALIGNMENT_BYTES,
+		                               vram_size / PGS_PAGE_ALIGNMENT_BYTES,
 		                               render_pass.is_potential_color_feedback,
 		                               render_pass.is_potential_depth_feedback);
 
@@ -1445,7 +1445,7 @@ void GSInterface::update_color_feedback_state()
 	uint32_t width = 1u << uint32_t(ctx.tex0.desc.TW);
 
 	// Ensures that image covers entire frame buffer.
-	if (ctx.frame.desc.FBW * BUFFER_WIDTH_SCALE > width)
+	if (ctx.frame.desc.FBW * PGS_BUFFER_WIDTH_SCALE > width)
 		return;
 
 	// If we're in feedback, we have to recheck state every draw. We expect that anyway
@@ -1512,12 +1512,12 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 	// Consider linear filtering if using that. Expand the BB appropriately.
 	if (ctx.tex1.desc.MMAG != 0)
 	{
-		uv_min -= ivec2(1 << (SUBPIXEL_BITS - 1));
-		uv_max += ivec2((1 << (SUBPIXEL_BITS - 1)) - 1);
+		uv_min -= ivec2(1 << (PGS_SUBPIXEL_BITS - 1));
+		uv_max += ivec2((1 << (PGS_SUBPIXEL_BITS - 1)) - 1);
 	}
 
 	// This can safely become a REGION_CLAMP.
-	uv_bb = ivec4(uv_min, uv_max) >> SUBPIXEL_BITS;
+	uv_bb = ivec4(uv_min, uv_max) >> PGS_SUBPIXEL_BITS;
 
 	// Check if we're sampling outside the texture's range. In this case we get clamp or repeat,
 	// and we cannot assume 1:1 pixel mapping.
@@ -1563,14 +1563,14 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 	if (ctx.tex1.desc.MMAG == TEX1Bits::LINEAR)
 	{
 		// Must land on pixel center for LINEAR to work.
-		if (min_delta2 != (1 << (SUBPIXEL_BITS - 1)) || max_delta2 != (1 << (SUBPIXEL_BITS - 1)))
+		if (min_delta2 != (1 << (PGS_SUBPIXEL_BITS - 1)) || max_delta2 != (1 << (PGS_SUBPIXEL_BITS - 1)))
 			return ColorFeedbackMode::Sliced;
 	}
 	else
 	{
 		// The UV offset must be in range of [0, 2^SUBPIXEL_BITS - 1]. This guarantees snapping with NEAREST.
 		// 8 is ideal. That means pixel centers during interpolation will land exactly in the center of the texel.
-		if (min_delta2 < 0 || max_delta2 >= (1 << SUBPIXEL_BITS))
+		if (min_delta2 < 0 || max_delta2 >= (1 << PGS_SUBPIXEL_BITS))
 			return ColorFeedbackMode::Sliced;
 	}
 
@@ -1595,12 +1595,12 @@ void GSInterface::drawing_kick_append()
 		pos[0] = vertex_queue.pos[vertex_queue.count - 1];
 		attr[0] = vertex_queue.attr[vertex_queue.count - 1];
 
-		pos[0].pos.x -= off_x + (1 << (SUBPIXEL_BITS - 1));
-		pos[0].pos.y -= off_y + (1 << (SUBPIXEL_BITS - 1));
+		pos[0].pos.x -= off_x + (1 << (PGS_SUBPIXEL_BITS - 1));
+		pos[0].pos.y -= off_y + (1 << (PGS_SUBPIXEL_BITS - 1));
 
 		pos[1] = pos[0];
-		pos[1].pos.x += 1 << SUBPIXEL_BITS;
-		pos[1].pos.y += 1 << SUBPIXEL_BITS;
+		pos[1].pos.x += 1 << PGS_SUBPIXEL_BITS;
+		pos[1].pos.y += 1 << PGS_SUBPIXEL_BITS;
 	}
 	else if (num_vertices == 2)
 	{
@@ -1638,10 +1638,10 @@ void GSInterface::drawing_kick_append()
 	hi_pos -= 1;
 	// Tighten the bounding box according to top-left raster rules.
 	if (quad || !registers.prim.desc.AA1)
-		lo_pos += (1 << int(SUBPIXEL_BITS - sampling_rate_y_log2)) - 1;
+		lo_pos += (1 << int(PGS_SUBPIXEL_BITS - sampling_rate_y_log2)) - 1;
 
-	lo_pos >>= int(SUBPIXEL_BITS);
-	hi_pos >>= int(SUBPIXEL_BITS);
+	lo_pos >>= int(PGS_SUBPIXEL_BITS);
+	hi_pos >>= int(PGS_SUBPIXEL_BITS);
 
 	if (is_line)
 	{
@@ -1655,7 +1655,7 @@ void GSInterface::drawing_kick_append()
 	hi_pos = muglm::min(hi_pos, sci_hi);
 
 	// TODO: separate state update for scissor update.
-	hi_pos.x = std::min<int>(hi_pos.x, int(ctx.frame.desc.FBW * BUFFER_WIDTH_SCALE) - 1);
+	hi_pos.x = std::min<int>(hi_pos.x, int(ctx.frame.desc.FBW * PGS_BUFFER_WIDTH_SCALE) - 1);
 	ivec4 bb = ivec4(lo_pos, hi_pos);
 
 	// Check for degenerate BB. Can happen if primitive is clipped away completely by scissor.
