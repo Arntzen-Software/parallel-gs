@@ -613,8 +613,8 @@ static Extent1D compute_effective_texture_extent(uint32_t extent, uint32_t wrap_
 		}
 		else
 		{
-			uint32_t msk_msb = 31 - leading_zeroes(msk);
-			uint32_t fix_lsb = trailing_zeroes(fix);
+			uint32_t msk_msb = 31 - Util::leading_zeroes(msk);
+			uint32_t fix_lsb = Util::trailing_zeroes(fix);
 
 			// If LSB > MSB, we can rewrite (x & A) | B -> (x & A) + B.
 			if (fix_lsb > msk_msb)
