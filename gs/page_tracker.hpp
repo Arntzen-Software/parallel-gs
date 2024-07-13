@@ -32,12 +32,10 @@ enum PageStateFlagBits : uint32_t
 	PAGE_STATE_FB_WRITE_BIT = 1 << 0,
 	PAGE_STATE_FB_READ_BIT = 1 << 1,
 
-	PAGE_STATE_FLUSH_FB_ON_CACHED_READ_BIT = 1 << 2,
-
 	// On mark submission, page will get updated host read timeline.
-	PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT = 1 << 3,
+	PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT = 1 << 2,
 	// On mark submission, page will get updated host write timeline.
-	PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT = 1 << 4,
+	PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT = 1 << 3,
 };
 using PageStateFlags = uint32_t;
 

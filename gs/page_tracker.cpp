@@ -96,19 +96,12 @@ void PageTracker::mark_fb_read(const PageRect &rect)
 	}
 }
 
-// If 1, assumes that every primitive calls TEXFLUSH.
-// If 0, assumes that we have an infinitely large texture cache
-// which is only cleared on explicit TEXFLUSH.
-#define PAGE_TRACKER_MINIMAL_CACHING 1
-
 void PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &src_rect)
 {
 	auto dst_block = get_block_state(dst_rect);
 	auto src_block = get_block_state(src_rect);
 
-#if PAGE_TRACKER_MINIMAL_CACHING
 	bool need_tex_invalidate = false;
-#endif
 
 	if (page_has_flag_with_fb_access_mask(
 			dst_rect, PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT, dst_rect.write_mask) ||
@@ -120,9 +113,7 @@ void PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 	else if ((dst_block.cached_read_block_mask & dst_rect.block_mask) != 0)
 	{
 		flush_cached();
-#if PAGE_TRACKER_MINIMAL_CACHING
 		need_tex_invalidate = true;
-#endif
 	}
 	else if (((dst_block.copy_write_block_mask | dst_block.copy_read_block_mask) & dst_rect.block_mask) != 0 ||
 	         (src_block.copy_write_block_mask & src_rect.block_mask) != 0)
@@ -164,26 +155,17 @@ void PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 		}
 	}
 
-#if PAGE_TRACKER_MINIMAL_CACHING
 	if (need_tex_invalidate)
 		invalidate_texture_cache(UINT32_MAX);
-#endif
 }
 
 void PageTracker::mark_texture_read(const PageRect &rect)
 {
-#if PAGE_TRACKER_MINIMAL_CACHING
 	// Strict interpretation of minimal caching.
 	// Lots of content forgets TEXFLUSH, insert it automatically if we're trying to read after write.
 	if (page_has_flag_with_fb_access_mask(
-			rect, PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FLUSH_FB_ON_CACHED_READ_BIT, rect.write_mask))
+			rect, PAGE_STATE_FB_WRITE_BIT, rect.write_mask))
 		flush_render_pass(FlushReason::TextureHazard);
-#else
-	// Maximal caching assumption.
-	if (page_has_flag_with_fb_access_mask(
-			rect, PAGE_STATE_FLUSH_FB_ON_CACHED_READ_BIT, rect.write_mask))
-		flush_render_pass(FlushReason::TextureHazard);
-#endif
 }
 
 void PageTracker::register_cached_clut_clobber(const PageRectCLUT &rect)
@@ -261,7 +243,7 @@ void PageTracker::clear_page_flags(PageStateFlags flags)
 void PageTracker::flush_render_pass(FlushReason reason)
 {
 	cb.flush(PAGE_TRACKER_FLUSH_FB_ALL, reason);
-	clear_page_flags(PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT | PAGE_STATE_FLUSH_FB_ON_CACHED_READ_BIT);
+	clear_page_flags(PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT);
 	for (auto &page : page_state)
 	{
 		page.copy_read_block_mask = 0;
@@ -270,10 +252,8 @@ void PageTracker::flush_render_pass(FlushReason reason)
 		page.pending_fb_access_mask = 0;
 	}
 
-#if PAGE_TRACKER_MINIMAL_CACHING
 	// While TEXFLUSH is necessary, plenty of content do not do this properly.
 	invalidate_texture_cache(UINT32_MAX);
-#endif
 
 	TRACE("TRACKER || FLUSH RENDER PASS\n");
 }
@@ -329,9 +309,7 @@ BlockState PageTracker::get_block_state(const PageRect &rect) const
 
 void PageTracker::mark_transfer_write(const PageRect &rect)
 {
-#if PAGE_TRACKER_MINIMAL_CACHING
 	bool need_tex_invalidate = false;
-#endif
 
 	// There are hazards if there is pending work that is dispatched after or concurrently.
 	auto block = get_block_state(rect);
@@ -343,9 +321,7 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 	else if ((block.cached_read_block_mask & rect.block_mask) != 0)
 	{
 		flush_cached();
-#if PAGE_TRACKER_MINIMAL_CACHING
 		need_tex_invalidate = true;
-#endif
 	}
 	else if (((block.copy_read_block_mask | block.copy_write_block_mask) & rect.block_mask) != 0)
 		flush_copy();
@@ -371,10 +347,8 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 		}
 	}
 
-#if PAGE_TRACKER_MINIMAL_CACHING
 	if (need_tex_invalidate)
 		invalidate_texture_cache(UINT32_MAX);
-#endif
 }
 
 bool PageTracker::acquire_host_write(const PageRect &rect, uint64_t max_timeline)
@@ -523,11 +497,6 @@ bool PageTracker::invalidate_texture_cache(uint32_t clut_instance)
 	for (auto index : potential_invalidated_indices)
 	{
 		auto &page = page_state[index];
-
-		// Delay flushing copy and render pass until we know we have to,
-		// i.e., we're actually reading from that page.
-		if ((page.flags & PAGE_STATE_FB_WRITE_BIT) != 0)
-			page.flags |= PAGE_STATE_FLUSH_FB_ON_CACHED_READ_BIT;
 
 		if (!page.cached_textures.empty())
 		{
