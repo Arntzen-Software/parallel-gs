@@ -12,6 +12,7 @@
 #include "page_tracker.hpp"
 #include "shaders/data_structures.h"
 #include "shaders/slangmosh_iface.hpp"
+#include <queue>
 #include <future>
 #include <atomic>
 
@@ -281,7 +282,17 @@ private:
 
 	VkDeviceSize allocate_device_scratch(VkDeviceSize size, Scratch &scratch, const void *data);
 
-	Vulkan::BindlessAllocator bindless_allocator;
+	Vulkan::BindlessDescriptorPoolHandle bindless_allocator;
+	struct ExhaustedDescriptorPool
+	{
+		Vulkan::BindlessDescriptorPoolHandle exhausted_pool;
+		uint64_t timeline = 0;
+	};
+	std::queue<ExhaustedDescriptorPool> exhausted_descriptor_pools;
+	Vulkan::BindlessDescriptorPoolHandle get_bindless_pool();
+	Vulkan::Semaphore descriptor_timeline;
+	uint64_t next_descriptor_timeline_signal = 1;
+
 	void ensure_command_buffer(Vulkan::CommandBufferHandle &cmd, Vulkan::CommandBuffer::Type type);
 	void init_luts();
 	void init_vram(const GSOptions &options);
@@ -350,5 +361,7 @@ private:
 	void kick_compilation_tasks();
 	std::atomic_bool compilation_tasks_active;
 	std::vector<std::future<void>> compilation_tasks;
+
+	uint64_t query_timeline(const Vulkan::SemaphoreHolder &sem) const;
 };
 }

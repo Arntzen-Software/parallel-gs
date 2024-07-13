@@ -369,8 +369,8 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 
 	init_vram(options);
 	timeline = device->request_semaphore(VK_SEMAPHORE_TYPE_TIMELINE);
+	descriptor_timeline = device->request_semaphore(VK_SEMAPHORE_TYPE_TIMELINE);
 	init_luts();
-	bindless_allocator.set_bindless_resource_type(Vulkan::BindlessResourceType::Image);
 
 	kick_compilation_tasks();
 
@@ -432,7 +432,7 @@ VkDeviceSize GSRenderer::allocate_device_scratch(VkDeviceSize size, Scratch &scr
 		Vulkan::BufferCreateInfo info = {};
 		constexpr VkDeviceSize DefaultScratchBufferSize = 32 * 1024 * 1024;
 		info.size = std::max<VkDeviceSize>(size, DefaultScratchBufferSize);
-		info.domain = data ? Vulkan::BufferDomain::LinkedDeviceHostPreferDevice : Vulkan::BufferDomain::Device;
+		info.domain = Vulkan::BufferDomain::Device;
 		info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
 		scratch.buffer = device->create_buffer(info);
@@ -444,21 +444,13 @@ VkDeviceSize GSRenderer::allocate_device_scratch(VkDeviceSize size, Scratch &scr
 
 	if (data)
 	{
-		auto *mapped = device->map_host_buffer(*scratch.buffer, Vulkan::MEMORY_ACCESS_WRITE_BIT, offset, size);
-		if (mapped)
-		{
-			memcpy(mapped, data, size);
-		}
-		else
-		{
-			// Fallback when sufficient ReBAR is not available.
-			// This also happens when capturing with RenderDoc since persistently mapped ReBAR is horrible for capture perf.
-			bool first_command = !async_transfer_cmd;
-			ensure_command_buffer(async_transfer_cmd, Vulkan::CommandBuffer::Type::AsyncTransfer);
-			if (first_command)
-				async_transfer_cmd->begin_region("AsyncTransfer");
-			memcpy(async_transfer_cmd->update_buffer(*scratch.buffer, offset, size), data, size);
-		}
+		// Fallback when sufficient ReBAR is not available.
+		// This also happens when capturing with RenderDoc since persistently mapped ReBAR is horrible for capture perf.
+		bool first_command = !async_transfer_cmd;
+		ensure_command_buffer(async_transfer_cmd, Vulkan::CommandBuffer::Type::AsyncTransfer);
+		if (first_command)
+			async_transfer_cmd->begin_region("AsyncTransfer");
+		memcpy(async_transfer_cmd->update_buffer(*scratch.buffer, offset, size), data, size);
 	}
 
 	scratch.offset += size;
@@ -479,16 +471,21 @@ void GSRenderer::wait_timeline(uint64_t value)
 	timeline->wait_timeline(value);
 }
 
-uint64_t GSRenderer::query_timeline()
+uint64_t GSRenderer::query_timeline(const Vulkan::SemaphoreHolder &sem) const
 {
 	uint64_t value = 0;
 	if (device->get_device_table().vkGetSemaphoreCounterValue(
-			device->get_device(), timeline->get_semaphore(), &value) != VK_SUCCESS)
+			device->get_device(), sem.get_semaphore(), &value) != VK_SUCCESS)
 	{
 		return 0;
 	}
 	else
 		return value;
+}
+
+uint64_t GSRenderer::query_timeline()
+{
+	return query_timeline(*timeline);
 }
 
 void GSRenderer::flush_submit(uint64_t value)
@@ -551,6 +548,8 @@ void GSRenderer::flush_submit(uint64_t value)
 	if (value)
 	{
 		auto binary = device->request_timeline_semaphore_as_binary(*timeline, value);
+		device->submit_empty(Vulkan::CommandBuffer::Type::Generic, nullptr, binary.get());
+		binary = device->request_timeline_semaphore_as_binary(*descriptor_timeline, next_descriptor_timeline_signal++);
 		device->submit_empty(Vulkan::CommandBuffer::Type::Generic, nullptr, binary.get());
 	}
 
@@ -833,19 +832,65 @@ void GSRenderer::ensure_command_buffer(Vulkan::CommandBufferHandle &cmd, Vulkan:
 		cmd = device->request_command_buffer(type);
 }
 
+Vulkan::BindlessDescriptorPoolHandle GSRenderer::get_bindless_pool()
+{
+	uint64_t progress = query_timeline(*descriptor_timeline);
+
+	if (!exhausted_descriptor_pools.empty() && progress >= exhausted_descriptor_pools.front().timeline)
+	{
+		auto ret = std::move(exhausted_descriptor_pools.front().exhausted_pool);
+		exhausted_descriptor_pools.pop();
+		ret->reset();
+		return ret;
+	}
+	else
+	{
+		return device->create_bindless_descriptor_pool(Vulkan::BindlessResourceType::Image, 4096, 64 * 1024);
+	}
+}
+
 void GSRenderer::bind_textures(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
 {
 	VK_ASSERT(rp.num_textures <= MaxTextures);
 	auto *tex_infos = cmd.allocate_typed_constant_data<TexInfo>(
 			0, BINDING_TEXTURE_INFO, std::max<uint32_t>(1, rp.num_textures));
 
-	bindless_allocator.begin();
+	if (!bindless_allocator)
+		bindless_allocator = get_bindless_pool();
+
+	if (!bindless_allocator)
+	{
+		LOGE("Failed to allocate bindless set.\n");
+		return;
+	}
+
+	if (rp.num_textures == 0 && bindless_allocator->get_descriptor_set() != VK_NULL_HANDLE)
+	{
+		// Just bind dummy set and forget.
+		cmd.set_bindless(DESCRIPTOR_SET_IMAGES, bindless_allocator->get_descriptor_set());
+		return;
+	}
+
+	uint32_t to_allocate = std::max<uint32_t>(1, rp.num_textures);
+
+	if (!bindless_allocator->allocate_descriptors(to_allocate))
+	{
+		exhausted_descriptor_pools.push({ std::move(bindless_allocator), next_descriptor_timeline_signal });
+		bindless_allocator = get_bindless_pool();
+		if (!bindless_allocator || !bindless_allocator->allocate_descriptors(to_allocate))
+		{
+			LOGE("Failed to allocate descriptors from a fresh set.\n");
+			return;
+		}
+	}
+
 	for (uint32_t i = 0; i < rp.num_textures; i++)
 	{
-		bindless_allocator.push(*rp.textures[i].view);
+		bindless_allocator->push_texture(*rp.textures[i].view);
 		tex_infos[i] = rp.textures[i].info;
 	}
-	cmd.set_bindless(DESCRIPTOR_SET_IMAGES, bindless_allocator.commit(*device));
+	bindless_allocator->update();
+	cmd.set_bindless(DESCRIPTOR_SET_IMAGES, bindless_allocator->get_descriptor_set());
 }
 
 void GSRenderer::bind_frame_resources(const RenderPass &rp)
