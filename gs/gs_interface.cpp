@@ -3189,6 +3189,7 @@ const GIFPath &GSInterface::get_gif_path(uint32_t path) const
 void GSInterface::set_debug_mode(const DebugMode &mode)
 {
 	debug_mode = mode;
+	renderer.set_enable_timestamps(mode.timestamps);
 }
 
 ScanoutResult GSInterface::vsync(const VSyncInfo &info)

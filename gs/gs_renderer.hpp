@@ -233,6 +233,7 @@ public:
 	FlushStats consume_flush_stats();
 
 	double get_accumulated_timestamps(TimestampType type) const;
+	void set_enable_timestamps(bool enable);
 
 	void invalidate_super_sampling_state();
 
@@ -346,6 +347,7 @@ private:
 
 	FlushStats stats = {}, total_stats = {};
 	void check_flush_stats();
+	bool enable_timestamps = false;
 
 	Vulkan::ImageHandle vsync_last_fields[2];
 	Vulkan::ImageHandle weave_deinterlace(Vulkan::CommandBuffer &cmd, const VSyncInfo &vsync);

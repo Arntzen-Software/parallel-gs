@@ -18,8 +18,6 @@ namespace ParallelGS
 // Pink-ish. Intended to look good in RenderDoc's default light theme.
 static constexpr float LabelColor[] = { 1.0f, 0.8f, 0.8f, 1.0f };
 
-#define ENABLE_GPU_EXECUTION 1
-
 template <typename... Args>
 static void insert_label(Vulkan::CommandBuffer &cmd, const char *fmt, Args... args)
 {
@@ -508,7 +506,6 @@ void GSRenderer::flush_submit(uint64_t value)
 	}
 
 	// Set to 0 to benchmark pure CPU overhead
-#if ENABLE_GPU_EXECUTION
 	if (async_transfer_cmd)
 	{
 		Vulkan::Semaphore sem;
@@ -534,16 +531,6 @@ void GSRenderer::flush_submit(uint64_t value)
 
 	if (direct_cmd)
 		device->submit(direct_cmd);
-#else
-	if (async_transfer_cmd)
-		device->submit_discard(async_transfer_cmd);
-	if (async_setup_cmd)
-		device->submit_discard(async_setup_cmd);
-	if (async_binning_cmd)
-		device->submit_discard(async_binning_cmd);
-	if (direct_cmd)
-		device->submit_discard(direct_cmd);
-#endif
 
 	if (value)
 	{
@@ -632,6 +619,11 @@ FlushStats GSRenderer::consume_flush_stats()
 	FlushStats s = total_stats;
 	total_stats = {};
 	return s;
+}
+
+void GSRenderer::set_enable_timestamps(bool enable)
+{
+	enable_timestamps = enable;
 }
 
 double GSRenderer::get_accumulated_timestamps(TimestampType type) const
@@ -788,13 +780,18 @@ void GSRenderer::flush_host_vram_copy(const uint32_t *page_indices, uint32_t num
 
 	cmd.begin_region("flush-host-vram-copy");
 
-#if ENABLE_GPU_EXECUTION
-	auto start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps)
+		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
+
 	copy_pages(cmd, *buffers.gpu, *buffers.cpu, page_indices, num_indices);
 	stats.num_copies += num_indices;
-	auto end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
-	timestamps.push_back({ TimestampType::SyncHostToVRAM, std::move(start_ts), std::move(end_ts) });
-#endif
+
+	if (enable_timestamps)
+	{
+		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
+		timestamps.push_back({ TimestampType::SyncHostToVRAM, std::move(start_ts), std::move(end_ts) });
+	}
 
 	cmd.barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
 	            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -810,13 +807,17 @@ void GSRenderer::flush_readback(const uint32_t *page_indices, uint32_t num_indic
 
 	cmd.begin_region("flush-readback");
 
-#if ENABLE_GPU_EXECUTION
-	auto start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps)
+		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
 	copy_pages(cmd, *buffers.cpu, *buffers.gpu, page_indices, num_indices);
 	stats.num_copies += num_indices;
-	auto end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
-	timestamps.push_back({ TimestampType::Readback, std::move(start_ts), std::move(end_ts) });
-#endif
+
+	if (enable_timestamps)
+	{
+		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
+		timestamps.push_back({ TimestampType::Readback, std::move(start_ts), std::move(end_ts) });
+	}
 
 	cmd.barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
 	            VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
@@ -986,12 +987,15 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 	cmd.set_program(shaders.triangle_setup);
 	cmd.set_specialization_constant_mask(1);
 	cmd.set_specialization_constant(0, rp.sampling_rate_y_log2);
-#if ENABLE_GPU_EXECUTION
-	auto start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps)
+		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	cmd.dispatch((rp.num_primitives + 63) / 64, 1, 1);
-	auto end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	timestamps.push_back({ TimestampType::TriangleSetup, std::move(start_ts), std::move(end_ts) });
-#endif
+	if (enable_timestamps)
+	{
+		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		timestamps.push_back({ TimestampType::TriangleSetup, std::move(start_ts), std::move(end_ts) });
+	}
 }
 
 void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
@@ -1031,12 +1035,15 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 
 	cmd.push_constants(&push, 0, sizeof(push));
 	cmd.set_program(shaders.binning);
-#if ENABLE_GPU_EXECUTION
-	auto start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps)
+		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	cmd.dispatch(rp.coarse_tiles_width, rp.coarse_tiles_height, 1);
-	auto end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	timestamps.push_back({ TimestampType::Binning, std::move(start_ts), std::move(end_ts) });
-#endif
+	if (enable_timestamps)
+	{
+		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		timestamps.push_back({ TimestampType::Binning, std::move(start_ts), std::move(end_ts) });
+	}
 	cmd.enable_subgroup_size_control(false);
 	cmd.set_specialization_constant_mask(0);
 }
@@ -1199,9 +1206,9 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	uint32_t width = rp.coarse_tiles_width << rp.coarse_tile_size_log2;
 	uint32_t height = rp.coarse_tiles_height << rp.coarse_tile_size_log2;
 
-#if ENABLE_GPU_EXECUTION
-	auto start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-#endif
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps)
+		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 	assert(rp.sampling_rate_x_log2 <= 2);
 	assert(rp.sampling_rate_y_log2 <= 2);
@@ -1217,10 +1224,11 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 		cmd.dispatch(1u << (rp.sampling_rate_x_log2 + rp.sampling_rate_y_log2), wg_x, wg_y);
 	}
 
-#if ENABLE_GPU_EXECUTION
-	auto end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	timestamps.push_back({ TimestampType::Shading, std::move(start_ts), std::move(end_ts) });
-#endif
+	if (enable_timestamps)
+	{
+		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		timestamps.push_back({ TimestampType::Shading, std::move(start_ts), std::move(end_ts) });
+	}
 
 	cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 	            VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
@@ -1805,14 +1813,17 @@ void GSRenderer::flush_palette_upload()
 		}
 	}
 
-#if ENABLE_GPU_EXECUTION
-	auto start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps)
+		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	// One workgroup iterates through every CLUT updates and snapshots current palette memory state to a 1 KiB slice.
 	// The palette is large enough to hold 32-bit with 256 colors.
 	cmd.dispatch(1, 1, 1);
-	auto end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	timestamps.push_back({ TimestampType::PaletteUpdate, std::move(start_ts), std::move(end_ts) });
-#endif
+	if (enable_timestamps)
+	{
+		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		timestamps.push_back({ TimestampType::PaletteUpdate, std::move(start_ts), std::move(end_ts) });
+	}
 
 	cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 	            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
@@ -1838,14 +1849,18 @@ void GSRenderer::flush_cache_upload()
 	cmd.barrier(dep);
 
 	cmd.begin_region("cache-upload");
-#if ENABLE_GPU_EXECUTION
-	auto start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps)
+		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	// TODO: We could potentially sort this based on shader key to avoid some context rolls, but eeeeeh.
 	for (auto &upload : texture_uploads)
 		upload_texture(upload.desc, *upload.image);
-	auto end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	timestamps.push_back({ TimestampType::TextureUpload, std::move(start_ts), std::move(end_ts) });
-#endif
+
+	if (enable_timestamps)
+	{
+		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		timestamps.push_back({ TimestampType::TextureUpload, std::move(start_ts), std::move(end_ts) });
+	}
 	cmd.end_region();
 
 	dep.imageMemoryBarrierCount = post_image_barriers.size();
@@ -1867,13 +1882,19 @@ void GSRenderer::flush_transfer()
 
 	cmd.begin_region("vram-copy");
 
-#if ENABLE_GPU_EXECUTION
-	auto start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps)
+		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
 	for (auto &copy : pending_copies)
 		emit_copy_vram(cmd, copy);
-	auto end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	timestamps.push_back({ TimestampType::CopyVRAM, std::move(start_ts), std::move(end_ts) });
-#endif
+
+	if (enable_timestamps)
+	{
+		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		timestamps.push_back({ TimestampType::CopyVRAM, std::move(start_ts), std::move(end_ts) });
+	}
+
 	pending_copies.clear();
 
 	cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -2327,9 +2348,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	rp.clear_color[0].float32[1] = float(priv.bgcolor.G) * (1.0f / 255.0f);
 	rp.clear_color[0].float32[2] = float(priv.bgcolor.B) * (1.0f / 255.0f);
 
-#if ENABLE_GPU_EXECUTION
-	auto start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT);
-#endif
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps)
+		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT);
 
 	cmd.begin_render_pass(rp);
 	cmd.set_opaque_sprite_state();
@@ -2453,10 +2474,11 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 	cmd.end_region();
 
-#if ENABLE_GPU_EXECUTION
-	auto end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT);
-	timestamps.push_back({TimestampType::VSync, std::move(start_ts), std::move(end_ts)});
-#endif
+	if (enable_timestamps)
+	{
+		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT);
+		timestamps.push_back({ TimestampType::VSync, std::move(start_ts), std::move(end_ts) });
+	}
 
 	// TODO: EXTWRITE
 

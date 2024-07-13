@@ -127,6 +127,7 @@ using StateDirtyFlags = uint32_t;
 struct DebugMode
 {
 	bool feedback_render_target = false;
+	bool timestamps = false;
 
 	enum class DrawDebugMode
 	{

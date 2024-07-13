@@ -184,6 +184,10 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			return;
 		}
 
+		DebugMode debug_mode = {};
+		debug_mode.timestamps = true;
+		iface->set_debug_mode(debug_mode);
+
 		has_renderdoc_capture = Device::init_renderdoc_capture();
 
 		ResourceLayout layout;
@@ -301,6 +305,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			DebugMode debug_mode = {};
 			debug_mode.draw_mode = draw_mode;
 			debug_mode.feedback_render_target = true;
+			debug_mode.timestamps = true;
 			iface->set_debug_mode(debug_mode);
 		}
 
