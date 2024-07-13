@@ -212,6 +212,8 @@ public:
 	FlushStats consume_flush_stats();
 	double get_accumulated_timestamps(TimestampType type) const;
 
+	void read_transfer_fifo(void *data, uint32_t num_128b_words);
+
 private:
 	void flush(PageTrackerFlushFlags flags, FlushReason reason) override;
 	void sync_host_vram_page(uint32_t page_index) override;
@@ -238,6 +240,9 @@ private:
 		uint32_t required_qwords = 0;
 		uint32_t last_flushed_qwords = 0;
 		CopyDescriptor copy = {};
+		Util::DynamicArray<uint8_t> fifo_readback;
+		uint32_t fifo_readback_128b_offset = 0;
+		uint32_t fifo_readback_128b_size = 0;
 	} transfer_state;
 
 	void flush_pending_transfer(bool keep_alive);

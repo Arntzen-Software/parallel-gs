@@ -31,8 +31,6 @@ To upscale the anti-aliased content to screen, AMD FSR1 + RCAS can be used, and 
 
 ### Known missing features
 
-- FIFO readback mode. This should be fairly trivial to add, but only relevant when doing proper integration in PCSX2, or other PS2 emulators.
-  There is already code in place to support readbacks with proper synchronization.
 - EXTWRITE feedback in CRTC. I have not found any games using this, but should not be hard in theory.
 - AA1 implementation is questionable. There are many details which are unknown to me how it's supposed to work exactly.
 

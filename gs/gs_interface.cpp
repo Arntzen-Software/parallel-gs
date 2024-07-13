@@ -1990,6 +1990,24 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 	}
 }
 
+void GSInterface::read_transfer_fifo(void *data, uint32_t num_128b_words)
+{
+	uint32_t to_copy = std::min<uint32_t>(num_128b_words, transfer_state.fifo_readback_128b_size - transfer_state.fifo_readback_128b_offset);
+
+	if (to_copy)
+	{
+		memcpy(data,
+		       transfer_state.fifo_readback.data() + 16 * transfer_state.fifo_readback_128b_offset,
+		       to_copy * 16);
+	}
+
+	// Assume we'll read 0 if we read past the FIFO.
+	if (to_copy < num_128b_words)
+		memset(static_cast<uint8_t *>(data) + 16 * to_copy, 0, (num_128b_words - to_copy) * 16);
+
+	transfer_state.fifo_readback_128b_offset += to_copy;
+}
+
 void GSInterface::init_transfer()
 {
 	flush_pending_transfer(false);
@@ -2034,7 +2052,53 @@ void GSInterface::init_transfer()
 	}
 	else if (XDIR == LOCAL_TO_HOST)
 	{
-		// FIFO? TODO.
+		auto src_rect = compute_page_rect(transfer_state.copy.bitbltbuf.desc.SBP,
+		                                  transfer_state.copy.trxpos.desc.SSAX,
+		                                  transfer_state.copy.trxpos.desc.SSAY,
+		                                  transfer_state.copy.trxreg.desc.RRW,
+		                                  transfer_state.copy.trxreg.desc.RRH,
+		                                  transfer_state.copy.bitbltbuf.desc.SBW,
+		                                  transfer_state.copy.bitbltbuf.desc.SPSM);
+
+		uint64_t host_timeline = tracker.get_host_read_timeline(src_rect);
+		if (host_timeline == UINT64_MAX)
+			host_timeline = tracker.mark_submission_timeline();
+		renderer.wait_timeline(host_timeline);
+
+		void *mapped = renderer.begin_host_vram_access();
+
+		uint32_t required_bytes = (transfer_state.copy.trxreg.desc.RRW *
+		                           transfer_state.copy.trxreg.desc.RRH *
+		                           get_bits_per_pixel(transfer_state.copy.bitbltbuf.desc.SPSM)) / 8;
+
+		transfer_state.fifo_readback.reserve(required_bytes);
+		transfer_state.fifo_readback_128b_offset = 0;
+		transfer_state.fifo_readback_128b_size = required_bytes / 16;
+
+		switch (transfer_state.copy.bitbltbuf.desc.SPSM)
+		{
+#define PSM_DISPATCH(psm) \
+		case psm: \
+			vram_readback<psm>(transfer_state.fifo_readback.data(), mapped, \
+			                   transfer_state.copy.bitbltbuf.desc.SBP, transfer_state.copy.bitbltbuf.desc.SBW, \
+			                   transfer_state.copy.trxpos.desc.SSAX, transfer_state.copy.trxpos.desc.SSAY, \
+			                   transfer_state.copy.trxreg.desc.RRW, transfer_state.copy.trxreg.desc.RRH, vram_size - 1); \
+			break
+			PSM_DISPATCH(PSMCT32);
+			PSM_DISPATCH(PSMZ32);
+			PSM_DISPATCH(PSMCT24);
+			PSM_DISPATCH(PSMZ24);
+			PSM_DISPATCH(PSMCT16);
+			PSM_DISPATCH(PSMCT16S);
+			PSM_DISPATCH(PSMZ16);
+			PSM_DISPATCH(PSMZ16S);
+			PSM_DISPATCH(PSMT8);
+			PSM_DISPATCH(PSMT8H);
+
+		default:
+			LOGW("Unrecognized FIFO readback PSM: %u\n", transfer_state.copy.bitbltbuf.desc.SPSM);
+			break;
+		}
 	}
 }
 

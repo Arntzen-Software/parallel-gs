@@ -9,7 +9,7 @@
 #include "data_structures.h"
 
 #ifdef __cplusplus
-#define INLINE inline
+#define INLINE static inline
 namespace ParallelGS {
 #else
 #define INLINE

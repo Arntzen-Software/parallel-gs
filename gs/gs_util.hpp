@@ -10,6 +10,7 @@
 #include "muglm/muglm_impl.hpp"
 #include <stdint.h>
 #include "shaders/data_structures.h"
+#include "shaders/swizzle_utils.h"
 
 namespace ParallelGS
 {
@@ -34,4 +35,64 @@ bool triangles_form_parallelogram(const VertexPosition *pos, const VertexAttribu
 void compute_has_potential_feedback(const TEX0Bits &tex0,
                                     uint32_t fb_base_page, uint32_t z_base_page,
                                     uint32_t pages_in_vram, bool &color_feedback, bool &depth_feedback);
+
+template <uint32_t PSM>
+static inline void vram_readback(void *readback_data, const void *host_data, uint32_t base_256, uint32_t page_stride,
+                                 uint32_t src_x, uint32_t src_y,
+                                 uint32_t width, uint32_t height,
+                                 uint32_t vram_mask)
+{
+	// This can definitely be optimized a lot if need be.
+	// Especially if we are block-aligned, it should be possible to de-swizzle a full 8x8 block in one go in SIMD or something ...
+	for (uint32_t y = 0; y < height; y++)
+	{
+		uint32_t effective_y = (y + src_y) & 2047;
+		uint32_t output_pixel = y * width;
+		for (uint32_t x = 0; x < width; x++, output_pixel++)
+		{
+			uint32_t effective_x = (x + src_x) & 2047;
+
+			// Hopefully inlining with templated argument should collapse branches.
+			uint32_t addr = swizzle_PS2(effective_x, effective_y, base_256, page_stride, PSM, vram_mask);
+
+			// Templated, so should collapse into branchless code.
+			switch (PSM)
+			{
+			case PSMCT32:
+			case PSMZ32:
+				static_cast<uint32_t *>(readback_data)[output_pixel] = static_cast<const uint32_t *>(host_data)[addr];
+				break;
+
+			case PSMCT24:
+			case PSMZ24:
+			{
+				auto *dst = static_cast<uint8_t *>(readback_data) + output_pixel * 3;
+				uint32_t word = static_cast<const uint32_t *>(host_data)[addr];
+				dst[0] = uint8_t(word >> 0);
+				dst[1] = uint8_t(word >> 8);
+				dst[2] = uint8_t(word >> 16);
+				break;
+			}
+
+			case PSMCT16:
+			case PSMCT16S:
+			case PSMZ16:
+			case PSMZ16S:
+				static_cast<uint16_t *>(readback_data)[output_pixel] = static_cast<const uint16_t *>(host_data)[addr];
+				break;
+
+			case PSMT8:
+			case PSMT8H: // Is this allowed for readback?
+				static_cast<uint8_t *>(readback_data)[output_pixel] = static_cast<const uint8_t *>(host_data)[addr];
+				break;
+
+			// 4-bit is not allowed for readback.
+
+			default:
+				LOGW("Unrecognized fifo readback format.\n");
+				static_cast<uint32_t *>(readback_data)[output_pixel] = 0;
+			}
+		}
+	}
+}
 }
