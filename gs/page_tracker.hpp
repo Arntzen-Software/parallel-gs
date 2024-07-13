@@ -196,6 +196,15 @@ private:
 	uint32_t pending_fb_write_page_hi = UINT32_MAX;
 	uint32_t pending_fb_write_mask = 0;
 
+	std::vector<uint32_t> accessed_fb_pages;
+	std::vector<uint32_t> accessed_cache_pages;
+	std::vector<uint32_t> accessed_copy_pages;
+	std::vector<uint32_t> accessed_readback_pages;
+
+	void clear_cache_pages();
+	void clear_copy_pages();
+	void clear_fb_pages();
+
 	bool invalidate_cached_textures(std::vector<CachedTextureMasked> &textures,
 	                                uint32_t block_mask, uint32_t write_mask, uint32_t clut_instance);
 	bool page_has_flag(const PageRect &rect, PageStateFlags flags) const;
