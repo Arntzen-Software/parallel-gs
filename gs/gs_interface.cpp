@@ -17,6 +17,10 @@ GSInterface::GSInterface()
 {
 	setup_handlers();
 	registers.prmodecont.desc.AC = PRMODECONTBits::AC_DEFAULT;
+
+	// Ensure that default states will trigger a dirty flag.
+	render_pass.frame.desc.PSM = 0x3f;
+	render_pass.zbuf.desc.PSM = 0x7;
 }
 
 bool GSInterface::init(Vulkan::Device *device, const GSOptions &options)
