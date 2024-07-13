@@ -2062,7 +2062,10 @@ void GSInterface::init_transfer()
 
 		uint64_t host_timeline = tracker.get_host_read_timeline(src_rect);
 		if (host_timeline == UINT64_MAX)
+		{
 			host_timeline = tracker.mark_submission_timeline();
+			renderer.flush_submit(host_timeline);
+		}
 		renderer.wait_timeline(host_timeline);
 
 		void *mapped = renderer.begin_host_vram_access();
