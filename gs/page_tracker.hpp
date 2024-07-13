@@ -191,12 +191,16 @@ private:
 	uint32_t csa_written_mask = 0;
 	std::vector<CachedTextureMasked> texture_cached_palette;
 
+	// Accelerate mark_texture_read.
+	uint32_t pending_fb_write_page_lo = UINT32_MAX;
+	uint32_t pending_fb_write_page_hi = UINT32_MAX;
+	uint32_t pending_fb_write_mask = 0;
+
 	bool invalidate_cached_textures(std::vector<CachedTextureMasked> &textures,
 	                                uint32_t block_mask, uint32_t write_mask, uint32_t clut_instance);
 	bool page_has_flag(const PageRect &rect, PageStateFlags flags) const;
 	bool page_has_flag_with_fb_access_mask(const PageRect &rect, PageStateFlags flags, uint32_t write_mask) const;
 	BlockState get_block_state(const PageRect &rect) const;
-	void clear_page_flags(PageStateFlags flags);
 
 	void flush_copy();
 	void flush_cached();

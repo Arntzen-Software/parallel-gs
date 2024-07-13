@@ -66,6 +66,7 @@ void PageTracker::mark_fb_write(const PageRect &rect)
 		for (unsigned x = 0; x < rect.page_width; x++)
 		{
 			unsigned page = rect.base_page + y * rect.page_stride + x;
+
 			page &= page_state_mask;
 			auto &state = page_state[page];
 			state.flags |= PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT |
@@ -79,6 +80,15 @@ void PageTracker::mark_fb_write(const PageRect &rect)
 			TRACE("TRACKER || PAGE 0x%x, FB write\n", page);
 		}
 	}
+
+	// To accelerate mark_texture_read spam, which is fairly hot in profiles.
+	// Allows early out check.
+	// Intentionally don't use wrapping logic here.
+	pending_fb_write_page_lo = std::min<uint32_t>(rect.base_page, pending_fb_write_page_lo);
+	pending_fb_write_page_hi = std::max<uint32_t>(rect.base_page +
+	                                              (rect.page_height - 1) * rect.page_stride + rect.page_width - 1,
+	                                              pending_fb_write_page_hi);
+	pending_fb_write_mask |= rect.write_mask;
 }
 
 void PageTracker::mark_fb_read(const PageRect &rect)
@@ -161,6 +171,18 @@ void PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 
 void PageTracker::mark_texture_read(const PageRect &rect)
 {
+	// Early-out if there cannot possibly be a hazard.
+	if ((rect.write_mask & pending_fb_write_mask) == 0)
+		return;
+
+	uint32_t start_page = rect.base_page;
+	uint32_t end_page = rect.base_page +
+	                    (rect.page_height - 1) * rect.page_stride +
+	                    rect.page_width - 1;
+
+	if (end_page < pending_fb_write_page_lo || start_page > pending_fb_write_page_hi)
+		return;
+
 	// Strict interpretation of minimal caching.
 	// Lots of content forgets TEXFLUSH, insert it automatically if we're trying to read after write.
 	if (page_has_flag_with_fb_access_mask(
@@ -234,23 +256,22 @@ void PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t l
 	}
 }
 
-void PageTracker::clear_page_flags(PageStateFlags flags)
-{
-	for (auto &page : page_state)
-		page.flags &= ~flags;
-}
-
 void PageTracker::flush_render_pass(FlushReason reason)
 {
 	cb.flush(PAGE_TRACKER_FLUSH_FB_ALL, reason);
-	clear_page_flags(PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT);
+
 	for (auto &page : page_state)
 	{
+		page.flags &= ~(PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT);
 		page.copy_read_block_mask = 0;
 		page.copy_write_block_mask = 0;
 		page.cached_read_block_mask = 0;
 		page.pending_fb_access_mask = 0;
 	}
+
+	pending_fb_write_page_lo = UINT32_MAX;
+	pending_fb_write_page_hi = 0;
+	pending_fb_write_mask = 0;
 
 	// While TEXFLUSH is necessary, plenty of content do not do this properly.
 	invalidate_texture_cache(UINT32_MAX);
