@@ -200,6 +200,10 @@ public:
 	// Caching stage.
 	uint32_t update_palette_cache(const PaletteUploadDescriptor &desc);
 	Vulkan::ImageHandle create_cached_texture(const TextureDescriptor &desc);
+	// Creating 1k+ VkImages per frame can be a noticeable CPU burden on drivers.
+	// Computing swizzling layouts and stuff is quite complicated and slow.
+	// It's not just about memory allocation.
+	void recycle_image_handle(Vulkan::ImageHandle image);
 	// Uploads to CLUT cache and texture cache. Only reads VRAM.
 	void flush_cache_upload();
 
@@ -365,5 +369,15 @@ private:
 	std::vector<std::future<void>> compilation_tasks;
 
 	uint64_t query_timeline(const Vulkan::SemaphoreHolder &sem) const;
+
+	std::vector<Vulkan::ImageHandle> recycled_image_handles;
+	// Only cache textures with reasonable POT size.
+	// Small slab allocator basically.
+	std::vector<Vulkan::ImageHandle> recycled_image_pool[11][11];
+	void move_image_handles_to_slab();
+	Vulkan::ImageHandle pull_image_handle_from_slab(uint32_t width, uint32_t height, uint32_t levels);
+	VkDeviceSize total_image_slab_size = 0;
+	VkDeviceSize max_image_slab_size = 0;
+	VkDeviceSize image_slab_high_water_mark = 0;
 };
 }

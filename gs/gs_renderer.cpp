@@ -372,6 +372,15 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 
 	kick_compilation_tasks();
 
+	// Reserve 25% of our budget to slab-allocate image handles.
+	Vulkan::HeapBudget budgets[VK_MAX_MEMORY_HEAPS] = {};
+	device->get_memory_budget(budgets);
+	for (uint32_t i = 0; i < device->get_memory_properties().memoryHeapCount; i++)
+		if ((device->get_memory_properties().memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0)
+			max_image_slab_size = std::max<VkDeviceSize>(max_image_slab_size, budgets[i].budget_size / 4);
+
+	LOGI("Using image slab size of %llu MiB.\n", static_cast<unsigned long long>(max_image_slab_size / (1024 * 1024)));
+
 	return true;
 }
 
@@ -664,6 +673,17 @@ TexRect GSRenderer::compute_effective_texture_rect(const TextureDescriptor &desc
 	return rect;
 }
 
+void GSRenderer::recycle_image_handle(Vulkan::ImageHandle image)
+{
+	// Have to defer this until render pass is flushed, since an invalidate doesn't mean the texture is
+	// immune from reuse.
+	if (Util::is_pow2(image->get_width()) && Util::is_pow2(image->get_height()) &&
+	    image->get_width() <= 1024 && image->get_height() <= 1024 && image->get_create_info().levels == 1)
+	{
+		recycled_image_handles.push_back(std::move(image));
+	}
+}
+
 Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &desc)
 {
 	if (!device)
@@ -671,17 +691,22 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 
 	assert(desc.rect.width && desc.rect.height);
 
-	Vulkan::ImageCreateInfo info = Vulkan::ImageCreateInfo::immutable_2d_image(
+	Vulkan::ImageHandle img = pull_image_handle_from_slab(desc.rect.width, desc.rect.height, desc.rect.levels);
+
+	if (!img)
+	{
+		Vulkan::ImageCreateInfo info = Vulkan::ImageCreateInfo::immutable_2d_image(
 			desc.rect.width, desc.rect.height, VK_FORMAT_R8G8B8A8_UNORM);
 
-	info.levels = desc.rect.levels;
-	info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		info.levels = desc.rect.levels;
+		info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
-	// Ignore mips. This is just a crude heuristic.
-	stats.allocated_image_memory += info.width * info.height * sizeof(uint32_t);
+		// Ignore mips. This is just a crude heuristic.
+		stats.allocated_image_memory += info.width * info.height * sizeof(uint32_t);
 
-	auto img = device->create_image(info);
+		img = device->create_image(info);
+	}
 
 	if (device->consumes_debug_markers())
 	{
@@ -701,6 +726,7 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 
 	VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
 	barrier.image = img->get_image();
+	barrier.srcAccessMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 	barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 	barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1528,6 +1554,57 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 	stats.num_primitives += rp.num_primitives;
 	check_flush_stats();
 	cmd.enable_subgroup_size_control(false);
+
+	move_image_handles_to_slab();
+}
+
+Vulkan::ImageHandle GSRenderer::pull_image_handle_from_slab(uint32_t width, uint32_t height, uint32_t levels)
+{
+	if (!Util::is_pow2(width) || !Util::is_pow2(height) || levels > 1 || width > 1024 || height > 1024)
+		return {};
+
+	uint32_t W = Util::floor_log2(width);
+	uint32_t H = Util::floor_log2(height);
+	auto &pool = recycled_image_pool[H][W];
+	if (pool.empty())
+		return {};
+
+	auto res = std::move(pool.back());
+	pool.pop_back();
+	assert(total_image_slab_size >= (sizeof(uint32_t) << (W + H)));
+	total_image_slab_size -= sizeof(uint32_t) << (W + H);
+	return res;
+}
+
+void GSRenderer::move_image_handles_to_slab()
+{
+	for (auto &handle : recycled_image_handles)
+	{
+		uint32_t W = Util::floor_log2(handle->get_width());
+		uint32_t H = Util::floor_log2(handle->get_height());
+		assert(W <= 10 && H <= 10 && handle->get_create_info().levels == 1);
+		total_image_slab_size += sizeof(uint32_t) << (W + H);
+		recycled_image_pool[H][W].push_back(std::move(handle));
+	}
+	recycled_image_handles.clear();
+
+	if (total_image_slab_size > image_slab_high_water_mark)
+	{
+		LOGW("New high watermark for image slab: %llu MiB.\n",
+		     static_cast<unsigned long long>(total_image_slab_size / (1024 * 1024)));
+		image_slab_high_water_mark = total_image_slab_size;
+	}
+
+	// If we end up exhausting this pool, just flush everything and start over, no need to be more clever about it.
+	// Shouldn't happen in normal use.
+	if (total_image_slab_size > max_image_slab_size)
+	{
+		for (auto &y : recycled_image_pool)
+			for (auto &x : y)
+				x.clear();
+		total_image_slab_size = 0;
+		LOGW("Image slab pool was exhausted, flushing it ...\n");
+	}
 }
 
 uint32_t GSRenderer::update_palette_cache(const PaletteUploadDescriptor &desc)

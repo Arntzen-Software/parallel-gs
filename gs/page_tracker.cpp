@@ -557,7 +557,8 @@ bool PageTracker::invalidate_cached_textures(
 			// we sample the texture with same memoized CLUT instance once again.
 			// Essentially, we defer the invalidation until the same texture is used with a different palette instance.
 			cb.invalidate_texture_hash(tex.tex->get_hash(), clut_instance != UINT32_MAX);
-			tex.tex->image.reset();
+			cb.recycle_image_handle(std::move(tex.tex->image));
+			tex.tex->image = {};
 			cached_textures.erase(tex.tex.get());
 			did_work = true;
 		}

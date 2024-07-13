@@ -785,6 +785,11 @@ void GSInterface::forget_in_render_pass_memoization()
 	mark_texture_state_dirty();
 }
 
+void GSInterface::recycle_image_handle(Vulkan::ImageHandle image)
+{
+	renderer.recycle_image_handle(std::move(image));
+}
+
 void GSInterface::mark_texture_state_dirty()
 {
 	state_tracker.last_texture_index = UINT32_MAX;

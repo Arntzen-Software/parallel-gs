@@ -132,6 +132,7 @@ struct PageTrackerCallback
 	virtual void sync_vram_host_page(uint32_t page_index) = 0;
 	virtual void invalidate_texture_hash(Util::Hash hash, bool clut) = 0;
 	virtual void forget_in_render_pass_memoization() = 0;
+	virtual void recycle_image_handle(Vulkan::ImageHandle image) = 0;
 };
 
 class PageTracker

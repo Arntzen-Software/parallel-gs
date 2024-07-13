@@ -221,6 +221,7 @@ private:
 	void sync_vram_host_page(uint32_t page_index) override;
 	void invalidate_texture_hash(Util::Hash hash, bool clut) override;
 	void forget_in_render_pass_memoization() override;
+	void recycle_image_handle(Vulkan::ImageHandle image) override;
 	void flush_render_pass(FlushReason reason);
 
 	void mark_texture_state_dirty();
