@@ -75,7 +75,8 @@ uint get_clut_color(uint index, uint offset)
 	if (is_clut_16bit)
 	{
 		uint pal_color = uint(clut16.data[buffer_index + instance_offset]);
-		col = rgba16_to_rgba32(pal_color, registers.aem, registers.ta0, registers.ta1);
+		col = rgba16_to_rgba32(pal_color, 0u /* AEM should not apply to CLUT? */,
+		                       registers.ta0, registers.ta1);
 	}
 	else
 	{
