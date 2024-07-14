@@ -2462,11 +2462,13 @@ void GSInterface::a_d_FOG(uint64_t payload)
 void GSInterface::a_d_XYZF3(uint64_t payload)
 {
 	vertex_kick_xyzf(payload);
+	drawing_kick(true);
 }
 
 void GSInterface::a_d_XYZ3(uint64_t payload)
 {
 	vertex_kick_xyz(payload);
+	drawing_kick(true);
 }
 
 void GSInterface::a_d_TEX1_1(uint64_t payload)
