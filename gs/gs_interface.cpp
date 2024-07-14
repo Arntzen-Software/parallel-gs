@@ -791,7 +791,10 @@ void GSInterface::forget_in_render_pass_memoization()
 
 void GSInterface::recycle_image_handle(Vulkan::ImageHandle image)
 {
-	renderer.recycle_image_handle(std::move(image));
+	// If we're debugging we don't want the confusion of aliased image handles.
+	// It screws with debug label names.
+	if (!debug_mode.feedback_render_target)
+		renderer.recycle_image_handle(std::move(image));
 }
 
 void GSInterface::mark_texture_state_dirty()
