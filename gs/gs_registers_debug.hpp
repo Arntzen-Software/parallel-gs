@@ -129,8 +129,8 @@ static inline Stream &operator<<(Stream &stream, const Reg64<TEX0Bits> &tex0)
 
 	static const char *tfx_str[] = { "MODULATE", "DECAL", "HIGHLIGHT", "HIGHLIGHT2" };
 
-	stream << "ADDR: " << std::hex << tex0.desc.TBP0 * BLOCK_ALIGNMENT_BYTES << std::dec
-	       << ", RowLength: " << tex0.desc.TBW * BUFFER_WIDTH_SCALE
+	stream << "ADDR: " << std::hex << tex0.desc.TBP0 * PGS_BLOCK_ALIGNMENT_BYTES << std::dec
+	       << ", RowLength: " << tex0.desc.TBW * PGS_BUFFER_WIDTH_SCALE
 	       << ", PSM: " << psm_to_str(tex0.desc.PSM)
 	       << ", W: " << (1u << tex0.desc.TW)
 	       << ", H: " << (1u << tex0.desc.TH)
@@ -138,7 +138,7 @@ static inline Stream &operator<<(Stream &stream, const Reg64<TEX0Bits> &tex0)
 	       << ", CLD: " << cld_str[tex0.desc.CLD]
 	       << ", CPSM: " << psm_to_str(tex0.desc.CPSM)
 	       << ", CSM: " << tex0.desc.CSM
-	       << ", CBP: " << std::hex << tex0.desc.CBP * BLOCK_ALIGNMENT_BYTES << std::dec
+	       << ", CBP: " << std::hex << tex0.desc.CBP * PGS_BLOCK_ALIGNMENT_BYTES << std::dec
 	       << ", CSA: " << tex0.desc.CSA;
 
 	return stream;
@@ -177,7 +177,7 @@ static inline Stream &operator<<(Stream &stream, const Reg64<TEX1Bits> &tex1)
 template <typename Stream>
 static inline Stream &operator<<(Stream &stream, const Reg64<TEXCLUTBits> &texclut)
 {
-	stream << "CBW: " << texclut.desc.CBW * BLOCK_ALIGNMENT_BYTES
+	stream << "CBW: " << texclut.desc.CBW * PGS_BLOCK_ALIGNMENT_BYTES
 	       << ", COU: " << texclut.desc.COU
 	       << ", COV: " << texclut.desc.COV;
 
@@ -187,8 +187,8 @@ static inline Stream &operator<<(Stream &stream, const Reg64<TEXCLUTBits> &texcl
 template <typename Stream>
 static inline Stream &operator<<(Stream &stream, const Reg64<FRAMEBits> &frame)
 {
-	stream << "ADDR: " << std::hex << frame.desc.FBP * PAGE_ALIGNMENT_BYTES << std::dec
-	       << ", RowLength: " << frame.desc.FBW * BUFFER_WIDTH_SCALE
+	stream << "ADDR: " << std::hex << frame.desc.FBP * PGS_PAGE_ALIGNMENT_BYTES << std::dec
+	       << ", RowLength: " << frame.desc.FBW * PGS_BUFFER_WIDTH_SCALE
 	       << ", PSM: " << psm_to_str(frame.desc.PSM)
 		   << ", FBMASK: " << std::hex << frame.desc.FBMSK << std::dec;
 
@@ -198,7 +198,7 @@ static inline Stream &operator<<(Stream &stream, const Reg64<FRAMEBits> &frame)
 template <typename Stream>
 static inline Stream &operator<<(Stream &stream, const Reg64<ZBUFBits> &zbuf)
 {
-	stream << "ADDR: " << std::hex << zbuf.desc.ZBP * PAGE_ALIGNMENT_BYTES << std::dec
+	stream << "ADDR: " << std::hex << zbuf.desc.ZBP * PGS_PAGE_ALIGNMENT_BYTES << std::dec
 	       << ", PSM: " << psm_to_str(zbuf.desc.PSM)
 	       << ", ZMSK: " << zbuf.desc.ZMSK;
 
@@ -348,11 +348,11 @@ static inline Stream &operator<<(Stream &stream, const Reg64<TRXPOSBits> &trxpos
 template <typename Stream>
 static inline Stream &operator<<(Stream &stream, const Reg64<BITBLTBUFBits> &bitbltbuf)
 {
-	stream << "DST: " << std::hex << bitbltbuf.desc.DBP * BLOCK_ALIGNMENT_BYTES << std::dec
-	       << ", DstRowLength: " << bitbltbuf.desc.DBW * BUFFER_WIDTH_SCALE
+	stream << "DST: " << std::hex << bitbltbuf.desc.DBP * PGS_BLOCK_ALIGNMENT_BYTES << std::dec
+	       << ", DstRowLength: " << bitbltbuf.desc.DBW * PGS_BUFFER_WIDTH_SCALE
 	       << ", DPSM: " << psm_to_str(bitbltbuf.desc.DPSM)
-	       << ", SRC: " << std::hex << bitbltbuf.desc.SBP * BLOCK_ALIGNMENT_BYTES << std::dec
-	       << ", SrcRowLength: " << bitbltbuf.desc.SBW * BUFFER_WIDTH_SCALE
+	       << ", SRC: " << std::hex << bitbltbuf.desc.SBP * PGS_BLOCK_ALIGNMENT_BYTES << std::dec
+	       << ", SrcRowLength: " << bitbltbuf.desc.SBW * PGS_BUFFER_WIDTH_SCALE
 	       << ", SPSM: " << psm_to_str(bitbltbuf.desc.SPSM);
 
 	return stream;
