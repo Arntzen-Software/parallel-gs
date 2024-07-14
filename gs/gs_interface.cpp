@@ -945,7 +945,8 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 	// In this path, we're guaranteed to not hit wrapping with region clamp.
 	// For repeat, give up. Should not happen (hopefully).
 	if (feedback_mode == ColorFeedbackMode::Sliced && cache_texture &&
-	    !desc.clamp.desc.has_horizontal_repeat() && !desc.clamp.desc.has_vertical_repeat())
+	    desc.clamp.desc.WMS != CLAMPBits::REGION_REPEAT &&
+	    desc.clamp.desc.WMT != CLAMPBits::REGION_REPEAT)
 	{
 		// Narrow the texture size for purposes of reducing load, since we'll be discarding this texture right away.
 		if (desc.clamp.desc.WMS == CLAMPBits::REGION_CLAMP)
@@ -982,24 +983,22 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 			desc.clamp.desc.MAXV = uv_bb.w;
 		}
 	}
-	else
-	{
-		// Ignore {MIN,MAX}{U,V} if region modes are not used.
-		if (!desc.clamp.desc.has_horizontal_region())
-		{
-			// Normalize these so we don't create duplicate textures for different clamp modes.
-			desc.clamp.desc.MINU = 0;
-			desc.clamp.desc.MAXU = 0;
-			desc.clamp.desc.WMS = CLAMPBits::CLAMP;
-		}
 
-		if (!desc.clamp.desc.has_vertical_region())
-		{
-			// Normalize these so we don't create duplicate textures for different clamp modes.
-			desc.clamp.desc.MINV = 0;
-			desc.clamp.desc.MAXV = 0;
-			desc.clamp.desc.WMT = CLAMPBits::CLAMP;
-		}
+	// Ignore {MIN,MAX}{U,V} if region modes are not used.
+	if (!desc.clamp.desc.has_horizontal_region())
+	{
+		// Normalize these so we don't create duplicate textures for different clamp modes.
+		desc.clamp.desc.MINU = 0;
+		desc.clamp.desc.MAXU = 0;
+		desc.clamp.desc.WMS = CLAMPBits::CLAMP;
+	}
+
+	if (!desc.clamp.desc.has_vertical_region())
+	{
+		// Normalize these so we don't create duplicate textures for different clamp modes.
+		desc.clamp.desc.MINV = 0;
+		desc.clamp.desc.MAXV = 0;
+		desc.clamp.desc.WMT = CLAMPBits::CLAMP;
 	}
 
 	// No point in uploading mips if we never access it.

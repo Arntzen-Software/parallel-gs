@@ -282,8 +282,8 @@ struct CLAMPBits
 	PAD(20);
 	enum { REPEAT = 0, CLAMP = 1, REGION_CLAMP = 2, REGION_REPEAT = 3 };
 
-	inline bool has_horizontal_repeat() const { return (WMS & 1) != 0; }
-	inline bool has_vertical_repeat() const { return (WMT & 1) != 0; }
+	inline bool has_horizontal_repeat() const { return WMS == REPEAT || WMS == REGION_REPEAT; }
+	inline bool has_vertical_repeat() const { return WMT == REPEAT || WMT == REGION_REPEAT; }
 	inline bool has_horizontal_region() const { return WMS >= REGION_CLAMP; }
 	inline bool has_vertical_region() const { return WMT >= REGION_CLAMP; }
 	inline bool has_horizontal_clamp() const { return WMS == CLAMP || WMS == REGION_CLAMP; }
