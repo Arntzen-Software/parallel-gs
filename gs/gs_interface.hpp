@@ -315,6 +315,8 @@ private:
 		// For debug
 		uint32_t label_key = 0;
 
+		int32_t ofx = 0;
+		int32_t ofy = 0;
 	} render_pass;
 
 	// Register handlers

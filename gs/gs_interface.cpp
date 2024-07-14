@@ -499,8 +499,8 @@ void GSInterface::vertex_kick_xyz(Reg64<XYZBits> xyz)
 	auto &pos = vertex_queue.pos[vertex_queue.count];
 	auto &attr = vertex_queue.attr[vertex_queue.count];
 
-	pos.pos.x = int(xyz.desc.X);
-	pos.pos.y = int(xyz.desc.Y);
+	pos.pos.x = int(xyz.desc.X) - render_pass.ofx;
+	pos.pos.y = int(xyz.desc.Y) - render_pass.ofy;
 	pos.z = xyz.desc.Z;
 
 	attr.st.x = registers.st.desc.S;
@@ -521,8 +521,8 @@ void GSInterface::vertex_kick_xyzf(Reg64<XYZFBits> xyzf)
 	auto &pos = vertex_queue.pos[vertex_queue.count];
 	auto &attr = vertex_queue.attr[vertex_queue.count];
 
-	pos.pos.x = int(xyzf.desc.X);
-	pos.pos.y = int(xyzf.desc.Y);
+	pos.pos.x = int(xyzf.desc.X) - render_pass.ofx;
+	pos.pos.y = int(xyzf.desc.Y) - render_pass.ofy;
 	pos.z = xyzf.desc.Z;
 
 	attr.st.x = registers.st.desc.S;
@@ -1596,16 +1596,13 @@ void GSInterface::drawing_kick_append()
 	VertexAttribute attr[3];
 	VertexPosition pos[3];
 
-	int off_x = int(ctx.xyoffset.desc.OFX);
-	int off_y = int(ctx.xyoffset.desc.OFY);
-
 	if (num_vertices == 1)
 	{
 		pos[0] = vertex_queue.pos[vertex_queue.count - 1];
 		attr[0] = vertex_queue.attr[vertex_queue.count - 1];
 
-		pos[0].pos.x -= off_x + (1 << (PGS_SUBPIXEL_BITS - 1));
-		pos[0].pos.y -= off_y + (1 << (PGS_SUBPIXEL_BITS - 1));
+		pos[0].pos.x -= 1 << (PGS_SUBPIXEL_BITS - 1);
+		pos[0].pos.y -= 1 << (PGS_SUBPIXEL_BITS - 1);
 
 		pos[1] = pos[0];
 		pos[1].pos.x += 1 << PGS_SUBPIXEL_BITS;
@@ -1617,8 +1614,6 @@ void GSInterface::drawing_kick_append()
 		{
 			pos[i] = vertex_queue.pos[vertex_queue.count - 1 - i];
 			attr[i] = vertex_queue.attr[vertex_queue.count - 1 - i];
-			pos[i].pos.x -= off_x;
-			pos[i].pos.y -= off_y;
 		}
 	}
 	else if (num_vertices == 3)
@@ -1627,8 +1622,6 @@ void GSInterface::drawing_kick_append()
 		{
 			pos[i] = vertex_queue.pos[2 - i];
 			attr[i] = vertex_queue.attr[2 - i];
-			pos[i].pos.x -= off_x;
-			pos[i].pos.y -= off_y;
 		}
 	}
 
@@ -2357,6 +2350,9 @@ void GSInterface::a_d_PRIM(uint64_t payload)
 			                             STATE_DIRTY_TEX_BIT |
 			                             STATE_DIRTY_FB_BIT |
 			                             STATE_DIRTY_FEEDBACK_BIT;
+
+			render_pass.ofx = int32_t(registers.ctx[prim.desc.CTXT].xyoffset.desc.OFX);
+			render_pass.ofy = int32_t(registers.ctx[prim.desc.CTXT].xyoffset.desc.OFY);
 		}
 
 		update_internal_register(registers.prim.bits, payload,
@@ -2493,12 +2489,24 @@ void GSInterface::a_d_XYOFFSET_1(uint64_t payload)
 {
 	registers.ctx[0].xyoffset.bits = payload;
 	TRACE("XYOFFSET_1", registers.ctx[0].xyoffset);
+
+	if (registers.prim.desc.CTXT == 0)
+	{
+		render_pass.ofx = int32_t(registers.ctx[0].xyoffset.desc.OFX);
+		render_pass.ofy = int32_t(registers.ctx[0].xyoffset.desc.OFY);
+	}
 }
 
 void GSInterface::a_d_XYOFFSET_2(uint64_t payload)
 {
 	registers.ctx[1].xyoffset.bits = payload;
 	TRACE("XYOFFSET_2", registers.ctx[1].xyoffset);
+
+	if (registers.prim.desc.CTXT == 1)
+	{
+		render_pass.ofx = int32_t(registers.ctx[1].xyoffset.desc.OFX);
+		render_pass.ofy = int32_t(registers.ctx[1].xyoffset.desc.OFY);
+	}
 }
 
 void GSInterface::a_d_PRMODECONT(uint64_t payload)
@@ -2521,6 +2529,9 @@ void GSInterface::a_d_PRMODE(uint64_t payload)
 			                             STATE_DIRTY_TEX_BIT |
 			                             STATE_DIRTY_FB_BIT |
 			                             STATE_DIRTY_FEEDBACK_BIT;
+
+			render_pass.ofx = int32_t(registers.ctx[prim.desc.CTXT].xyoffset.desc.OFX);
+			render_pass.ofy = int32_t(registers.ctx[prim.desc.CTXT].xyoffset.desc.OFY);
 		}
 
 		update_internal_register(registers.prim.bits, prim.bits,
