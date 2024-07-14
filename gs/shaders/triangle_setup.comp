@@ -363,6 +363,27 @@ void main_inner(uint index)
     packed_bb = clip_bounding_box(packed_bb, ivec4(primitive_attr.data[index].bb));
     primitive_setup.data[index].bb = packed_bb;
 
+    if (sprite && !perspective)
+    {
+        // In some odd cases, a game really should have used NEAREST filter.
+        // Detecting this is important since at least one game in the wild seems to barely touch the neighbor sub-texel
+        // wreacking havok in channel shuffle effects.
+        // Resolving this with pure interpolation requires near-infinite precision, which we don't have.
+        ivec2 uv_delta0 = ivec2(attr0.uv) - a;
+        ivec2 uv_delta1 = ivec2(attr1.uv) - d;
+        ivec2 min_delta = min(uv_delta0, uv_delta1);
+        ivec2 max_delta = max(uv_delta0, uv_delta1);
+
+        bool half_texel_offset = all(equal(min_delta & (PGS_SUBPIXELS - 1), ivec2(PGS_SUBPIXELS >> 1)));
+
+        // If we only deviate by one sub-texel, interpolation will very likely never hit that upper value.
+        // Since we snap down to the minimum value either way.
+        bool no_effective_interpolation = all(lessThanEqual(max_delta - min_delta, ivec2(1)));
+
+        if (half_texel_offset && no_effective_interpolation)
+            primitive_attr.data[index].tex &= ~TEX_SAMPLER_MAG_LINEAR_BIT;
+    }
+
     if (SAMPLING_RATE_LOG2 != 0 && !sprite && !line)
     {
         // Try to detect common patterns of flat UI primitives.
