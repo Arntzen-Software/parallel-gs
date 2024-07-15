@@ -440,7 +440,9 @@ VkDeviceSize GSRenderer::allocate_device_scratch(VkDeviceSize size, Scratch &scr
 		constexpr VkDeviceSize DefaultScratchBufferSize = 32 * 1024 * 1024;
 		info.size = std::max<VkDeviceSize>(size, DefaultScratchBufferSize);
 		info.domain = Vulkan::BufferDomain::Device;
-		info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+		             VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+		             VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 
 		scratch.buffer = device->create_buffer(info);
 		scratch.offset = 0;
@@ -514,20 +516,30 @@ void GSRenderer::flush_submit(uint64_t value)
 		flush_transfer();
 	}
 
-	// Set to 0 to benchmark pure CPU overhead
 	if (async_transfer_cmd)
 	{
 		Vulkan::Semaphore sem;
 		async_transfer_cmd->end_region();
 		device->submit(async_transfer_cmd, nullptr, 1, &sem);
 		device->add_wait_semaphore(Vulkan::CommandBuffer::Type::Generic, std::move(sem),
-		                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, true);
+		                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, true);
+	}
+
+	if (clear_cmd)
+	{
+		clear_cmd->barrier(VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		                   VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+		device->submit(clear_cmd);
 	}
 
 	if (triangle_setup_cmd)
 	{
 		triangle_setup_cmd->barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-		                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+		                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+		                            VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+		                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+		                            VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
 		device->submit(triangle_setup_cmd);
 	}
 
@@ -942,6 +954,8 @@ void GSRenderer::bind_frame_resources(const RenderPass &rp)
 			buffers.rebar_scratch, rp.positions);
 	triangle_setup_cmd->set_storage_buffer(0, BINDING_VERTEX_POSITION, *buffers.rebar_scratch.buffer,
 	                                       pos_offset, rp.num_primitives * 3 * sizeof(rp.positions[0]));
+	binning_cmd->set_storage_buffer(0, BINDING_VERTEX_POSITION, *buffers.rebar_scratch.buffer,
+	                                pos_offset, rp.num_primitives * 3 * sizeof(rp.positions[0]));
 
 	auto attr_offset = allocate_device_scratch(
 			rp.num_primitives * 3 * sizeof(rp.attributes[0]),
@@ -956,6 +970,8 @@ void GSRenderer::bind_frame_resources(const RenderPass &rp)
 	                       prim_offset, rp.num_primitives * sizeof(rp.prims[0]));
 	triangle_setup_cmd->set_storage_buffer(0, BINDING_PRIMITIVE_ATTRIBUTES, *buffers.rebar_scratch.buffer,
 	                                       prim_offset, rp.num_primitives * sizeof(rp.prims[0]));
+	binning_cmd->set_storage_buffer(0, BINDING_PRIMITIVE_ATTRIBUTES, *buffers.rebar_scratch.buffer,
+	                                prim_offset, rp.num_primitives * sizeof(rp.prims[0]));
 
 	GlobalConstants constants = {};
 	constants.base_pixel.x = int(rp.base_x);
@@ -1005,11 +1021,59 @@ void GSRenderer::allocate_scratch_buffers(Vulkan::CommandBuffer &cmd, const Rend
 	                       primitive_list_offset, primitive_list_size);
 	binning_cmd->set_storage_buffer(0, BINDING_COARSE_TILE_LIST, *buffers.device_scratch.buffer,
 	                                primitive_list_offset, primitive_list_size);
+
+	auto single_sampled_heuristic_offset =
+			allocate_device_scratch(sizeof(SingleSampleHeuristic), buffers.device_scratch, nullptr);
+	triangle_setup_cmd->set_storage_buffer(0, BINDING_SINGLE_SAMPLE_HEURISTIC,
+	                                       *buffers.device_scratch.buffer,
+	                                       single_sampled_heuristic_offset, sizeof(SingleSampleHeuristic));
+	binning_cmd->set_storage_buffer(0, BINDING_SINGLE_SAMPLE_HEURISTIC,
+	                                *buffers.device_scratch.buffer,
+	                                single_sampled_heuristic_offset, sizeof(SingleSampleHeuristic));
+
+	if (rp.sampling_rate_y_log2 != 0)
+	{
+		clear_cmd->fill_buffer(*buffers.device_scratch.buffer, 0, single_sampled_heuristic_offset,
+		                       sizeof(SingleSampleHeuristic));
+
+		indirect_single_sample_heuristic = buffers.device_scratch;
+		indirect_single_sample_heuristic.offset = single_sampled_heuristic_offset;
+		indirect_single_sample_heuristic.size = sizeof(SingleSampleHeuristic);
+	}
 }
 
 void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
 {
-	cmd.push_constants(&rp.num_primitives, 0, sizeof(rp.num_primitives));
+	struct Push
+	{
+		uint32_t num_primitives;
+		uint32_t z_shift_to_bucket;
+	} push = {};
+
+	push.num_primitives = rp.num_primitives;
+
+	switch (rp.fb.z.desc.PSM | ZBUFBits::PSM_MSB)
+	{
+	case PSMZ16S:
+	case PSMZ16:
+		push.z_shift_to_bucket = 8;
+		break;
+
+	case PSMZ24:
+		push.z_shift_to_bucket = 16;
+		break;
+
+	case PSMZ32:
+		push.z_shift_to_bucket = 24;
+		break;
+
+	default:
+		LOGE("Unexpected Z format: %u\n", rp.fb.z.desc.PSM);
+		break;
+	}
+
+	cmd.push_constants(&push, 0, sizeof(push));
+
 	cmd.set_program(shaders.triangle_setup);
 	cmd.set_specialization_constant_mask(1);
 	cmd.set_specialization_constant(0, rp.sampling_rate_y_log2);
@@ -1022,6 +1086,59 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 		timestamps.push_back({ TimestampType::TriangleSetup, std::move(start_ts), std::move(end_ts) });
 	}
+}
+
+void GSRenderer::dispatch_single_sample_heuristic(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
+{
+	cmd.set_specialization_constant_mask(1);
+	cmd.set_program(shaders.single_sample_heuristic);
+
+	cmd.set_specialization_constant(
+			0, std::min<uint32_t>(512u, device->get_gpu_properties().limits.maxComputeWorkGroupSize[0]));
+
+	struct Push
+	{
+		uint32_t num_primitives;
+		uint32_t z_shift_bucket;
+		uint32_t z_shift;
+		uint32_t z_max;
+	} push = {};
+
+	push.num_primitives = rp.num_primitives;
+
+	// If we don't know, assume 24-bit range. If Z buffer isn't used at all, it's unlikely there will be proper 3D objects anyway.
+	uint32_t depth_psm = rp.z_sensitive ? (rp.fb.z.desc.PSM | ZBUFBits::PSM_MSB) : PSMZ24;
+
+	switch (depth_psm)
+	{
+	case PSMZ16S:
+	case PSMZ16:
+		push.z_shift_bucket = 8;
+		push.z_shift = 0;
+		push.z_max = 0xffffu;
+		break;
+
+	case PSMZ24:
+		push.z_shift_bucket = 16;
+		push.z_shift = 0;
+		push.z_max = 0xffffffu;
+		break;
+
+	case PSMZ32:
+		push.z_shift_bucket = 16;
+		push.z_shift = 8;
+		push.z_max = UINT32_MAX;
+		break;
+
+	default:
+		LOGE("Unexpected Z format: %u\n", rp.fb.z.desc.PSM);
+		break;
+	}
+
+	cmd.push_constants(&push, 0, sizeof(push));
+
+	cmd.dispatch_indirect(*indirect_single_sample_heuristic.buffer, indirect_single_sample_heuristic.offset);
+	cmd.set_specialization_constant_mask(0);
 }
 
 void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
@@ -1477,6 +1594,8 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 #endif
 
 	// Attempted async compute here for binning, etc, but it's not very useful in practice.
+	if (rp.sampling_rate_y_log2 != 0)
+		ensure_command_buffer(clear_cmd, Vulkan::CommandBuffer::Type::Generic);
 	ensure_command_buffer(triangle_setup_cmd, Vulkan::CommandBuffer::Type::Generic);
 	ensure_command_buffer(binning_cmd, Vulkan::CommandBuffer::Type::Generic);
 	ensure_command_buffer(direct_cmd, Vulkan::CommandBuffer::Type::Generic);
@@ -1541,7 +1660,11 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 
 	if (device->consumes_debug_markers())
 		begin_region(*binning_cmd, "Binning %u", rp.label_key);
+	if (rp.sampling_rate_y_log2 != 0)
+		dispatch_single_sample_heuristic(*binning_cmd, rp);
+	indirect_single_sample_heuristic = {};
 	dispatch_binning(*binning_cmd, rp);
+
 	if (device->consumes_debug_markers())
 		binning_cmd->end_region();
 

@@ -29,6 +29,11 @@
 			"compute": true
 		},
 		{
+			"name": "single_sample_heuristic",
+			"path": "single_sample_heuristic.comp",
+			"compute": true
+		},
+		{
 			"name": "ubershader",
 			"path": "ubershader.comp",
 			"compute": true,

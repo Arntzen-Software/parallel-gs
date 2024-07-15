@@ -1,0 +1,106 @@
+#version 450
+
+// SPDX-FileCopyrightText: 2024 Arntzen Software AS
+// SPDX-FileContributor: Hans-Kristian Arntzen
+// SPDX-FileContributor: Runar Heyer
+// SPDX-License-Identifier: LGPL-3.0+
+
+#extension GL_EXT_shader_16bit_storage : require
+layout(local_size_x_id = 0) in;
+
+layout(push_constant) uniform Registers
+{
+    uint num_primitives;
+    uint z_shift_bucket;
+    uint z_shift;
+    uint z_max;
+} registers;
+
+#define NEED_PRIMITIVE_ATTRIBUTE
+#define NEED_VERTEX_POSITION
+#define PRIMITIVE_SETUP_QUALIFIER readonly
+#include "data_buffers.h"
+#include "utils.h"
+
+layout(set = 0, binding = BINDING_SINGLE_SAMPLE_HEURISTIC, std430) readonly buffer SingleSampleHeuristicSSBO
+{
+    SingleSampleHeuristic data;
+} heuristic;
+
+const uint NUM_MASK_ELEMENTS = 64 * 1024 / 32;
+shared uint Full3DMask[NUM_MASK_ELEMENTS];
+
+void mark_full_3d(uint z, uint zlo, uint zhi)
+{
+    if (z >= zlo && z <= zhi)
+    {
+        z -= zlo;
+        atomicOr(Full3DMask[z / 32], 1u << (z % 32));
+    }
+}
+
+bool z_can_single_sample(uint z, uint zlo, uint zhi)
+{
+    bool ret;
+    if (z >= zlo && z <= zhi)
+    {
+        z -= zlo;
+        ret = bitfieldExtract(Full3DMask[z / 32], int(z % 32), 1) == 0;
+    }
+    else
+    {
+        // Out of range, other workgroup will analyze.
+        ret = false;
+    }
+
+    return ret;
+}
+
+void main()
+{
+    for (uint i = gl_LocalInvocationIndex; i < NUM_MASK_ELEMENTS; i += gl_WorkGroupSize.x)
+        Full3DMask[i] = 0u;
+    barrier();
+
+    uint zlo = heuristic.data.depth_range_offset[gl_WorkGroupID.x];
+    uint zhi = zlo + 1;
+    zlo <<= registers.z_shift_bucket;
+    zhi <<= registers.z_shift_bucket;
+    zhi -= 1;
+
+    // First, sweep over all primitives and any "full 3D" primitive should be marked.
+    // For UI elements, Z values tend to be clustered together close to the near plane.
+    for (uint i = gl_LocalInvocationIndex; i < registers.num_primitives; i += gl_WorkGroupSize.x)
+    {
+        uint state = primitive_attr.data[i].state;
+        const uint NO_FULL_3D_MASK = (1u << STATE_BIT_SPRITE) | (1u << STATE_BIT_LINE) | (1u << STATE_BIT_SNAP_ATTRIBUTE);
+        bool is_full_3d = (state & NO_FULL_3D_MASK) == 0;
+        if (is_full_3d)
+        {
+            uint za = min(registers.z_max, vertex_position.data[3 * i + 0].z) >> registers.z_shift;
+            uint zb = min(registers.z_max, vertex_position.data[3 * i + 1].z) >> registers.z_shift;
+            uint zc = min(registers.z_max, vertex_position.data[3 * i + 2].z) >> registers.z_shift;
+            mark_full_3d(za, zlo, zhi);
+            mark_full_3d(zb, zlo, zhi);
+            mark_full_3d(zc, zlo, zhi);
+        }
+    }
+
+    barrier();
+
+    for (uint i = gl_LocalInvocationIndex; i < registers.num_primitives; i += gl_WorkGroupSize.x)
+    {
+        uint state = primitive_attr.data[i].state;
+        bool is_candidate = (state & (1u << STATE_BIT_SNAP_ATTRIBUTE)) != 0;
+        if (is_candidate)
+        {
+            uint z = min(registers.z_max, vertex_position.data[3 * i + 0].z) >> registers.z_shift;
+            if (z_can_single_sample(z, zlo, zhi))
+            {
+                // Only one thread will enter this path, so it's safe.
+                state |= 1u << STATE_BIT_SNAP_RASTER;
+                primitive_attr.data[i].state = state;
+            }
+        }
+    }
+}

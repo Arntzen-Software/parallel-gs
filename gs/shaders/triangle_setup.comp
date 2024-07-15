@@ -33,7 +33,13 @@ layout(constant_id = 0) const int SAMPLING_RATE_LOG2 = 0;
 layout(push_constant) uniform Registers
 {
     uint num_primitives;
+    uint z_shift; // Shifts depth into 32-bit buckets.
 } registers;
+
+layout(set = 0, binding = BINDING_SINGLE_SAMPLE_HEURISTIC, std430) buffer SingleSampleHeuristicSSBO
+{
+    SingleSampleHeuristic data;
+} heuristic;
 
 bool tie_break_rule(ivec2 edge)
 {
@@ -427,6 +433,32 @@ void main_inner(uint index)
             vec2 lo_st = min(min(st00, st10), min(st01, st11));
             vec2 hi_st = max(max(st00, st10), max(st01, st11));
             transformed_attr.data[index].st_bb = vec4(lo_st, hi_st);
+
+            // Need to clamp in case primitive Z overflows. In that case, we get saturation.
+            uint single_sampled_bucket_index = min(255u, za >> registers.z_shift);
+            uint bucket_index_hi = single_sampled_bucket_index / 32u;
+            uint bucket_index_lo = single_sampled_bucket_index % 32u;
+
+            // Could be clever and do waterfall atomic, but primitive count is low enough that we don't really care.
+            // Each flat primitive falls into one of 256 buckets.
+            // Every bucket should hold up to 64k depth values.
+            // This matches well with LDS since we'll need to hold 2 KiB for negative mask.
+            uint old_value = atomicOr(
+                    heuristic.data.active_depth_range_mask_atomic[bucket_index_hi],
+                    1u << bucket_index_lo);
+
+            if (bitfieldExtract(old_value, int(bucket_index_lo), 1) == 0)
+            {
+                // We're the first thread that touched this bucket, we'll need to allocate a new indirect bucket.
+                uint offset = atomicAdd(heuristic.data.single_sample_fixup_indirect.x, 1u);
+                heuristic.data.depth_range_offset[offset] = single_sampled_bucket_index;
+                if (offset == 0u)
+                {
+                    // First thread that allocated a bucket, setup the indirect args.
+                    heuristic.data.single_sample_fixup_indirect.y = 1u;
+                    heuristic.data.single_sample_fixup_indirect.z = 1u;
+                }
+            }
         }
     }
 }

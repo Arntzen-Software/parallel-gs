@@ -246,6 +246,7 @@ private:
 	Vulkan::CommandBufferHandle direct_cmd;
 	Vulkan::CommandBufferHandle async_transfer_cmd;
 	Vulkan::CommandBufferHandle triangle_setup_cmd;
+	Vulkan::CommandBufferHandle clear_cmd;
 	Vulkan::CommandBufferHandle binning_cmd;
 	uint32_t vram_size = 0;
 	uint32_t next_clut_instance = 0;
@@ -285,6 +286,8 @@ private:
 		Vulkan::BufferViewHandle float_rcp_lut_view;
 	} buffers;
 
+	Scratch indirect_single_sample_heuristic;
+
 	VkDeviceSize allocate_device_scratch(VkDeviceSize size, Scratch &scratch, const void *data);
 
 	Vulkan::BindlessDescriptorPoolHandle bindless_allocator;
@@ -308,6 +311,7 @@ private:
 	void allocate_scratch_buffers(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
 	void dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
 	void dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
+	void dispatch_single_sample_heuristic(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
 	void dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
 	void dispatch_shading_debug(
 			Vulkan::CommandBuffer &cmd, const RenderPass &rp,

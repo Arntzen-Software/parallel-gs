@@ -163,6 +163,13 @@ struct TransferDescriptor
 	uint host_offset_qwords;
 };
 
+struct SingleSampleHeuristic
+{
+	uvec4 single_sample_fixup_indirect;
+	uint active_depth_range_mask_atomic[8];
+	uint depth_range_offset[256];
+};
+
 // PrimitiveAttribute::state
 // If set, performs a greater-than or greater-or-equals test. If false, depth test always passes.
 CONSTEXPR int STATE_BIT_Z_TEST = 16;
@@ -336,6 +343,8 @@ CONSTEXPR int AFAIL_RGB_ONLY = 3;
 #define BINDING_FEEDBACK_DEPTH 18
 #define BINDING_FEEDBACK_PRIM 19
 #define BINDING_FEEDBACK_VARY 20
+
+#define BINDING_SINGLE_SAMPLE_HEURISTIC 21
 
 #define DESCRIPTOR_SET_IMAGES 1
 

@@ -18,6 +18,7 @@ struct Shaders
 	Program clut_write = {};
 	Program vram_copy = {};
 	Program triangle_setup = {};
+	Program single_sample_heuristic = {};
 	Program ubershader[2][2] = {};
 	Shader quad = {};
 	Shader sample_circuit = {};
