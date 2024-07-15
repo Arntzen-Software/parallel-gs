@@ -775,16 +775,9 @@ vec4 feedback_texture(uint tex_index)
 	}
 	else
 	{
-		if (FEEDBACK_PSM == PSMCT24)
-		{
-			// 24-bit pack AEM and stuff into clut_offset?
-			color = ivec4(0xff, 0, 0xff, 0x80);
-		}
-		else
-		{
-			// 16-bit color is kept as quantized 32-bit in registers.
-			color = unpack_color(fb_color);
-		}
+		// TODO: 24-bit. Pack AEM and stuff into clut_offset?
+		// 16-bit color is kept as quantized 32-bit in registers.
+		color = unpack_color(fb_color);
 	}
 
 	return vec4(color);
@@ -1156,7 +1149,7 @@ vec3 alpha_blend(vec4 source, vec4 fb_color, uint blend_mode, uint alpha_attribs
 	}
 
 	vec3 result = floor((A - B) * C * (1.0 / 128.0)) + D;
-	return clamp(result, 0.0, 511.0); // Result is stored with 9 bits. TODO: Do we actually clamp negative value?
+	return result;
 }
 
 void shade_resolve(uint primitive_index, uint state_index, uint tex)
