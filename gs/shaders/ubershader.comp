@@ -68,6 +68,7 @@ const bool FEEDBACK = (VARIANT_FLAGS & VARIANT_FLAG_FEEDBACK_BIT) != 0;
 const bool INVARIANT_FP = (VARIANT_FLAGS & VARIANT_FLAG_INVARIANT_FP_BIT) != 0;
 const bool HAS_AA1 = (VARIANT_FLAGS & VARIANT_FLAG_HAS_AA1_BIT) != 0;
 const bool HAS_SCANMSK = (VARIANT_FLAGS & VARIANT_FLAG_HAS_SCANMSK_BIT) != 0;
+const bool HAS_PRIMITIVE_RANGE = (VARIANT_FLAGS & VARIANT_FLAG_HAS_PRIMITIVE_RANGE_BIT) != 0;
 
 layout(std430, set = 0, binding = BINDING_CLUT) readonly buffer CLUT16
 {
@@ -288,14 +289,14 @@ vec4 last_rgba = vec4(0.0);
 uint last_z = 0;
 vec2 last_ij = vec2(0.0);
 bool last_z_passed = false;
+#endif
+////
 
 layout(push_constant) uniform Registers
 {
 	uint lo_primitive_index;
 	uint hi_primitive_index;
 } registers;
-#endif
-////
 
 bool z_test_coverage(uint z, bool z_test_greater)
 {
@@ -1345,6 +1346,10 @@ bool primitive_intersects_tile(uint index)
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
 	if (index < registers.lo_primitive_index || index > registers.hi_primitive_index)
 		return false;
+#else
+	if (HAS_PRIMITIVE_RANGE)
+		if (index < registers.lo_primitive_index || index > registers.hi_primitive_index)
+			return false;
 #endif
 
 	PrimitiveSetup setup = primitive_setup.data[index];

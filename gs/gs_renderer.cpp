@@ -1327,10 +1327,14 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 
 	uint32_t variant_flags = 0;
 
+	bool single_primitive_step = rp.z_sensitive && rp.fb.frame.desc.FBP == rp.fb.z.desc.ZBP;
+
 	if (rp.has_aa1)
 		variant_flags |= VARIANT_FLAG_HAS_AA1_BIT;
 	if (rp.has_scanmsk)
 		variant_flags |= VARIANT_FLAG_HAS_SCANMSK_BIT;
+	if (single_primitive_step)
+		variant_flags |= VARIANT_FLAG_HAS_PRIMITIVE_RANGE_BIT;
 
 	if (rp.feedback_texture)
 	{
@@ -1359,6 +1363,26 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	if (rp.feedback_color)
 	{
 		dispatch_shading_debug(cmd, rp, width, height);
+	}
+	else if (single_primitive_step)
+	{
+		// Pure mayhem, game will rely on non-local feedback effects due to Z swizzling.
+		// Render one primitive at a time.
+		// Not much we can do about this other than render two tiles in sync in a single workgroup,
+		// and then do barrier() after every primitive and exchange color and depth values as needed.
+		// That however, is complete insanity, but if we end up seeing content that really hammers
+		// this hard, we might not have a choice ...
+		uint32_t wg_x = (width + 7) / 8;
+		uint32_t wg_y = (height + 7) / 8;
+		for (uint32_t i = 0; i < rp.num_primitives; i++)
+		{
+			const uint32_t range[] = { i, i };
+			cmd.push_constants(range, 0, sizeof(range));
+			cmd.dispatch(1u << (rp.sampling_rate_x_log2 + rp.sampling_rate_y_log2), wg_x, wg_y);
+			cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+			            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+		}
 	}
 	else
 	{
