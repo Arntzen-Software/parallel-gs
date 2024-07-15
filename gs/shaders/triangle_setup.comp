@@ -396,10 +396,10 @@ void main_inner(uint index)
         // In this case, we should aim to snap attribute interpolation to avoid common glitches.
         // There is no point in upsampling UI elements anyway.
         // Filtering it further will only look worse and less sharp than the native alternative.
-        bool should_interpolate_per_sample = false;
+        bool should_interpolate_per_sample = multisample;
 
         // If there is any proof of 3D-ness, like perspective, or different Z values, we're most likely rendering 3D.
-        if (perspective)
+        if (!should_interpolate_per_sample && perspective)
             should_interpolate_per_sample = distqf.z != 0.0 || djstqf.z != 0.0;
         if (!should_interpolate_per_sample)
             should_interpolate_per_sample = za != zb || zb != zc;
