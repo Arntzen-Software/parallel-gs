@@ -668,11 +668,19 @@ uint32_t GSInterface::drawing_kick_update_state_vector()
 		state.dimx.y = registers.dimx.words[1];
 	}
 
-	if (ctx.test.desc.ATE && ctx.test.desc.ATST != 1) // ALWAYS pass is meaningless.
+	if (ctx.test.desc.ATE && ctx.test.desc.ATST != ATST_ALWAYS) // ALWAYS pass is meaningless.
 	{
-		state.blend_mode |= BLEND_MODE_ATE_BIT;
-		state.blend_mode |= ctx.test.desc.ATST << BLEND_MODE_ATE_MODE_OFFSET;
-		state.blend_mode |= ctx.test.desc.AFAIL << BLEND_MODE_AFAIL_MODE_OFFSET;
+		// This degenerates into Z write disable, and color passes as normal.
+		// No need to ever do the test.
+		bool implied_z_mask = ctx.test.desc.ATST == ATST_NEVER &&
+		                      ctx.test.desc.AFAIL == AFAIL_FB_ONLY;
+
+		if (!implied_z_mask)
+		{
+			state.blend_mode |= BLEND_MODE_ATE_BIT;
+			state.blend_mode |= ctx.test.desc.ATST << BLEND_MODE_ATE_MODE_OFFSET;
+			state.blend_mode |= ctx.test.desc.AFAIL << BLEND_MODE_AFAIL_MODE_OFFSET;
+		}
 	}
 
 	state.blend_mode |= ctx.test.desc.DATE ? BLEND_MODE_DATE_BIT : 0;
@@ -1220,7 +1228,12 @@ void GSInterface::drawing_kick_update_state(ColorFeedbackMode feedback_mode, con
 			p.state |= ctx.test.desc.ZTST == TESTBits::ZTST_GREATER ? (1u << STATE_BIT_Z_TEST_GREATER) : 0;
 		}
 
-		if (ctx.zbuf.desc.ZMSK == 0)
+		// It's possible to use alpha test as a quirky way to disable Z writes.
+		bool implied_z_mask = ctx.test.desc.ATE != 0 &&
+		                      ctx.test.desc.ATST == ATST_NEVER &&
+		                      ctx.test.desc.AFAIL != AFAIL_ZB_ONLY;
+
+		if (!implied_z_mask && ctx.zbuf.desc.ZMSK == 0)
 			p.state |= 1u << STATE_BIT_Z_WRITE;
 	}
 
@@ -1240,9 +1253,12 @@ void GSInterface::drawing_kick_update_state(ColorFeedbackMode feedback_mode, con
 		}
 	}
 
-	// Any pixel test mode cannot be opaque.
-	if ((ctx.test.desc.ATE && ctx.test.desc.ATST != ATST_ALWAYS) || ctx.test.desc.DATE || ctx.frame.desc.FBMSK != 0)
+	// If AFAIL is FB_ONLY, it cannot stop color writes from happening, so we ignore ATE for opaque check.
+	if ((ctx.test.desc.ATE && ctx.test.desc.ATST != ATST_ALWAYS && ctx.test.desc.AFAIL != AFAIL_FB_ONLY) ||
+	    ctx.test.desc.DATE || ctx.frame.desc.FBMSK != 0)
+	{
 		color_write_needs_previous_pixels = true;
+	}
 
 	// If we're in a feedback situation,
 	// we cannot be opaque since sampling a texture essentially becomes blending.
@@ -1359,9 +1375,13 @@ bool GSInterface::state_is_z_sensitive() const
 		if (ctx.test.desc.has_z_test())
 			return true;
 
+		bool implied_z_mask = ctx.test.desc.ATE != 0 &&
+		                      ctx.test.desc.ATST == ATST_NEVER &&
+		                      ctx.test.desc.AFAIL != AFAIL_ZB_ONLY;
+
 		// We need to write depth.
 		// ZTST_NEVER will trigger degenerate draw and won't hit this path.
-		if (ctx.zbuf.desc.ZMSK == 0)
+		if (!implied_z_mask && ctx.zbuf.desc.ZMSK == 0)
 			return true;
 	}
 
