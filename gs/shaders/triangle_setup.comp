@@ -390,7 +390,7 @@ void main_inner(uint index)
             primitive_attr.data[index].tex &= ~TEX_SAMPLER_MAG_LINEAR_BIT;
     }
 
-    if (SAMPLING_RATE_LOG2 != 0 && !sprite && !line)
+    if (SAMPLING_RATE_LOG2 != 0 && !sprite)
     {
         // Try to detect common patterns of flat UI primitives.
         // In this case, we should aim to snap attribute interpolation to avoid common glitches.
@@ -406,7 +406,9 @@ void main_inner(uint index)
 
         if (!should_interpolate_per_sample)
         {
-            primitive_attr.data[index].state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
+            // Don't demote lines unless we demote the entire render pass to single sampled.
+            if (!line)
+                primitive_attr.data[index].state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
 
             // Also need to compute the ST bounding box.
             // This is important for UI elements to make sure we don't interpolate outside the expected region.

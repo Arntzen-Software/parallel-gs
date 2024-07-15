@@ -29,6 +29,7 @@ layout(set = 0, binding = BINDING_SINGLE_SAMPLE_HEURISTIC, std430) readonly buff
 
 const uint NUM_MASK_ELEMENTS = 64 * 1024 / 32;
 shared uint Full3DMask[NUM_MASK_ELEMENTS];
+shared uint HasAnyFull3D;
 
 void mark_full_3d(uint z, uint zlo, uint zhi)
 {
@@ -36,6 +37,7 @@ void mark_full_3d(uint z, uint zlo, uint zhi)
     {
         z -= zlo;
         atomicOr(Full3DMask[z / 32], 1u << (z % 32));
+        atomicExchange(HasAnyFull3D, 1u);
     }
 }
 
@@ -60,6 +62,8 @@ void main()
 {
     for (uint i = gl_LocalInvocationIndex; i < NUM_MASK_ELEMENTS; i += gl_WorkGroupSize.x)
         Full3DMask[i] = 0u;
+    if (gl_LocalInvocationIndex == 0u)
+        HasAnyFull3D = 0u;
     barrier();
 
     uint zlo = heuristic.data.depth_range_offset[gl_WorkGroupID.x];
@@ -88,10 +92,16 @@ void main()
 
     barrier();
 
+    bool force_single_sample = HasAnyFull3D == 0u;
+
     for (uint i = gl_LocalInvocationIndex; i < registers.num_primitives; i += gl_WorkGroupSize.x)
     {
+        // If there is nothing in the render pass that needs 3D, we should just single sample everything.
+        // Only apply this to lines for now. Lines can be used in UI rendering contexts in very unusual scenarios.
         uint state = primitive_attr.data[i].state;
-        bool is_candidate = (state & (1u << STATE_BIT_SNAP_ATTRIBUTE)) != 0;
+        bool is_candidate = (state & (1u << STATE_BIT_SNAP_ATTRIBUTE)) != 0 ||
+            (force_single_sample && (state & (1u << STATE_BIT_LINE)) != 0);
+
         if (is_candidate)
         {
             uint z = min(registers.z_max, vertex_position.data[3 * i + 0].z) >> registers.z_shift;
