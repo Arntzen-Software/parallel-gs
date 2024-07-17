@@ -21,9 +21,6 @@ namespace ParallelGS
 struct ScanoutResult
 {
 	Vulkan::ImageHandle image;
-	// For bob-deinterlace. In whole pixels.
-	// Will generally be phase 0 -> +0.25, phase 1 -> -0.25.
-	float phase_offset;
 };
 
 struct FlushStats
@@ -357,8 +354,8 @@ private:
 	void check_flush_stats();
 	bool enable_timestamps = false;
 
-	Vulkan::ImageHandle vsync_last_fields[2];
-	Vulkan::ImageHandle weave_deinterlace(Vulkan::CommandBuffer &cmd, const VSyncInfo &vsync);
+	Vulkan::ImageHandle vsync_last_fields[4];
+	Vulkan::ImageHandle fastmad_deinterlace(Vulkan::CommandBuffer &cmd, const VSyncInfo &vsync);
 
 	// Slangmosh
 	Shaders<> shaders;

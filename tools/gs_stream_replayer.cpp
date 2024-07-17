@@ -27,13 +27,13 @@ static void FsrEasuCon(
 		float inputSizeInPixelsX,
 		float inputSizeInPixelsY,
 		float outputSizeInPixelsX,
-		float outputSizeInPixelsY, float offsetY)
+		float outputSizeInPixelsY)
 {
 	// Output integer position to a pixel position in viewport.
 	con0[0] = inputViewportInPixelsX / outputSizeInPixelsX;
 	con0[1] = inputViewportInPixelsY / outputSizeInPixelsY;
 	con0[2] = 0.5f * inputViewportInPixelsX / outputSizeInPixelsX - 0.5f;
-	con0[3] = 0.5f * inputViewportInPixelsY / outputSizeInPixelsY - 0.5f + offsetY;
+	con0[3] = 0.5f * inputViewportInPixelsY / outputSizeInPixelsY - 0.5f;
 	con1[0] = 1.0f / inputSizeInPixelsX;
 	con1[1] = 1.0f / inputSizeInPixelsY;
 	con1[2] = 1.0f / inputSizeInPixelsX;
@@ -208,7 +208,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 	double timestamp_stats[int(TimestampType::Count)] = {};
 	double last_timestamp_stats[int(TimestampType::Count)] = {};
 
-	void render_fsr(CommandBuffer &cmd, const ImageView &view, float offset)
+	void render_fsr(CommandBuffer &cmd, const ImageView &view)
 	{
 		cmd.image_barrier(*fsr_render_target,
 		                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -236,7 +236,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			auto height = float(view.get_image().get_height());
 			auto *params = cmd.allocate_typed_constant_data<Constants>(1, 0, 1);
 			FsrEasuCon(constants.params[0], constants.params[1], constants.params[2], constants.params[3],
-			           width, height, width, height, cmd.get_viewport().width, cmd.get_viewport().height, offset);
+			           width, height, width, height, cmd.get_viewport().width, cmd.get_viewport().height);
 			*params = constants;
 
 			push.width = cmd.get_viewport().width;
@@ -338,7 +338,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		auto cmd = device.request_command_buffer();
 		if (vsync.image)
-			render_fsr(*cmd, vsync.image->get_view(), vsync.phase_offset);
+			render_fsr(*cmd, vsync.image->get_view());
 
 		cmd->begin_render_pass(device.get_swapchain_render_pass(SwapchainRenderPass::Depth));
 

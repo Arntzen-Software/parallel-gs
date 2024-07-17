@@ -2666,26 +2666,25 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 	if (is_interlaced || force_deinterlace)
 	{
-		if (info.weave_deinterlace)
-		{
-			vsync_last_fields[info.phase] = merged;
+		cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
-			cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-			                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-			                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+		for (int i = 3; i >= 1; i--)
+			vsync_last_fields[i] = std::move(vsync_last_fields[i - 1]);
+		vsync_last_fields[0] = std::move(merged);
 
-			// Crude de-interlace. Get something working for now.
-			merged = weave_deinterlace(cmd, info);
-		}
-		else
-		{
-			// Can fuse bob into any upscaler for best effect.
-			result.phase_offset = info.phase == 0 ? +0.25f : -0.25f;
-			cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, info.dst_layout,
-			                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-			                  info.dst_stage, info.dst_access);
-		}
+		// Fill in holes for the first frames.
+		if (!vsync_last_fields[1])
+			vsync_last_fields[1] = vsync_last_fields[0];
+		if (!vsync_last_fields[2])
+			vsync_last_fields[2] = vsync_last_fields[0];
+		if (!vsync_last_fields[3])
+			vsync_last_fields[3] = vsync_last_fields[1];
+
+		// Crude de-interlace. Get something working for now.
+		merged = fastmad_deinterlace(cmd, info);
 	}
 	else
 	{
@@ -2711,16 +2710,10 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	return result;
 }
 
-Vulkan::ImageHandle GSRenderer::weave_deinterlace(Vulkan::CommandBuffer &cmd, const VSyncInfo &vsync)
+Vulkan::ImageHandle GSRenderer::fastmad_deinterlace(Vulkan::CommandBuffer &cmd, const VSyncInfo &vsync)
 {
-	auto &current_image = vsync_last_fields[vsync.phase];
-	auto &last_phase = vsync_last_fields[vsync.phase ^ 1];
-
-	if (!last_phase)
-		last_phase = current_image;
-
 	auto image_info = Vulkan::ImageCreateInfo::immutable_2d_image(
-			current_image->get_width(), current_image->get_height() * 2, VK_FORMAT_R8G8B8A8_UNORM);
+			vsync_last_fields[0]->get_width(), vsync_last_fields[0]->get_height() * 2, VK_FORMAT_R8G8B8A8_UNORM);
 	image_info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 	image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
@@ -2739,8 +2732,18 @@ Vulkan::ImageHandle GSRenderer::weave_deinterlace(Vulkan::CommandBuffer &cmd, co
 	cmd.begin_render_pass(rp_info);
 	cmd.set_opaque_sprite_state();
 	cmd.set_program(weave_quad);
-	cmd.set_texture(0, 0, vsync_last_fields[0]->get_view());
-	cmd.set_texture(0, 1, vsync_last_fields[1]->get_view());
+
+	struct Push
+	{
+		uint32_t phase;
+		uint32_t height_minus_1;
+	} push = { vsync.phase, deinterlaced->get_height() - 1 };
+
+	cmd.push_constants(&push, 0, sizeof(push));
+
+	for (int i = 0; i < 4; i++)
+		cmd.set_texture(0, i, vsync_last_fields[i]->get_view());
+
 	cmd.draw(3);
 	cmd.end_render_pass();
 

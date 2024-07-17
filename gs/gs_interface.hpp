@@ -154,9 +154,6 @@ struct VSyncInfo
 	// Tries to counteract field blending.
 	// For force_progressive or super-sampling, setting this to true is usually a good idea.
 	bool anti_blur;
-	// Use weave deinterlacer instead of bob when required to perform deinterlace.
-	// TODO: Surely there are better alternatives than bob or weave ...
-	bool weave_deinterlace;
 };
 
 struct GSOptions
