@@ -289,7 +289,7 @@ bool triangles_form_parallelogram(const VertexPosition *pos, const VertexAttribu
 
 			if (any(notEqual(attr1.st, last_attr1.st)) ||
 			    any(notEqual(attr2.st, last_attr2.st)) ||
-			    any(greaterThan(st3_error, vec2(1e-4))))
+			    any(greaterThan(st3_error, vec2(1e-4f))))
 			{
 				return false;
 			}

@@ -253,7 +253,7 @@ private:
 
 	// Tracks state for a render pass
 	enum { NumMemoizedPalettes = 16 };
-	struct
+	struct RenderPassState
 	{
 		Util::DynamicArray<VertexPosition> positions;
 		Util::DynamicArray<VertexAttribute> attributes;
