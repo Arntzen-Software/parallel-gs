@@ -37,8 +37,8 @@ void mark_full_3d(uint z, uint zlo, uint zhi)
     {
         z -= zlo;
         atomicOr(Full3DMask[z / 32], 1u << (z % 32));
-        atomicExchange(HasAnyFull3D, 1u);
     }
+    atomicExchange(HasAnyFull3D, 1u);
 }
 
 bool z_can_single_sample(uint z, uint zlo, uint zhi)
