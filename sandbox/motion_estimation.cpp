@@ -97,22 +97,51 @@ static void run_optical_flow(Device &device, const Image &current, const Image &
 		cmd->image_barrier(*search_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
 		                   0, 0,
 		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+		cmd->image_barrier(*filter_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+		                   0, 0,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
-		struct Push
 		{
-			vec2 inv_resolution;
-		} push = {};
+			struct Push
+			{
+				vec2 inv_resolution;
+			} push = {};
 
-		push.inv_resolution.x = 1.0f / float(current_view->get_view_width());
-		push.inv_resolution.y = 1.0f / float(current_view->get_view_height());
+			push.inv_resolution.x = 1.0f / float(current_view->get_view_width());
+			push.inv_resolution.y = 1.0f / float(current_view->get_view_height());
 
-		cmd->set_program("assets://motion-search.comp");
-		cmd->push_constants(&push, 0, sizeof(push));
+			cmd->set_program("assets://motion-search.comp");
+			cmd->push_constants(&push, 0, sizeof(push));
 
-		cmd->set_storage_texture(0, 0, search_img->get_view());
-		cmd->set_texture(0, 1, *current_view, StockSampler::NearestClamp);
-		cmd->set_texture(0, 2, *prev_view, StockSampler::NearestClamp);
-		cmd->dispatch(mv_width_for_level, mv_height_for_level, 1);
+			cmd->set_storage_texture(0, 0, search_img->get_view());
+			cmd->set_texture(0, 1, *current_view, StockSampler::NearestClamp);
+			cmd->set_texture(0, 2, *prev_view, StockSampler::NearestClamp);
+			cmd->dispatch(mv_width_for_level, mv_height_for_level, 1);
+		}
+
+		cmd->image_barrier(*search_img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+						   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+						   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+		{
+			struct Push
+			{
+				uvec2 resolution;
+				vec2 inv_resolution;
+			} push = {};
+
+			push.resolution.x = mv_width_for_level;
+			push.resolution.y = mv_height_for_level;
+			push.inv_resolution.x = 1.0f / float(mv_width_for_level);
+			push.inv_resolution.y = 1.0f / float(mv_height_for_level);
+
+			cmd->set_program("assets://motion-filter.comp");
+			cmd->push_constants(&push, 0, sizeof(push));
+
+			cmd->set_storage_texture(0, 0, filter_img->get_view());
+			cmd->set_texture(0, 1, search_img->get_view(), StockSampler::NearestClamp);
+			cmd->dispatch((mv_width_for_level + 7) / 8, (mv_height_for_level + 7) / 8, 1);
+		}
 	}
 
 	device.submit(cmd);

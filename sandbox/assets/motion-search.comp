@@ -2,8 +2,6 @@
 #extension GL_EXT_samplerless_texture_functions : require
 
 layout(local_size_x = 64) in;
-#pragma optimize off
-
 layout(set = 0, binding = 0, rg8i) writeonly uniform iimage2D uMotion;
 layout(set = 0, binding = 1) uniform sampler2D uCurrent;
 layout(set = 0, binding = 2) uniform sampler2D uPrev;
@@ -71,6 +69,8 @@ void main()
     }
 
     barrier();
+
+    // Brute force search.
 
     vec4 sads = vec4(0.0);
     for (int pix_y = 0; pix_y < 4; pix_y++)
