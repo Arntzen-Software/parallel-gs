@@ -65,12 +65,66 @@ static Vulkan::ImageHandle compute_luminance_hierarchy(Device &device, const cha
 	return luma_img;
 }
 
+static void run_optical_flow(Device &device, const Image &current, const Image &prev)
+{
+	uint32_t mv_width = current.get_width() / 8;
+	uint32_t mv_height = current.get_height() / 8;
+	auto cmd = device.request_command_buffer();
+
+	for (int level = 4; level >= 0; level--)
+	{
+		uint32_t mv_width_for_level = (mv_width + ((1 << level) - 1)) >> level;
+		uint32_t mv_height_for_level = (mv_height + ((1 << level) - 1)) >> level;
+		auto info = ImageCreateInfo::immutable_2d_image(
+				mv_width_for_level, mv_height_for_level, VK_FORMAT_R8G8_SINT);
+		info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+		ImageViewCreateInfo view_info = {};
+		view_info.format = VK_FORMAT_R8_UNORM;
+		view_info.view_type = VK_IMAGE_VIEW_TYPE_2D;
+		view_info.base_level = level;
+		view_info.levels = 1;
+		view_info.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+		view_info.image = &current;
+		auto current_view = device.create_image_view(view_info);
+		view_info.image = &prev;
+		auto prev_view = device.create_image_view(view_info);
+
+		auto search_img = device.create_image(info);
+		auto filter_img = device.create_image(info);
+
+		cmd->image_barrier(*search_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+		                   0, 0,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+
+		struct Push
+		{
+			vec2 inv_resolution;
+		} push = {};
+
+		push.inv_resolution.x = 1.0f / float(current_view->get_view_width());
+		push.inv_resolution.y = 1.0f / float(current_view->get_view_height());
+
+		cmd->set_program("assets://motion-search.comp");
+		cmd->push_constants(&push, 0, sizeof(push));
+
+		cmd->set_storage_texture(0, 0, search_img->get_view());
+		cmd->set_texture(0, 1, *current_view, StockSampler::NearestClamp);
+		cmd->set_texture(0, 2, *prev_view, StockSampler::NearestClamp);
+		cmd->dispatch(mv_width_for_level, mv_height_for_level, 1);
+	}
+
+	device.submit(cmd);
+}
+
 static void run_test(Device &device)
 {
 	auto luma0 = compute_luminance_hierarchy(device, "/tmp/vsync1.png");
 	auto luma1 = compute_luminance_hierarchy(device, "/tmp/vsync2.png");
 	auto luma2 = compute_luminance_hierarchy(device, "/tmp/vsync3.png");
 	auto luma3 = compute_luminance_hierarchy(device, "/tmp/vsync4.png");
+	run_optical_flow(device, *luma3, *luma1);
 }
 
 static int main_inner()

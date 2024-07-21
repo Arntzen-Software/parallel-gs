@@ -1,0 +1,124 @@
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 64) in;
+#pragma optimize off
+
+layout(set = 0, binding = 0, rg8i) writeonly uniform iimage2D uMotion;
+layout(set = 0, binding = 1) uniform sampler2D uCurrent;
+layout(set = 0, binding = 2) uniform sampler2D uPrev;
+
+layout(push_constant) uniform Registers
+{
+    vec2 inv_resolution;
+};
+
+ivec2 unswizzle8x8(uint index)
+{
+    uint x0 = bitfieldExtract(index, 0, 1);
+    uint y01 = bitfieldExtract(index, 1, 2);
+    uint x12 = bitfieldExtract(index, 3, 2);
+    uint y2 = bitfieldExtract(index, 5, 1);
+    return ivec2(bitfieldInsert(x0, x12, 1, 2), bitfieldInsert(y01, y2, 2, 1));
+}
+
+const int SEARCH_RADIUS = 8;
+shared uint SEARCH_LUMA[4 + SEARCH_RADIUS + 1][4 + SEARCH_RADIUS + 1];
+shared uint CURRENT_LUMA[4][4];
+shared uint SAD[SEARCH_RADIUS * SEARCH_RADIUS];
+
+float sad(vec4 a, vec4 b)
+{
+    // Should be possible to accelerate heavily (msad4), but the resolution here is tiny, so ... meh.
+    vec4 diff = abs(a - b);
+    return diff.x + diff.y + diff.z + diff.w;
+}
+
+uint encode_sad(uint sad, ivec2 coord)
+{
+    sad += abs(coord.x) + abs(coord.y);
+    sad = bitfieldInsert(sad << 8u, uint(coord.x), 0, 4);
+    sad = bitfieldInsert(sad, uint(coord.y), 4, 4);
+    return sad;
+}
+
+uint min_sad4(uvec4 sads)
+{
+    uvec2 v = min(sads.xy, sads.zw);
+    return min(v.x, v.y);
+}
+
+void main()
+{
+    ivec2 base_coord = ivec2(gl_WorkGroupID.xy) * 8;
+    uint local_index = gl_LocalInvocationIndex;
+    ivec2 local_coord = unswizzle8x8(local_index);
+
+    if (local_index < 16u)
+    {
+        vec2 uv = vec2(base_coord + 2 * local_coord + 1) * inv_resolution;
+        CURRENT_LUMA[local_coord.y][local_coord.x] = packUnorm4x8(textureGather(uCurrent, uv).wzxy);
+    }
+
+    for (int y = -SEARCH_RADIUS + local_coord.y * 2; y <= SEARCH_RADIUS * 2; y += SEARCH_RADIUS * 2)
+    {
+        for (int x = -SEARCH_RADIUS + local_coord.x * 2; x <= SEARCH_RADIUS * 2; x += SEARCH_RADIUS * 2)
+        {
+            vec2 search_uv = vec2(base_coord + ivec2(x, y) + 1) * inv_resolution;
+            uint reference = packUnorm4x8(textureGather(uPrev, search_uv).wzxy);
+            SEARCH_LUMA[(y + SEARCH_RADIUS) / 2][(x + SEARCH_RADIUS) / 2] = reference;
+        }
+    }
+
+    barrier();
+
+    vec4 sads = vec4(0.0);
+    for (int pix_y = 0; pix_y < 4; pix_y++)
+    {
+        for (int pix_x = 0; pix_x < 4; pix_x++)
+        {
+            vec4 pix = unpackUnorm4x8(CURRENT_LUMA[pix_y][pix_x]);
+            vec4 ref00 = unpackUnorm4x8(SEARCH_LUMA[local_coord.y + pix_y + 0][local_coord.x + pix_x + 0]);
+            vec4 ref10 = unpackUnorm4x8(SEARCH_LUMA[local_coord.y + pix_y + 0][local_coord.x + pix_x + 1]);
+            vec4 ref01 = unpackUnorm4x8(SEARCH_LUMA[local_coord.y + pix_y + 1][local_coord.x + pix_x + 0]);
+            vec4 ref11 = unpackUnorm4x8(SEARCH_LUMA[local_coord.y + pix_y + 1][local_coord.x + pix_x + 1]);
+
+            vec4 block00 = ref00;
+            vec4 block10 = vec4(ref00.y, ref10.x, ref00.w, ref10.z);
+            vec4 block01 = vec4(ref00.zw, ref01.xy);
+            vec4 block11 = vec4(ref00.w, ref10.z, ref01.y, ref11.x);
+
+            sads.x += sad(pix, block00);
+            sads.y += sad(pix, block10);
+            sads.z += sad(pix, block01);
+            sads.w += sad(pix, block11);
+        }
+    }
+
+    // Add extra headroom for tie-breaker SAD in the LSBs.
+    // Add a small cost for larger MVs.
+    uvec4 usads = uvec4(255.0 * 4.0 * sads + 0.5);
+
+    SAD[local_index] = min_sad4(uvec4(
+        encode_sad(usads.x, 2 * local_coord + ivec2(-SEARCH_RADIUS + 0, -SEARCH_RADIUS + 0)),
+        encode_sad(usads.y, 2 * local_coord + ivec2(-SEARCH_RADIUS + 1, -SEARCH_RADIUS + 0)),
+        encode_sad(usads.z, 2 * local_coord + ivec2(-SEARCH_RADIUS + 0, -SEARCH_RADIUS + 1)),
+        encode_sad(usads.w, 2 * local_coord + ivec2(-SEARCH_RADIUS + 1, -SEARCH_RADIUS + 1))));
+
+    for (uint stride = 32; stride >= 2; stride >>= 1)
+    {
+        barrier();
+        if (local_index < stride)
+            SAD[local_index] = min(SAD[local_index], SAD[local_index + stride]);
+    }
+
+    barrier();
+
+    if (local_index == 0)
+    {
+        uint sad = min(SAD[0], SAD[1]);
+        int mvx = bitfieldExtract(int(sad), 0, 4);
+        int mvy = bitfieldExtract(int(sad), 4, 4);
+        imageStore(uMotion, ivec2(gl_WorkGroupID.xy), ivec4(mvx, mvy, 0, 0));
+    }
+}
