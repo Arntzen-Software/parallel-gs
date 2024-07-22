@@ -71,6 +71,21 @@ static void run_optical_flow(Device &device, const Image &current, const Image &
 	uint32_t mv_height = current.get_height() / 8;
 	auto cmd = device.request_command_buffer();
 
+	SamplerCreateInfo samp_info = {};
+	samp_info.address_mode_u = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+	samp_info.address_mode_v = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+	samp_info.address_mode_w = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+	samp_info.mag_filter = VK_FILTER_NEAREST;
+	samp_info.min_filter = VK_FILTER_NEAREST;
+	samp_info.mipmap_mode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+
+	samp_info.border_color = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+	auto float_border_sampler = device.create_sampler(samp_info);
+	samp_info.border_color = VK_BORDER_COLOR_INT_TRANSPARENT_BLACK;
+	auto int_border_sampler = device.create_sampler(samp_info);
+
+	ImageHandle previous_level_upscale;
+
 	for (int level = 4; level >= 0; level--)
 	{
 		uint32_t mv_width_for_level = (mv_width + ((1 << level) - 1)) >> level;
@@ -91,13 +106,26 @@ static void run_optical_flow(Device &device, const Image &current, const Image &
 		view_info.image = &prev;
 		auto prev_view = device.create_image_view(view_info);
 
-		auto search_img = device.create_image(info);
+		ImageHandle search_img = previous_level_upscale ? previous_level_upscale : device.create_image(info);
+		search_img->set_layout(Layout::General);
 		auto filter_img = device.create_image(info);
 
-		cmd->image_barrier(*search_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+		info.width *= 2;
+		info.height *= 2;
+		auto upscale_img = device.create_image(info);
+
+		if (!previous_level_upscale)
+		{
+			cmd->image_barrier(*search_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+			                   0, 0,
+			                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+		}
+
+		cmd->image_barrier(*filter_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
 		                   0, 0,
 		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-		cmd->image_barrier(*filter_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+
+		cmd->image_barrier(*upscale_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
 		                   0, 0,
 		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
@@ -111,17 +139,20 @@ static void run_optical_flow(Device &device, const Image &current, const Image &
 			push.inv_resolution.y = 1.0f / float(current_view->get_view_height());
 
 			cmd->set_program("assets://motion-search.comp");
+			cmd->set_specialization_constant_mask(1);
 			cmd->push_constants(&push, 0, sizeof(push));
 
 			cmd->set_storage_texture(0, 0, search_img->get_view());
 			cmd->set_texture(0, 1, *current_view, StockSampler::NearestClamp);
-			cmd->set_texture(0, 2, *prev_view, StockSampler::NearestClamp);
+			cmd->set_texture(0, 2, *prev_view, *float_border_sampler);
+			cmd->set_specialization_constant(0, uint32_t(bool(previous_level_upscale)));
 			cmd->dispatch(mv_width_for_level, mv_height_for_level, 1);
+			cmd->set_specialization_constant_mask(0);
 		}
 
-		cmd->image_barrier(*search_img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-						   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-						   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+		cmd->image_barrier(*search_img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
 		{
 			struct Push
@@ -139,9 +170,49 @@ static void run_optical_flow(Device &device, const Image &current, const Image &
 			cmd->push_constants(&push, 0, sizeof(push));
 
 			cmd->set_storage_texture(0, 0, filter_img->get_view());
-			cmd->set_texture(0, 1, search_img->get_view(), StockSampler::NearestClamp);
+			cmd->set_texture(0, 1, search_img->get_view(), *int_border_sampler);
 			cmd->dispatch((mv_width_for_level + 7) / 8, (mv_height_for_level + 7) / 8, 1);
 		}
+
+		cmd->image_barrier(*filter_img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+		{
+			struct Push
+			{
+				uvec2 low_res_resolution_minus_1;
+				vec2 inv_resolution;
+			} push = {};
+
+			push.low_res_resolution_minus_1.x = mv_width_for_level - 1;
+			push.low_res_resolution_minus_1.y = mv_height_for_level - 1;
+			push.inv_resolution.x = 0.5f / float(mv_width_for_level);
+			push.inv_resolution.y = 0.5f / float(mv_height_for_level);
+
+			if (level > 0)
+			{
+				int next_level = level - 1;
+				mv_width_for_level = (mv_width + ((1 << next_level) - 1)) >> next_level;
+				mv_height_for_level = (mv_height + ((1 << next_level) - 1)) >> next_level;
+			}
+			else
+			{
+				mv_width_for_level *= 2;
+				mv_height_for_level *= 2;
+			}
+
+			cmd->set_program("assets://motion-upscale.comp");
+			cmd->push_constants(&push, 0, sizeof(push));
+
+			cmd->set_storage_texture(0, 0, upscale_img->get_view());
+			cmd->set_texture(0, 1, *current_view, StockSampler::NearestClamp);
+			cmd->set_texture(0, 2, *prev_view, StockSampler::NearestClamp);
+			cmd->set_texture(0, 3, filter_img->get_view(), StockSampler::NearestClamp);
+			cmd->dispatch(mv_width_for_level, mv_height_for_level, 1);
+		}
+
+		previous_level_upscale = upscale_img;
 	}
 
 	device.submit(cmd);
@@ -151,9 +222,7 @@ static void run_test(Device &device)
 {
 	auto luma0 = compute_luminance_hierarchy(device, "/tmp/vsync1.png");
 	auto luma1 = compute_luminance_hierarchy(device, "/tmp/vsync2.png");
-	auto luma2 = compute_luminance_hierarchy(device, "/tmp/vsync3.png");
-	auto luma3 = compute_luminance_hierarchy(device, "/tmp/vsync4.png");
-	run_optical_flow(device, *luma3, *luma1);
+	run_optical_flow(device, *luma1, *luma0);
 }
 
 static int main_inner()

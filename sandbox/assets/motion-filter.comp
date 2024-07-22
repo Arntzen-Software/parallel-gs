@@ -2,7 +2,7 @@
 #extension GL_EXT_samplerless_texture_functions : require
 
 layout(local_size_x = 8, local_size_y = 8) in;
-layout(set = 0, binding = 0, rg8i) writeonly uniform iimage2D uMotion;
+layout(set = 0, binding = 0, rg8i) uniform iimage2D uMotion;
 layout(set = 0, binding = 1) uniform isampler2D uRawMotion;
 
 // 3x3 median filter. Same impl as FidelityFX Optical Flow.

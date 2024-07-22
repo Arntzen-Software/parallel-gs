@@ -2,9 +2,11 @@
 #extension GL_EXT_samplerless_texture_functions : require
 
 layout(local_size_x = 64) in;
-layout(set = 0, binding = 0, rg8i) writeonly uniform iimage2D uMotion;
+layout(set = 0, binding = 0, rg8i) uniform iimage2D uMotion;
 layout(set = 0, binding = 1) uniform sampler2D uCurrent;
 layout(set = 0, binding = 2) uniform sampler2D uPrev;
+
+layout(constant_id = 0) const bool BASE_MOTION = false;
 
 layout(push_constant) uniform Registers
 {
@@ -58,11 +60,17 @@ void main()
         CURRENT_LUMA[local_coord.y][local_coord.x] = packUnorm4x8(textureGather(uCurrent, uv).wzxy);
     }
 
+    ivec2 base_motion;
+    if (BASE_MOTION)
+        base_motion = imageLoad(uMotion, ivec2(gl_WorkGroupID.xy)).xy * 2;
+    else
+        base_motion = ivec2(0);
+
     for (int y = -SEARCH_RADIUS + local_coord.y * 2; y <= SEARCH_RADIUS * 2; y += SEARCH_RADIUS * 2)
     {
         for (int x = -SEARCH_RADIUS + local_coord.x * 2; x <= SEARCH_RADIUS * 2; x += SEARCH_RADIUS * 2)
         {
-            vec2 search_uv = vec2(base_coord + ivec2(x, y) + 1) * inv_resolution;
+            vec2 search_uv = vec2(base_coord + ivec2(x, y) + base_motion + 1) * inv_resolution;
             uint reference = packUnorm4x8(textureGather(uPrev, search_uv).wzxy);
             SEARCH_LUMA[(y + SEARCH_RADIUS) / 2][(x + SEARCH_RADIUS) / 2] = reference;
         }
@@ -117,8 +125,8 @@ void main()
     if (local_index == 0)
     {
         uint sad = min(SAD[0], SAD[1]);
-        int mvx = bitfieldExtract(int(sad), 0, 4);
-        int mvy = bitfieldExtract(int(sad), 4, 4);
+        int mvx = bitfieldExtract(int(sad), 0, 4) + base_motion.x;
+        int mvy = bitfieldExtract(int(sad), 4, 4) + base_motion.y;
         imageStore(uMotion, ivec2(gl_WorkGroupID.xy), ivec4(mvx, mvy, 0, 0));
     }
 }
