@@ -1,0 +1,51 @@
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba8) writeonly uniform image2D uEstimatedField;
+layout(set = 0, binding = 1) uniform sampler2D uPrevField;
+layout(set = 0, binding = 2) uniform sampler2D uPrevFrame;
+layout(set = 0, binding = 3) uniform itexture2D uFieldMotion;
+layout(set = 0, binding = 4) uniform itexture2D uFrameMotion;
+
+layout(push_constant) uniform Register
+{
+    ivec2 resolution;
+    vec2 inv_resolution;
+    int field_offset;
+};
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(coord, resolution)))
+        return;
+    ivec2 mv_coord = coord / 4;
+
+    vec2 pix_uv = (vec2(coord) + 0.5) * inv_resolution;
+
+    // QPEL
+    // If we did motion estimation between fields, we expect that there should be a half-pixel offset in Y.
+    // E.g. for a simple gradient in Y:
+    // Field0: [0, 2, 4, 6, 8, ...]
+    // Field1: [1, 3, 5, 7, 9, ...]
+    // If current field is 1, when estimating motion against field, we expect an offset of 0.5 pixels in Y,
+    // so, we need to offset motion when reconstructing field 1 from field 0.
+    // Due to hpel offsets, this field reconstruction should look a lot like bobbing.
+    ivec2 field_mv = 2 * texelFetch(uFieldMotion, mv_coord, 0).xy + ivec2(0, field_offset);
+    ivec2 frame_mv = texelFetch(uFrameMotion, mv_coord, 0).xy;
+
+    vec2 field_motion = vec2(field_mv);
+    vec2 frame_motion = vec2(frame_mv);
+
+    vec2 field_uv = pix_uv + field_motion * (0.125 * inv_resolution);
+    vec2 frame_uv = pix_uv + frame_motion * (0.125 * inv_resolution);
+
+    vec3 field_reconstructed = textureLod(uPrevField, field_uv, 0.0).rgb;
+    vec3 frame_reconstructed = textureLod(uPrevFrame, frame_uv, 0.0).rgb;
+
+    bool use_frame = dot(frame_motion, frame_motion) <= dot(field_motion, field_motion);
+    vec3 reconstructed = use_frame ? frame_reconstructed : field_reconstructed;
+
+    imageStore(uEstimatedField, coord, vec4(reconstructed, 1.0));
+}

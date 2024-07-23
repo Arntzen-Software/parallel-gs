@@ -304,6 +304,54 @@ static ImageHandle run_optical_flow(Device &device, const Image &current, const 
 	return filter_img;
 }
 
+static ImageHandle run_reconstruct(Device &device, int phase,
+                                   const ImageView &prev_field, const ImageView &prev_frame,
+                                   const ImageView &field_motion, const ImageView &frame_motion)
+{
+	auto cmd = device.request_command_buffer();
+
+	auto info = ImageCreateInfo::immutable_2d_image(prev_frame.get_view_width(), prev_frame.get_view_height(), VK_FORMAT_R8G8B8A8_UNORM);
+	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+	info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	auto reconstructed = device.create_image(info);
+
+	cmd->image_barrier(*reconstructed, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+	                   0, 0, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+
+	cmd->begin_region("reconstruct-field");
+	{
+		struct Push
+		{
+			uvec2 resolution;
+			vec2 inv_resolution;
+			int32_t phase_offset;
+		} push = {};
+
+		push.resolution.x = prev_field.get_view_width();
+		push.resolution.y = prev_field.get_view_height();
+		push.inv_resolution.x = 1.0f / float(push.resolution.x);
+		push.inv_resolution.y = 1.0f / float(push.resolution.y);
+		push.phase_offset = phase ? -4 : 4;
+
+		cmd->set_program("assets://motion-fuse.comp");
+		cmd->push_constants(&push, 0, sizeof(push));
+		cmd->set_storage_texture(0, 0, reconstructed->get_view());
+		cmd->set_texture(0, 1, prev_field, StockSampler::LinearClamp);
+		cmd->set_texture(0, 2, prev_frame, StockSampler::LinearClamp);
+		cmd->set_texture(0, 3, field_motion);
+		cmd->set_texture(0, 4, frame_motion);
+		cmd->dispatch((push.resolution.x + 7) / 8, (push.resolution.y + 7) / 8, 1);
+
+		cmd->image_barrier(*reconstructed, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	}
+	cmd->end_region();
+
+	device.submit(cmd);
+	return reconstructed;
+}
+
 static void run_test(Device &device)
 {
 	auto luma1 = compute_luminance_hierarchy(device, "/tmp/vsync1.png");
@@ -311,6 +359,8 @@ static void run_test(Device &device)
 	auto luma3 = compute_luminance_hierarchy(device, "/tmp/vsync3.png");
 	auto qpel_field = run_optical_flow(device, *luma3, *luma2, "field-me");
 	auto qpel_frame = run_optical_flow(device, *luma3, *luma1, "frame-me");
+
+	auto reconstructed = run_reconstruct(device, 1, luma2->get_view(), luma1->get_view(), qpel_field->get_view(), qpel_frame->get_view());
 }
 
 static int main_inner()
