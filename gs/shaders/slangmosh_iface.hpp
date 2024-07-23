@@ -28,6 +28,11 @@ struct Shaders
 	Shader sharpen_frag = {};
 	Shader upscale_vert = {};
 	Shader upscale_frag = {};
+	Program luminance_pyramid = {};
+	Program motion_filter = {};
+	Program motion_search = {};
+	Program motion_search_qpel = {};
+	Program motion_upscale = {};
 	Shaders() = default;
 
 	template <typename Device, typename Layout, typename Resolver>

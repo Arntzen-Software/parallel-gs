@@ -56,7 +56,7 @@
 		},
 		{
 			"name": "weave",
-			"path": "weave.frag"
+			"path": "deinterlace/weave.frag"
 		},
 		{
 			"name": "sharpen_vert",
@@ -73,6 +73,31 @@
 		{
 			"name": "upscale_frag",
 			"path": "../../Granite/assets/shaders/post/ffx-fsr/upscale.frag"
+		},
+		{
+			"name": "luminance_pyramid",
+			"path": "deinterlace/luminance_pyramid.comp",
+			"compute": true
+		},
+		{
+			"name": "motion_filter",
+			"path": "deinterlace/motion_filter.comp",
+			"compute": true
+		},
+		{
+			"name": "motion_search",
+			"path": "deinterlace/motion_search.comp",
+			"compute": true
+		},
+		{
+			"name": "motion_search_qpel",
+			"path": "deinterlace/motion_search_qpel.comp",
+			"compute": true
+		},
+		{
+			"name": "motion_upscale",
+			"path": "deinterlace/motion_upscale.comp",
+			"compute": true
 		}
 	]
 }

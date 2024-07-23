@@ -354,9 +354,6 @@ private:
 	void check_flush_stats();
 	bool enable_timestamps = false;
 
-	Vulkan::ImageHandle vsync_last_fields[4];
-	Vulkan::ImageHandle fastmad_deinterlace(Vulkan::CommandBuffer &cmd, const VSyncInfo &vsync);
-
 	// Slangmosh
 	Shaders<> shaders;
 	Vulkan::Program *blit_quad = nullptr;
@@ -380,5 +377,14 @@ private:
 	VkDeviceSize total_image_slab_size = 0;
 	VkDeviceSize max_image_slab_size = 0;
 	VkDeviceSize image_slab_high_water_mark = 0;
+
+	// De-interlacer.
+	Vulkan::ImageHandle compute_luminance_hierarchy(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &view);
+	Vulkan::ImageHandle vsync_last_fields[4];
+	Vulkan::ImageHandle vsync_last_luma_pyramids[2];
+	Vulkan::ImageHandle motion_deinterlace(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &motion, const VSyncInfo &vsync);
+	Vulkan::ImageHandle compute_optical_flow(Vulkan::CommandBuffer &cmd, const Vulkan::Image &current, const Vulkan::Image &prev);
+	Vulkan::SamplerHandle float_border_sampler;
+	Vulkan::SamplerHandle int_border_sampler;
 };
 }

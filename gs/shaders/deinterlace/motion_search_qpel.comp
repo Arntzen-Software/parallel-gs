@@ -1,0 +1,94 @@
+#version 450
+// SPDX-FileCopyrightText: 2024 Arntzen Software AS
+// SPDX-FileContributor: Hans-Kristian Arntzen
+// SPDX-License-Identifier: LGPL-3.0+
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, rg16i) uniform iimage2D uMotion;
+layout(set = 0, binding = 1) uniform texture2D uCurrent;
+layout(set = 0, binding = 2) uniform texture2D uPrev;
+layout(set = 0, binding = 3) uniform itexture2D uBaseMotion;
+
+shared float CURRENT_LUMA[4][4];
+shared float REFERENCE_LUMA[6][6];
+shared uint ENCODED_SAD[64];
+
+ivec2 unswizzle8x8(uint index)
+{
+    uint x0 = bitfieldExtract(index, 0, 1);
+    uint y01 = bitfieldExtract(index, 1, 2);
+    uint x12 = bitfieldExtract(index, 3, 2);
+    uint y2 = bitfieldExtract(index, 5, 1);
+    return ivec2(bitfieldInsert(x0, x12, 1, 2), bitfieldInsert(y01, y2, 2, 1));
+}
+
+layout(push_constant) uniform Registers
+{
+    vec2 inv_resolution;
+};
+
+void main()
+{
+    ivec2 block_coord = ivec2(gl_WorkGroupID.xy);
+    ivec2 base_motion = texelFetch(uBaseMotion, block_coord, 0).xy;
+    uint local_index = gl_LocalInvocationIndex;
+    ivec2 local_coord = unswizzle8x8(local_index);
+    ivec2 base_coord = block_coord * 4;
+
+    if (local_index < 16u)
+        CURRENT_LUMA[local_coord.y][local_coord.x] = texelFetch(uCurrent, base_coord + local_coord, 0).x;
+    if (all(lessThan(local_coord, ivec2(6))))
+        REFERENCE_LUMA[local_coord.y][local_coord.x] = texelFetch(uPrev, base_coord + base_motion + local_coord - 1, 0).r;
+    barrier();
+
+    float sad = 0.0;
+    ivec2 ref_offset = local_coord >> 2;
+    vec2 l = 0.25 * vec2(local_coord & 3);
+
+    for (int y = 0; y < 4; y++)
+    {
+        for (int x = 0; x < 4; x++)
+        {
+            float ref00 = REFERENCE_LUMA[y + ref_offset.y + 0][x + ref_offset.x + 0];
+            float ref10 = REFERENCE_LUMA[y + ref_offset.y + 0][x + ref_offset.x + 1];
+            float ref01 = REFERENCE_LUMA[y + ref_offset.y + 1][x + ref_offset.x + 0];
+            float ref11 = REFERENCE_LUMA[y + ref_offset.y + 1][x + ref_offset.x + 1];
+            float ref_horiz0 = mix(ref00, ref10, l.x);
+            float ref_horiz1 = mix(ref01, ref11, l.x);
+            float ref = mix(ref_horiz0, ref_horiz1, l.y);
+            sad += abs(CURRENT_LUMA[y][x] - ref);
+        }
+    }
+
+    ivec2 effective_qpel = local_coord - 4;
+    uint encoded_sad = uint(1023.0 * sad + 0.5) + abs(effective_qpel.x) + abs(effective_qpel.y);
+    encoded_sad = bitfieldInsert(encoded_sad << 16u, uint(effective_qpel.x), 0, 8);
+    encoded_sad = bitfieldInsert(encoded_sad, uint(effective_qpel.y), 8, 8);
+    ENCODED_SAD[local_coord.y * 8 + local_coord.x] = encoded_sad;
+
+    barrier();
+    if (gl_LocalInvocationIndex < 32)
+        ENCODED_SAD[gl_LocalInvocationIndex] = min(ENCODED_SAD[gl_LocalInvocationIndex], ENCODED_SAD[gl_LocalInvocationIndex + 32]);
+    barrier();
+    if (gl_LocalInvocationIndex < 16)
+        ENCODED_SAD[gl_LocalInvocationIndex] = min(ENCODED_SAD[gl_LocalInvocationIndex], ENCODED_SAD[gl_LocalInvocationIndex + 16]);
+    barrier();
+    if (gl_LocalInvocationIndex < 8)
+        ENCODED_SAD[gl_LocalInvocationIndex] = min(ENCODED_SAD[gl_LocalInvocationIndex], ENCODED_SAD[gl_LocalInvocationIndex + 8]);
+    barrier();
+    if (gl_LocalInvocationIndex < 4)
+        ENCODED_SAD[gl_LocalInvocationIndex] = min(ENCODED_SAD[gl_LocalInvocationIndex], ENCODED_SAD[gl_LocalInvocationIndex + 4]);
+    barrier();
+    if (gl_LocalInvocationIndex < 2)
+        ENCODED_SAD[gl_LocalInvocationIndex] = min(ENCODED_SAD[gl_LocalInvocationIndex], ENCODED_SAD[gl_LocalInvocationIndex + 2]);
+    barrier();
+
+    if (gl_LocalInvocationIndex == 0)
+    {
+        encoded_sad = min(ENCODED_SAD[0], ENCODED_SAD[1]);
+        int mvx = bitfieldExtract(int(encoded_sad), 0, 8) + base_motion.x * 4;
+        int mvy = bitfieldExtract(int(encoded_sad), 8, 8) + base_motion.y * 4;
+        imageStore(uMotion, block_coord, ivec4(mvx, mvy, 0, 0));
+    }
+}

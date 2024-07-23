@@ -1,0 +1,157 @@
+#version 450
+// SPDX-FileCopyrightText: 2024 Arntzen Software AS
+// SPDX-FileContributor: Hans-Kristian Arntzen
+// SPDX-License-Identifier: LGPL-3.0+
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_shader_subgroup_quad : require
+
+// Adaptation of hiz.comp, which is based on SPD.
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, r16) uniform writeonly image2D uImages[5];
+layout(set = 0, binding = 5) uniform sampler2D uTexture;
+
+layout(push_constant, std430) uniform Registers
+{
+    vec2 inv_resolution;
+    int mips;
+} registers;
+
+float reduce(vec4 v)
+{
+    return 0.25 * (v.x + v.y + v.z + v.w);
+}
+
+const int SHUFFLE_X0 = 1 << 0;
+const int SHUFFLE_Y0 = 1 << 1;
+const int SHUFFLE_Y1 = 1 << 2;
+const int SHUFFLE_X1 = 1 << 3;
+
+uvec2 unswizzle8x8(uint index)
+{
+    uint x0 = bitfieldExtract(index, 0, 1);
+    uint y01 = bitfieldExtract(index, 1, 2);
+    uint x12 = bitfieldExtract(index, 3, 2);
+    uint y2 = bitfieldExtract(index, 5, 1);
+    return uvec2(bitfieldInsert(x0, x12, 1, 2), bitfieldInsert(y01, y2, 2, 1));
+}
+
+void write_image(ivec2 coord, int mip, float v)
+{
+    imageStore(uImages[mip], coord, vec4(v));
+}
+
+void write_image4(ivec2 coord, int mip, vec4 v)
+{
+    imageStore(uImages[mip], coord + ivec2(0, 0), v.xxxx);
+    imageStore(uImages[mip], coord + ivec2(1, 0), v.yyyy);
+    imageStore(uImages[mip], coord + ivec2(0, 1), v.zzzz);
+    imageStore(uImages[mip], coord + ivec2(1, 1), v.wwww);
+}
+
+mat4 fetch_4x4_texture(ivec2 base_coord)
+{
+    vec2 fcoord = vec2(base_coord) * registers.inv_resolution;
+    vec4 q00_r = textureGatherOffset(uTexture, fcoord, ivec2(1, 1), 0).wzxy;
+    vec4 q10_r = textureGatherOffset(uTexture, fcoord, ivec2(3, 1), 0).wzxy;
+    vec4 q01_r = textureGatherOffset(uTexture, fcoord, ivec2(1, 3), 0).wzxy;
+    vec4 q11_r = textureGatherOffset(uTexture, fcoord, ivec2(3, 3), 0).wzxy;
+
+    vec4 q00_g = textureGatherOffset(uTexture, fcoord, ivec2(1, 1), 1).wzxy;
+    vec4 q10_g = textureGatherOffset(uTexture, fcoord, ivec2(3, 1), 1).wzxy;
+    vec4 q01_g = textureGatherOffset(uTexture, fcoord, ivec2(1, 3), 1).wzxy;
+    vec4 q11_g = textureGatherOffset(uTexture, fcoord, ivec2(3, 3), 1).wzxy;
+
+    vec4 q00_b = textureGatherOffset(uTexture, fcoord, ivec2(1, 1), 2).wzxy;
+    vec4 q10_b = textureGatherOffset(uTexture, fcoord, ivec2(3, 1), 2).wzxy;
+    vec4 q01_b = textureGatherOffset(uTexture, fcoord, ivec2(1, 3), 2).wzxy;
+    vec4 q11_b = textureGatherOffset(uTexture, fcoord, ivec2(3, 3), 2).wzxy;
+
+    const vec3 LUMA = vec3(0.299, 0.587, 0.114);
+    vec4 q00 = q00_r * LUMA.r + q00_g * LUMA.g + q00_b * LUMA.b;
+    vec4 q10 = q10_r * LUMA.r + q10_g * LUMA.g + q10_b * LUMA.b;
+    vec4 q01 = q01_r * LUMA.r + q01_g * LUMA.g + q01_b * LUMA.b;
+    vec4 q11 = q11_r * LUMA.r + q11_g * LUMA.g + q11_b * LUMA.b;
+
+    return mat4(q00, q10, q01, q11);
+}
+
+void write_mip0_transformed(mat4 M, ivec2 base_coord)
+{
+    // Write out transformed LOD 0
+    write_image4(base_coord + ivec2(0, 0), 0, M[0]);
+    write_image4(base_coord + ivec2(2, 0), 0, M[1]);
+    write_image4(base_coord + ivec2(0, 2), 0, M[2]);
+    write_image4(base_coord + ivec2(2, 2), 0, M[3]);
+}
+
+float reduce_mip_registers(mat4 M, ivec2 base_coord, int mip)
+{
+    vec4 q00 = M[0];
+    vec4 q10 = M[1];
+    vec4 q01 = M[2];
+    vec4 q11 = M[3];
+
+    float d00 = reduce(q00);
+    float d10 = reduce(q10);
+    float d01 = reduce(q01);
+    float d11 = reduce(q11);
+
+    q00 = vec4(d00, d10, d01, d11);
+    write_image4(base_coord, mip, q00);
+
+    return reduce(q00);
+}
+
+float reduce_mips_simd16(ivec2 base_coord, uint local_index, int mip, float d)
+{
+    float d_horiz, d_vert, d_diag;
+    bool swap_horiz, swap_vert;
+
+    write_image(base_coord, mip, d);
+    d_horiz = subgroupQuadSwapHorizontal(d);
+    d_vert = subgroupQuadSwapVertical(d);
+    d_diag = subgroupQuadSwapDiagonal(d);
+
+    if (registers.mips > mip + 1)
+    {
+        d = reduce(vec4(d, d_horiz, d_vert, d_diag));
+
+        // This requires only SIMD16, which everyone can do.
+        d_horiz = subgroupShuffleXor(d, SHUFFLE_X1);
+        d_vert = subgroupShuffleXor(d, SHUFFLE_Y1);
+        d_diag = subgroupShuffleXor(d, SHUFFLE_X1 | SHUFFLE_Y1);
+        if ((local_index & 3) == 0)
+            write_image(base_coord >> 1, mip + 1, d);
+    }
+
+    return reduce(vec4(d, d_horiz, d_vert, d_diag));
+}
+
+// Each workgroup reduces 32x32 on its own.
+// This allows up to 6 levels, but we limit it to 5.
+
+void main()
+{
+    uint local_index = gl_SubgroupID * gl_SubgroupSize + gl_SubgroupInvocationID;
+    uvec2 local_coord = unswizzle8x8(local_index);
+
+    // LOD 0 feedback
+    ivec2 base_coord = ivec2(local_coord) * 4 + ivec2(gl_WorkGroupID.xy * 32u);
+    mat4 M = fetch_4x4_texture(base_coord);
+    write_mip0_transformed(M, base_coord);
+
+    // Write LOD 1, Compute LOD 2
+    if (registers.mips <= 1)
+        return;
+    float d = reduce_mip_registers(M, base_coord >> 1, 1);
+    if (registers.mips <= 2)
+        return;
+
+    // Write LOD 2, Compute LOD 3-4
+    d = reduce_mips_simd16(base_coord >> 2, local_index, 2, d);
+    if (registers.mips > 4)
+        write_image(base_coord >> 4, 4, d);
+}

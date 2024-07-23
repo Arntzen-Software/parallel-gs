@@ -1,0 +1,79 @@
+#version 450
+// SPDX-FileCopyrightText: 2024 Arntzen Software AS
+// SPDX-FileContributor: Hans-Kristian Arntzen
+// SPDX-License-Identifier: LGPL-3.0+
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(set = 0, binding = 0, rg8i) uniform iimage2D uMotion;
+layout(set = 0, binding = 1) uniform sampler2D uCurrent;
+layout(set = 0, binding = 2) uniform sampler2D uPrev;
+layout(set = 0, binding = 3) uniform isampler2D uLowResMotion;
+
+// Split a low-res 8x8 motion block into 4x4 motion blocks. Pick optimal MV based on neighbor candidates.
+// Same idea as FidelityFX Optical Flow.
+shared ivec4 MVx;
+shared ivec4 MVy;
+shared float SADs[4][16];
+shared uvec4 SADEncoded;
+
+layout(push_constant) uniform Registers
+{
+    ivec2 low_res_resolution_minus_1;
+    vec2 inv_resolution;
+};
+
+void main()
+{
+    ivec2 out_coord = ivec2(gl_WorkGroupID.xy);
+    ivec2 in_coord = out_coord * 4 + ivec2(gl_LocalInvocationID.xy);
+    vec2 motion_uvs = (vec2(out_coord) + 0.5) * inv_resolution;
+
+    // Splits into different SIMD units on all relevant hardware.
+    // Might help.
+    if (gl_LocalInvocationIndex == 0)
+        MVx = textureGather(uLowResMotion, motion_uvs, 0);
+    else if (gl_LocalInvocationIndex == 32)
+        MVy = textureGather(uLowResMotion, motion_uvs, 1);
+
+    barrier();
+
+    ivec2 mv = ivec2(MVx[gl_LocalInvocationID.z], MVy[gl_LocalInvocationID.z]);
+    float current_luma = texelFetch(uCurrent, in_coord, 0).r;
+    float reference_luma = texelFetch(uPrev, clamp(in_coord + mv, ivec2(0), low_res_resolution_minus_1), 0).r;
+
+    int xy_index = int(gl_LocalInvocationID.y * 4 + gl_LocalInvocationID.x);
+    SADs[gl_LocalInvocationID.z][xy_index] = abs(current_luma - reference_luma);
+    barrier();
+
+    if (xy_index < 8)
+        SADs[gl_LocalInvocationID.z][xy_index] += SADs[gl_LocalInvocationID.z][xy_index + 8];
+    barrier();
+
+    if (xy_index < 4)
+        SADs[gl_LocalInvocationID.z][xy_index] += SADs[gl_LocalInvocationID.z][xy_index + 4];
+    barrier();
+
+    if (xy_index < 2)
+        SADs[gl_LocalInvocationID.z][xy_index] += SADs[gl_LocalInvocationID.z][xy_index + 2];
+    barrier();
+
+    if (gl_LocalInvocationIndex < 4)
+    {
+        uint encoded = uint(1024.0 * 4.0 * (SADs[gl_LocalInvocationIndex][0] + SADs[gl_LocalInvocationIndex][1]) + 0.5);
+        encoded = bitfieldInsert(encoded << 16u, uint(MVx[gl_LocalInvocationIndex]), 0, 8);
+        encoded = bitfieldInsert(encoded, uint(MVy[gl_LocalInvocationIndex]), 8, 8);
+        SADEncoded[gl_LocalInvocationIndex] = encoded;
+    }
+
+    barrier();
+
+    if (gl_LocalInvocationIndex == 0)
+    {
+        uvec2 min_sad = min(SADEncoded.xy, SADEncoded.zw);
+        uint encoded_sad = min(min_sad.x, min_sad.y);
+        int mvx = bitfieldExtract(int(encoded_sad), 0, 8);
+        int mvy = bitfieldExtract(int(encoded_sad), 8, 8);
+        imageStore(uMotion, out_coord, ivec4(mvx, mvy, 0, 0));
+    }
+}
