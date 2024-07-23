@@ -65,11 +65,13 @@ static Vulkan::ImageHandle compute_luminance_hierarchy(Device &device, const cha
 	return luma_img;
 }
 
-static void run_optical_flow(Device &device, const Image &current, const Image &prev)
+static ImageHandle run_optical_flow(Device &device, const Image &current, const Image &prev, const char *tag)
 {
 	uint32_t mv_width = current.get_width() / 8;
 	uint32_t mv_height = current.get_height() / 8;
 	auto cmd = device.request_command_buffer();
+
+	cmd->begin_region(tag);
 
 	SamplerCreateInfo samp_info = {};
 	samp_info.address_mode_u = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
@@ -88,6 +90,10 @@ static void run_optical_flow(Device &device, const Image &current, const Image &
 
 	for (int level = 4; level >= 0; level--)
 	{
+		char desc[64];
+		snprintf(desc, sizeof(desc), "level %d", level);
+		cmd->begin_region(desc);
+
 		uint32_t mv_width_for_level = (mv_width + ((1 << level) - 1)) >> level;
 		uint32_t mv_height_for_level = (mv_height + ((1 << level) - 1)) >> level;
 		auto info = ImageCreateInfo::immutable_2d_image(
@@ -129,6 +135,7 @@ static void run_optical_flow(Device &device, const Image &current, const Image &
 		                   0, 0,
 		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
+		cmd->begin_region("search");
 		{
 			struct Push
 			{
@@ -149,11 +156,13 @@ static void run_optical_flow(Device &device, const Image &current, const Image &
 			cmd->dispatch(mv_width_for_level, mv_height_for_level, 1);
 			cmd->set_specialization_constant_mask(0);
 		}
+		cmd->end_region();
 
 		cmd->image_barrier(*search_img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
 		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
+		cmd->begin_region("filter");
 		{
 			struct Push
 			{
@@ -173,11 +182,13 @@ static void run_optical_flow(Device &device, const Image &current, const Image &
 			cmd->set_texture(0, 1, search_img->get_view(), *int_border_sampler);
 			cmd->dispatch((mv_width_for_level + 7) / 8, (mv_height_for_level + 7) / 8, 1);
 		}
+		cmd->end_region();
 
 		cmd->image_barrier(*filter_img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
+		cmd->begin_region("upscale");
 		{
 			struct Push
 			{
@@ -211,18 +222,64 @@ static void run_optical_flow(Device &device, const Image &current, const Image &
 			cmd->set_texture(0, 3, filter_img->get_view(), StockSampler::NearestClamp);
 			cmd->dispatch(mv_width_for_level, mv_height_for_level, 1);
 		}
+		cmd->end_region();
 
 		previous_level_upscale = upscale_img;
+		cmd->end_region();
 	}
 
+	cmd->image_barrier(*previous_level_upscale, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+	                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+
+	// Do QPEL refinement of motion. Search in a +/- 1 pixel region.
+	ImageHandle qpel_img;
+	{
+		mv_width = current.get_width() / 4;
+		mv_height = current.get_height() / 4;
+
+		auto info = ImageCreateInfo::immutable_2d_image(mv_width, mv_height, VK_FORMAT_R16G16_SINT);
+		info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+		info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		qpel_img = device.create_image(info);
+
+		cmd->image_barrier(*qpel_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+		                   0, 0, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+
+		cmd->set_program("assets://motion-search-qpel.comp");
+		cmd->set_storage_texture(0, 0, qpel_img->get_view());
+		cmd->set_texture(0, 1, current.get_view());
+		cmd->set_texture(0, 2, prev.get_view(), StockSampler::LinearClamp);
+		cmd->set_texture(0, 3, previous_level_upscale->get_view());
+
+		struct Push
+		{
+			vec2 inv_resolution;
+		} push = {};
+
+		push.inv_resolution.x = 1.0f / float(current.get_width());
+		push.inv_resolution.y = 1.0f / float(current.get_height());
+		cmd->push_constants(&push, 0, sizeof(push));
+
+		cmd->dispatch(mv_width, mv_height, 1);
+
+		cmd->image_barrier(*qpel_img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	}
+
+	cmd->end_region();
 	device.submit(cmd);
+	return qpel_img;
 }
 
 static void run_test(Device &device)
 {
-	auto luma0 = compute_luminance_hierarchy(device, "/tmp/vsync1.png");
-	auto luma1 = compute_luminance_hierarchy(device, "/tmp/vsync2.png");
-	run_optical_flow(device, *luma1, *luma0);
+	auto luma1 = compute_luminance_hierarchy(device, "/tmp/vsync1.png");
+	auto luma2 = compute_luminance_hierarchy(device, "/tmp/vsync2.png");
+	auto luma3 = compute_luminance_hierarchy(device, "/tmp/vsync3.png");
+	auto qpel_field = run_optical_flow(device, *luma3, *luma2, "field-me");
+	auto qpel_frame = run_optical_flow(device, *luma3, *luma1, "frame-me");
 }
 
 static int main_inner()
