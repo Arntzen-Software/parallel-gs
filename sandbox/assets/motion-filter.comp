@@ -2,7 +2,7 @@
 #extension GL_EXT_samplerless_texture_functions : require
 
 layout(local_size_x = 8, local_size_y = 8) in;
-layout(set = 0, binding = 0, rg8i) uniform iimage2D uMotion;
+layout(set = 0, binding = 0) writeonly uniform iimage2D uMotion;
 layout(set = 0, binding = 1) uniform isampler2D uRawMotion;
 
 // 3x3 median filter. Same impl as FidelityFX Optical Flow.
@@ -26,14 +26,14 @@ void main()
 
     ivec2 motion[9];
     vec2 uv = vec2(gl_GlobalInvocationID.xy) * inv_resolution;
-    ivec4 x00 = textureGatherOffset(uRawMotion, uv, ivec2(1, 1), 0);
-    ivec4 x10 = textureGatherOffset(uRawMotion, uv, ivec2(3, 1), 0);
-    ivec4 x01 = textureGatherOffset(uRawMotion, uv, ivec2(1, 3), 0);
-    ivec4 x11 = textureGatherOffset(uRawMotion, uv, ivec2(3, 3), 0);
-    ivec4 y00 = textureGatherOffset(uRawMotion, uv, ivec2(1, 1), 1);
-    ivec4 y10 = textureGatherOffset(uRawMotion, uv, ivec2(3, 1), 1);
-    ivec4 y01 = textureGatherOffset(uRawMotion, uv, ivec2(1, 3), 1);
-    ivec4 y11 = textureGatherOffset(uRawMotion, uv, ivec2(3, 3), 1);
+    ivec4 x00 = textureGatherOffset(uRawMotion, uv, ivec2(0, 0), 0);
+    ivec4 x10 = textureGatherOffset(uRawMotion, uv, ivec2(2, 0), 0);
+    ivec4 x01 = textureGatherOffset(uRawMotion, uv, ivec2(0, 2), 0);
+    ivec4 x11 = textureGatherOffset(uRawMotion, uv, ivec2(1, 2), 0);
+    ivec4 y00 = textureGatherOffset(uRawMotion, uv, ivec2(0, 0), 1);
+    ivec4 y10 = textureGatherOffset(uRawMotion, uv, ivec2(1, 0), 1);
+    ivec4 y01 = textureGatherOffset(uRawMotion, uv, ivec2(0, 2), 1);
+    ivec4 y11 = textureGatherOffset(uRawMotion, uv, ivec2(1, 2), 1);
 
     motion[0] = ivec2(x00.x, y00.x);
     motion[1] = ivec2(x00.y, y00.y);
@@ -54,12 +54,10 @@ void main()
         for (int i = 0; i < 9; i++)
             dist += idist(motion[i], motion[j]);
 
-        dist = bitfieldInsert(dist << 16u, uint(reference.x), 0, 8);
-        dist = bitfieldInsert(dist, uint(reference.y), 8, 8);
+        dist = bitfieldInsert(dist << 4u, uint(j), 0, 4);
         best_mv = min(dist, best_mv);
     }
 
-    int filter_x = bitfieldExtract(int(best_mv), 0, 8);
-    int filter_y = bitfieldExtract(int(best_mv), 8, 8);
-    imageStore(uMotion, ivec2(gl_GlobalInvocationID.xy), ivec4(filter_x, filter_y, 0, 0));
+    uint index = bitfieldExtract(best_mv, 0, 4);
+    imageStore(uMotion, ivec2(gl_GlobalInvocationID.xy), ivec4(motion[index], 0, 0));
 }
