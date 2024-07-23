@@ -59,7 +59,7 @@ void main()
     }
 
     ivec2 effective_qpel = local_coord - 4;
-    uint encoded_sad = uint(255.0 * sad + 0.5) + abs(effective_qpel.x) + abs(effective_qpel.y);
+    uint encoded_sad = uint(1023.0 * sad + 0.5) + abs(effective_qpel.x) + abs(effective_qpel.y);
     encoded_sad = bitfieldInsert(encoded_sad << 16u, uint(effective_qpel.x), 0, 8);
     encoded_sad = bitfieldInsert(encoded_sad, uint(effective_qpel.y), 8, 8);
     ENCODED_SAD[local_coord.y * 8 + local_coord.x] = encoded_sad;

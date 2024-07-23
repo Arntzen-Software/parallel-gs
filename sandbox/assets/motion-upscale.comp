@@ -57,7 +57,7 @@ void main()
 
     if (gl_LocalInvocationIndex < 4)
     {
-        uint encoded = uint(255.0 * (SADs[gl_LocalInvocationIndex][0] + SADs[gl_LocalInvocationIndex][1]) + 0.5);
+        uint encoded = uint(1024.0 * 4.0 * (SADs[gl_LocalInvocationIndex][0] + SADs[gl_LocalInvocationIndex][1]) + 0.5);
         encoded = bitfieldInsert(encoded << 16u, uint(MVx[gl_LocalInvocationIndex]), 0, 8);
         encoded = bitfieldInsert(encoded, uint(MVy[gl_LocalInvocationIndex]), 8, 8);
         SADEncoded[gl_LocalInvocationIndex] = encoded;

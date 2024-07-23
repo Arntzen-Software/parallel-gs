@@ -19,7 +19,7 @@ static Vulkan::ImageHandle compute_luminance_hierarchy(Device &device, const cha
 	uint32_t luma_width = (img->get_width() + 31u) & ~31u;
 	uint32_t luma_height = (img->get_height() + 31u) & ~31u;
 
-	info = ImageCreateInfo::immutable_2d_image(luma_width, luma_height, VK_FORMAT_R8_UNORM);
+	info = ImageCreateInfo::immutable_2d_image(luma_width, luma_height, VK_FORMAT_R16_UNORM);
 	info.levels = 5;
 	info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 	info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -31,7 +31,7 @@ static Vulkan::ImageHandle compute_luminance_hierarchy(Device &device, const cha
 	{
 		ImageViewCreateInfo view_info = {};
 		view_info.image = luma_img.get();
-		view_info.format = VK_FORMAT_R8_UNORM;
+		view_info.format = VK_FORMAT_R16_UNORM;
 		view_info.base_level = level;
 		view_info.levels = 1;
 		view_info.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -102,7 +102,7 @@ static ImageHandle run_optical_flow(Device &device, const Image &current, const 
 		info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
 		ImageViewCreateInfo view_info = {};
-		view_info.format = VK_FORMAT_R8_UNORM;
+		view_info.format = VK_FORMAT_R16_UNORM;
 		view_info.view_type = VK_IMAGE_VIEW_TYPE_2D;
 		view_info.base_level = level;
 		view_info.levels = 1;
@@ -352,6 +352,46 @@ static ImageHandle run_reconstruct(Device &device, int phase,
 	return reconstructed;
 }
 
+static void run_weave(Device &device, const ImageView &current, const ImageView &reconstructed, int phase)
+{
+	auto cmd = device.request_command_buffer();
+
+	auto info = ImageCreateInfo::immutable_2d_image(
+			current.get_view_width(), current.get_view_height() * 2, VK_FORMAT_R8G8B8A8_UNORM);
+	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+	info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	auto weaved = device.create_image(info);
+
+	cmd->image_barrier(*weaved, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+	                   0, 0, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+
+	cmd->begin_region("weave");
+	{
+		struct Push
+		{
+			uvec2 resolution;
+			int32_t phase;
+		} push = {};
+
+		push.resolution.x = info.width;
+		push.resolution.y = info.height;
+		push.phase = phase;
+
+		cmd->set_program("assets://motion-weave.comp");
+		cmd->push_constants(&push, 0, sizeof(push));
+		cmd->set_storage_texture(0, 0, weaved->get_view());
+		cmd->set_texture(0, 1, current);
+		cmd->set_texture(0, 2, reconstructed);
+		cmd->dispatch((push.resolution.x + 7) / 8, (push.resolution.y + 7) / 8, 1);
+
+		cmd->image_barrier(*weaved, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	}
+	cmd->end_region();
+	device.submit(cmd);
+}
+
 static void run_test(Device &device)
 {
 	auto luma1 = compute_luminance_hierarchy(device, "/tmp/vsync1.png");
@@ -361,6 +401,8 @@ static void run_test(Device &device)
 	auto qpel_frame = run_optical_flow(device, *luma3, *luma1, "frame-me");
 
 	auto reconstructed = run_reconstruct(device, 1, luma2->get_view(), luma1->get_view(), qpel_field->get_view(), qpel_frame->get_view());
+	run_weave(device, luma3->get_view(), reconstructed->get_view(), 1);
+	run_weave(device, luma3->get_view(), luma2->get_view(), 1);
 }
 
 static int main_inner()

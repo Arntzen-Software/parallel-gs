@@ -105,7 +105,7 @@ void main()
 
     // Add extra headroom for tie-breaker SAD in the LSBs.
     // Add a small cost for larger MVs.
-    uvec4 usads = uvec4(255.0 * 4.0 * sads + 0.5);
+    uvec4 usads = uvec4(1023.0 * sads + 0.5);
 
     SAD[local_index] = min_sad4(uvec4(
         encode_sad(usads.x, 2 * local_coord + ivec2(-SEARCH_RADIUS + 0, -SEARCH_RADIUS + 0)),

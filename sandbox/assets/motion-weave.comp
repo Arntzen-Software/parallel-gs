@@ -1,0 +1,38 @@
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+#pragma optimize off
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba8) writeonly uniform image2D uWeaved;
+layout(set = 0, binding = 1) uniform texture2D uCurrent;
+layout(set = 0, binding = 2) uniform texture2D uReconstructed;
+
+layout(push_constant) uniform Register
+{
+    ivec2 resolution;
+    int field;
+};
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(coord, resolution)))
+        return;
+
+    vec3 color;
+
+    if ((coord.y & 1) == field)
+    {
+        color = texelFetch(uCurrent, ivec2(coord.x, coord.y >> 1), 0).rgb;
+    }
+    else
+    {
+        color = texelFetch(uReconstructed, ivec2(coord.x, coord.y >> 1), 0).rgb;
+
+        vec3 lo = texelFetch(uCurrent, ivec2(coord.x, (coord.y - 1) >> 1), 0).rgb;
+        vec3 hi = texelFetch(uCurrent, ivec2(coord.x, (coord.y + 1) >> 1), 0).rgb;
+        color = 0.5 * (lo + hi);
+    }
+
+    imageStore(uWeaved, coord, vec4(color, 1.0));
+}

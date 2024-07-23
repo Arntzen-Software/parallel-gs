@@ -44,8 +44,9 @@ void main()
     vec3 field_reconstructed = textureLod(uPrevField, field_uv, 0.0).rgb;
     vec3 frame_reconstructed = textureLod(uPrevFrame, frame_uv, 0.0).rgb;
 
-    bool use_frame = dot(frame_motion, frame_motion) <= dot(field_motion, field_motion);
-    vec3 reconstructed = use_frame ? frame_reconstructed : field_reconstructed;
+    //bool use_frame = dot(frame_motion, frame_motion) <= dot(field_motion, field_motion);
+    //vec3 reconstructed = use_frame ? frame_reconstructed : field_reconstructed;
+    vec3 reconstructed = field_reconstructed;
 
     imageStore(uEstimatedField, coord, vec4(reconstructed, 1.0));
 }

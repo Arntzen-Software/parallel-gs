@@ -7,7 +7,7 @@
 
 layout(local_size_x = 64) in;
 
-layout(set = 0, binding = 0, r8) uniform writeonly image2D uImages[5];
+layout(set = 0, binding = 0, r16) uniform writeonly image2D uImages[5];
 layout(set = 0, binding = 5) uniform sampler2D uTexture;
 
 layout(push_constant, std430) uniform Registers
