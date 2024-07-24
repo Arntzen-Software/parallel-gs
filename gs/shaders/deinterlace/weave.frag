@@ -19,6 +19,7 @@ layout(push_constant) uniform Registers
 {
     vec2 inv_field_resolution;
     vec2 inv_qpel_resolution;
+    vec2 luma_scaling;
     int phase;
     int height_minus_1;
 };
@@ -70,7 +71,6 @@ void main()
         float diff = max(min(Mh, Ml), Mc);
         ivec2 field_mv = texelFetch(uMotion, coord >> ivec2(2, 3), 0).xy + ivec2(0, 2 - 4 * phase);
 
-        #if 1
         if (diff < 0.001 || all(equal(field_mv, ivec2(0))))
         {
             // If the field pixels remain stable, assume no motion, and accept the old field as-is.
@@ -79,7 +79,6 @@ void main()
             FragColor = vec4(field1, 1.0);
         }
         else
-    #endif
         {
             // Compensate for the fact we did motion estimation across fields.
             vec2 pix_uv = (vec2(coord.x, coord.y >> 1) + 0.5) * inv_field_resolution;
@@ -89,6 +88,9 @@ void main()
             // Analyze the 3x3 neighborhood to attempt to detect weave artifacts where we don't have good MVs.
             // Fallback to bob in that case.
             vec2 top_left_uv = field_uv - 0.5 * inv_field_resolution;
+
+            // Size of luma pyramid is rounded up to 32 pixels, so have to compensate.
+            top_left_uv *= luma_scaling;
 
             vec4 luma00 = textureGather(uLuma1, top_left_uv);
             vec2 luma10 = textureGatherOffset(uLuma1, top_left_uv, ivec2(1, 0)).yz;

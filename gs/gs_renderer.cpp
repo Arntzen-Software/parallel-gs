@@ -2762,6 +2762,7 @@ Vulkan::ImageHandle GSRenderer::motion_deinterlace(Vulkan::CommandBuffer &cmd, c
 	{
 		vec2 inv_field_resolution;
 		vec2 inv_qpel_resolution;
+		vec2 luma_scaling;
 		uint32_t phase;
 		uint32_t height_minus_1;
 	} push = {};
@@ -2770,6 +2771,8 @@ Vulkan::ImageHandle GSRenderer::motion_deinterlace(Vulkan::CommandBuffer &cmd, c
 	push.inv_field_resolution.y = 1.0f / float(vsync_last_fields[0]->get_height());
 	push.inv_qpel_resolution.x = 0.25f * push.inv_field_resolution.x;
 	push.inv_qpel_resolution.y = 0.25f * push.inv_field_resolution.y;
+	push.luma_scaling.x = float(vsync_last_fields[0]->get_width()) / float(vsync_last_luma_pyramids[0]->get_width());
+	push.luma_scaling.y = float(vsync_last_fields[0]->get_height()) / float(vsync_last_luma_pyramids[0]->get_height());
 	push.phase = vsync.phase;
 	push.height_minus_1 = deinterlaced->get_height() - 1;
 
@@ -2867,6 +2870,21 @@ Vulkan::ImageHandle GSRenderer::compute_optical_flow(Vulkan::CommandBuffer &cmd,
 
 		uint32_t mv_width_for_level = (mv_width + ((1 << level) - 1)) >> level;
 		uint32_t mv_height_for_level = (mv_height + ((1 << level) - 1)) >> level;
+		uint32_t mv_width_for_next_level;
+		uint32_t mv_height_for_next_level;
+
+		if (level > 0)
+		{
+			int next_level = level - 1;
+			mv_width_for_next_level = (mv_width + ((1 << next_level) - 1)) >> next_level;
+			mv_height_for_next_level = (mv_height + ((1 << next_level) - 1)) >> next_level;
+		}
+		else
+		{
+			mv_width_for_next_level = mv_width_for_level * 2;
+			mv_height_for_next_level = mv_height_for_level * 2;
+		}
+
 		auto info = Vulkan::ImageCreateInfo::immutable_2d_image(
 				mv_width_for_level, mv_height_for_level, VK_FORMAT_R8G8_SINT);
 		info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -2887,8 +2905,8 @@ Vulkan::ImageHandle GSRenderer::compute_optical_flow(Vulkan::CommandBuffer &cmd,
 		search_img->set_layout(Vulkan::Layout::General);
 		auto filter_img = device->create_image(info);
 
-		info.width *= 2;
-		info.height *= 2;
+		info.width = mv_width_for_next_level;
+		info.height = mv_height_for_next_level;
 		auto upscale_img = device->create_image(info);
 
 		if (!previous_level_upscale)
@@ -2972,18 +2990,6 @@ Vulkan::ImageHandle GSRenderer::compute_optical_flow(Vulkan::CommandBuffer &cmd,
 			push.inv_resolution.x = 0.5f / float(mv_width_for_level);
 			push.inv_resolution.y = 0.5f / float(mv_height_for_level);
 
-			if (level > 0)
-			{
-				int next_level = level - 1;
-				mv_width_for_level = (mv_width + ((1 << next_level) - 1)) >> next_level;
-				mv_height_for_level = (mv_height + ((1 << next_level) - 1)) >> next_level;
-			}
-			else
-			{
-				mv_width_for_level *= 2;
-				mv_height_for_level *= 2;
-			}
-
 			cmd.set_program(shaders.motion_upscale);
 			cmd.push_constants(&push, 0, sizeof(push));
 
@@ -2991,17 +2997,22 @@ Vulkan::ImageHandle GSRenderer::compute_optical_flow(Vulkan::CommandBuffer &cmd,
 			cmd.set_texture(0, 1, *current_view, Vulkan::StockSampler::NearestClamp);
 			cmd.set_texture(0, 2, *prev_view, Vulkan::StockSampler::NearestClamp);
 			cmd.set_texture(0, 3, filter_img->get_view(), Vulkan::StockSampler::NearestClamp);
-			cmd.dispatch(mv_width_for_level, mv_height_for_level, 1);
+			cmd.dispatch(mv_width_for_next_level, mv_height_for_next_level, 1);
 		}
 		cmd.end_region();
 
 		previous_level_upscale = upscale_img;
+
+		cmd.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+		                                                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+
 		cmd.end_region();
 	}
 
 	cmd.image_barrier(*previous_level_upscale, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-					  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-					  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+	                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+	                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 
 	// Do QPEL refinement of motion. Search in a +/- 1 pixel region.
 	Vulkan::ImageHandle qpel_img, filter_img;
