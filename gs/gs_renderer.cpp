@@ -10,6 +10,7 @@
 #include "bitops.hpp"
 #include "shaders/slangmosh.hpp"
 #include "shaders/swizzle_utils.h"
+#include "thread_id.hpp"
 #include <utility>
 #include <algorithm>
 
@@ -301,6 +302,8 @@ void GSRenderer::kick_compilation_tasks()
 
 		auto async_task = std::async(std::launch::async, [this, moved_tasks = std::move(deferred)]()
 		{
+			// Just shuts up warnings.
+			Util::register_thread_index(0);
 			for (auto &task: moved_tasks)
 			{
 				// If we destroy the device before threads are done spinning.
