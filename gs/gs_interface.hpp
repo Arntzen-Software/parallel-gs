@@ -157,6 +157,11 @@ struct VSyncInfo
 	// Honor CRTC offsets. Otherwise, tries to avoid any slight pixel shifts causing small black borders.
 	// Especially relevant in no-overscan mode.
 	bool crtc_offsets;
+
+	// Use MAGH to deduce desired scanout resolution horizontally.
+	// Generally, analog video does not have a fixed horizontal resolution, so we're free to fudge it a bit.
+	// Avoids extra bi-linear blur for 512x448 games, but will interact funny with integer scaling for example.
+	bool adapt_to_internal_horizontal_resolution;
 };
 
 struct GSOptions

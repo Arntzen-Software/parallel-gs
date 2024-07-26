@@ -13,6 +13,7 @@
 #include "thread_id.hpp"
 #include <utility>
 #include <algorithm>
+#include <cmath>
 
 namespace ParallelGS
 {
@@ -2593,6 +2594,27 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		}
 	}
 
+	if (info.adapt_to_internal_horizontal_resolution)
+	{
+		uint32_t horiz_resolution0 = circuit1 ? circuit1->get_width() : 0;
+		uint32_t horiz_resolution1 = circuit2 ? circuit2->get_width() : 0;
+
+		if (horiz_resolution0 == 0)
+			horiz_resolution0 = horiz_resolution1;
+		if (horiz_resolution1 == 0)
+			horiz_resolution1 = horiz_resolution0;
+
+		if (horiz_resolution0 && horiz_resolution0 == horiz_resolution1)
+		{
+			float width_scaling = float(horiz_resolution0) / float(mode_width);
+			crtc_rects[0].offset.x = int32_t(std::round(float(crtc_rects[0].offset.x) * width_scaling));
+			crtc_rects[1].offset.x = int32_t(std::round(float(crtc_rects[1].offset.x) * width_scaling));
+			crtc_rects[0].extent.width = uint32_t(std::round(float(crtc_rects[0].extent.width) * width_scaling));
+			crtc_rects[1].extent.width = uint32_t(std::round(float(crtc_rects[1].extent.width) * width_scaling));
+			mode_width = horiz_resolution0;
+		}
+	}
+
 	image_info.width = mode_width;
 	image_info.height = mode_height;
 	auto merged = device->create_image(image_info);
@@ -2708,6 +2730,8 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	cmd.end_render_pass();
 
 	ScanoutResult result = {};
+	result.internal_width = mode_width;
+	result.internal_height = mode_height;
 
 	if (is_interlaced || force_deinterlace)
 	{

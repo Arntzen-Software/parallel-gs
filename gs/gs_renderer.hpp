@@ -21,6 +21,8 @@ namespace ParallelGS
 struct ScanoutResult
 {
 	Vulkan::ImageHandle image;
+	uint32_t internal_width;
+	uint32_t internal_height;
 };
 
 struct FlushStats
