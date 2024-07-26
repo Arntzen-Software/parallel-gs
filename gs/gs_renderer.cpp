@@ -2433,6 +2433,10 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	uint32_t MMOD = priv.pmode.MMOD;
 	uint32_t ALP = priv.pmode.ALP;
 	uint32_t SLBG = priv.pmode.SLBG;
+	VkOffset2D crtc_shift = { INT32_MAX, INT32_MAX };
+	VkRect2D crtc_rects[2] = {};
+	bool skip_shift_x = false;
+	bool skip_shift_y = false;
 
 	if (EN1 && EN2 && anti_blur && alternative_sampling)
 	{
@@ -2505,6 +2509,26 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			sample_crtc_circuit(cmd, *circuit1, priv.dispfb1, rect);
 			device->set_name(*circuit1, "Circuit1");
 		}
+
+		int off_x = int(priv.display1.DX) / int(clock_divider) - scan_offset_x;
+		int off_y = ((int(priv.display1.DY) + int(alternative_sampling && !is_interlaced)) >> int(is_interlaced)) - scan_offset_y;
+		uint32_t width = (priv.display1.DW + 1) / clock_divider;
+		uint32_t height = (priv.display1.DH + 1 + int(is_interlaced)) >> int(is_interlaced);
+
+		if (!is_interlaced)
+			height = (height + 1) & ~1;
+
+		crtc_rects[0] = {{ off_x, off_y }, { width, height }};
+
+		// If game is not using 1:1 regions, we'll need to consider CRTC offsets.
+		// We could try to center it ourselves, but it would likely break in some cases.
+		if (width != mode_width)
+			skip_shift_x = true;
+		if (height != mode_height)
+			skip_shift_y = true;
+
+		crtc_shift.x = std::min<int32_t>(off_x, crtc_shift.x);
+		crtc_shift.y = std::min<int32_t>(off_y, crtc_shift.y);
 	}
 
 	if (EN2)
@@ -2531,6 +2555,41 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			circuit2 = device->create_image(image_info);
 			sample_crtc_circuit(cmd, *circuit2, priv.dispfb2, rect);
 			device->set_name(*circuit2, "Circuit2");
+		}
+
+		int off_x = int(priv.display2.DX) / int(clock_divider) - scan_offset_x;
+		int off_y = ((int(priv.display2.DY) + int(alternative_sampling && !is_interlaced)) >> int(is_interlaced)) - scan_offset_y;
+		uint32_t width = (priv.display2.DW + 1) / clock_divider;
+		uint32_t height = (priv.display2.DH + 1 + int(is_interlaced)) >> int(is_interlaced);
+
+		if (!is_interlaced)
+			height = (height + 1) & ~1;
+
+		crtc_rects[1] = {{ off_x, off_y }, { width, height }};
+
+		// If game is not using 1:1 regions, we'll need to consider CRTC offsets.
+		// We could try to center it ourselves, but it would likely break in some cases.
+		if (width != mode_width)
+			skip_shift_x = true;
+		if (height != mode_height)
+			skip_shift_y = true;
+
+		crtc_shift.x = std::min<int32_t>(off_x, crtc_shift.x);
+		crtc_shift.y = std::min<int32_t>(off_y, crtc_shift.y);
+	}
+
+	if (!info.overscan && !info.crtc_offsets)
+	{
+		if (!skip_shift_x)
+		{
+			crtc_rects[0].offset.x -= crtc_shift.x;
+			crtc_rects[1].offset.x -= crtc_shift.x;
+		}
+
+		if (!skip_shift_y)
+		{
+			crtc_rects[0].offset.y -= crtc_shift.y;
+			crtc_rects[1].offset.y -= crtc_shift.y;
 		}
 	}
 
@@ -2587,22 +2646,13 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		cmd.set_program(blit_quad);
 		cmd.set_texture(0, 0, circuit2->get_view(), Vulkan::StockSampler::LinearClamp);
 
-		uint32_t width = (priv.display2.DW + 1) / clock_divider;
-		uint32_t height = (priv.display2.DH + 1 + int(is_interlaced)) >> int(is_interlaced);
-
-		if (!is_interlaced)
-			height = (height + 1) & ~1;
-
-		int off_x = int(priv.display2.DX) / int(clock_divider) - scan_offset_x;
-		int off_y = ((int(priv.display2.DY) + int(alternative_sampling && !is_interlaced)) >> int(is_interlaced)) - scan_offset_y;
-
-		if (width && height)
+		if (crtc_rects[1].extent.width && crtc_rects[1].extent.height)
 		{
 			VkViewport vp = {};
-			vp.x = float(off_x);
-			vp.y = float(off_y);
-			vp.width = float(width);
-			vp.height = float(height);
+			vp.x = float(crtc_rects[1].offset.x);
+			vp.y = float(crtc_rects[1].offset.y);
+			vp.width = float(crtc_rects[1].extent.width);
+			vp.height = float(crtc_rects[1].extent.height);
 			vp.minDepth = 0.0f;
 			vp.maxDepth = 1.0f;
 			cmd.set_viewport(vp);
@@ -2616,21 +2666,13 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		cmd.set_program(blit_quad);
 		cmd.set_texture(0, 0, circuit1->get_view(), Vulkan::StockSampler::LinearClamp);
 
-		uint32_t width = (priv.display1.DW + 1) / clock_divider;
-		uint32_t height = (priv.display1.DH + 1 + int(is_interlaced)) >> int(is_interlaced);
-		int off_x = int(priv.display1.DX) / int(clock_divider) - scan_offset_x;
-		int off_y = ((int(priv.display1.DY) + int(alternative_sampling && !is_interlaced)) >> int(is_interlaced)) - scan_offset_y;
-
-		if (!is_interlaced)
-			height = (height + 1) & ~1;
-
-		if (width && height)
+		if (crtc_rects[0].extent.width && crtc_rects[0].extent.height)
 		{
 			VkViewport vp = {};
-			vp.x = float(off_x);
-			vp.y = float(off_y);
-			vp.width = float(width);
-			vp.height = float(height);
+			vp.x = float(crtc_rects[0].offset.x);
+			vp.y = float(crtc_rects[0].offset.y);
+			vp.width = float(crtc_rects[0].extent.width);
+			vp.height = float(crtc_rects[0].extent.height);
 			vp.minDepth = 0.0f;
 			vp.maxDepth = 1.0f;
 			cmd.set_viewport(vp);
@@ -2643,7 +2685,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 					cmd.set_blend_enable(true);
 					cmd.set_blend_op(VK_BLEND_OP_ADD);
 					cmd.set_blend_factors(VK_BLEND_FACTOR_CONSTANT_ALPHA, VK_BLEND_FACTOR_ONE,
-						VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA, VK_BLEND_FACTOR_ZERO);
+					                      VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA, VK_BLEND_FACTOR_ZERO);
 
 					float alp = float(uint32_t(priv.pmode.ALP)) * (1.0f / 255.0f);
 					const float alps[4] = { alp, alp, alp, alp };

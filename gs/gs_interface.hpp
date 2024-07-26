@@ -154,6 +154,9 @@ struct VSyncInfo
 	// Tries to counteract field blending.
 	// For force_progressive or super-sampling, setting this to true is usually a good idea.
 	bool anti_blur;
+	// Honor CRTC offsets. Otherwise, tries to avoid any slight pixel shifts causing small black borders.
+	// Especially relevant in no-overscan mode.
+	bool crtc_offsets;
 };
 
 struct GSOptions
