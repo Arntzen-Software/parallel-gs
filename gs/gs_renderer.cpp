@@ -2617,6 +2617,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 	image_info.width = mode_width;
 	image_info.height = mode_height;
+	image_info.misc |= Vulkan::IMAGE_MISC_MUTABLE_SRGB_BIT;
 	auto merged = device->create_image(image_info);
 
 	device->set_name(*merged, "Merged field");
@@ -2785,6 +2786,7 @@ Vulkan::ImageHandle GSRenderer::fastmad_deinterlace(Vulkan::CommandBuffer &cmd, 
 			vsync_last_fields[0]->get_width(), vsync_last_fields[0]->get_height() * 2, VK_FORMAT_R8G8B8A8_UNORM);
 	image_info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 	image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+	image_info.misc |= Vulkan::IMAGE_MISC_MUTABLE_SRGB_BIT;
 
 	auto deinterlaced = device->create_image(image_info);
 	device->set_name(*deinterlaced, "Deinterlaced");

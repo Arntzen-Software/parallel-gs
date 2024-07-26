@@ -28,6 +28,7 @@ struct Shaders
 	Shader sharpen_frag = {};
 	Shader upscale_vert = {};
 	Shader upscale_frag = {};
+	Shader blit = {};
 	Shaders() = default;
 
 	template <typename Device, typename Layout, typename Resolver>

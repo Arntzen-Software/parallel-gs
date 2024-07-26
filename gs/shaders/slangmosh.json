@@ -73,6 +73,10 @@
 		{
 			"name": "upscale_frag",
 			"path": "../../Granite/assets/shaders/post/ffx-fsr/upscale.frag"
+		},
+		{
+			"name": "blit",
+			"path": "../../Granite/assets/shaders/blit.frag"
 		}
 	]
 }
