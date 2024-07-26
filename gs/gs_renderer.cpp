@@ -2285,9 +2285,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	{
 		if (overscan)
 		{
-			mode_width = 711;
+			mode_width = 712;
 			mode_height = 240;
-			scan_offset_x = 150;
+			scan_offset_x = 123;
 			scan_offset_y = 17;
 		}
 		else
@@ -2316,7 +2316,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		// back in the day, but most TVs supported it ...
 		if (overscan)
 		{
-			mode_width = 711;
+			mode_width = 712;
 			mode_height = 288;
 			scan_offset_x = 133;
 			scan_offset_y = 21;
