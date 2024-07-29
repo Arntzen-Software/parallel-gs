@@ -979,7 +979,9 @@ vec4 compute_combined_color(
 	vec4 c1 = unpackUnorm4x8(attrs.rgba1);
 	vec4 c2 = unpackUnorm4x8(attrs.rgba2);
 
-	precise vec4 color = roundEven(255.0 * (c0 + (c1 - c0) * i + (c2 - c0) * j));
+	// Interpolated RGBA seems to require a floor.
+	const float RGBA_EPSILON = 1.0 / 256.0;
+	precise vec4 color = floor(255.0 * (c0 + (c1 - c0) * i + (c2 - c0) * j) + RGBA_EPSILON);
 
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
 	last_stqf.z = stqf.z;
