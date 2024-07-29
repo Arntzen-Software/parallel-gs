@@ -72,6 +72,23 @@ and implemented most of VRAM upload / texture caching shaders.
 
 Most of the non-shader code was rewritten after the initial prototype implementation with a lot of hindsight from that earlier work.
 
+## PCSX2 integration
+
+The PCSX2 integration is early days and very experimental / hacky. An Arch Linux PKGBUILD can be found in `misc/`.
+To build with Visual Studio, apply the Git patches manually and checkout parallel-gs in the correct folder (`pcsx2/GS/parallel-gs`).
+
+There is very basic UI integration. As API, paraLLEl-GS can be chosen. The super-sampling rate can be modified.
+Under display settings, some options are honored:
+
+- Bilinear filtering. The sharp bilinear option uses FSR1 + RCAS.
+- Anti-Blur
+- Screen Offsets
+- Show Overscan
+- Integer Scaling
+
+Save states seem to work, and GS dumps also works.
+OSD does *not* work in the current integration.
+
 ## Dump format
 
 The primary way to debug paraLLEl-GS is through dumps.
