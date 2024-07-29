@@ -15,6 +15,12 @@
 #include <algorithm>
 #include <cmath>
 
+#if defined(__clang__)
+#pragma clang diagnostic ignored "-Wformat-security"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wformat-security"
+#endif
+
 namespace ParallelGS
 {
 // Pink-ish. Intended to look good in RenderDoc's default light theme.
