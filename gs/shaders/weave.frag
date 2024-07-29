@@ -25,19 +25,9 @@ layout(push_constant) uniform Registers
 // based on local field difference.
 // To improve further on this, local motion estimation and compensation should help.
 
-// The algorithm is modified in two ways:
-// - Instead of accepting Field1 directly, extrapolate one field's worth from Field1 and Field3 in time.
-//   This should help fading effects.
-//   Clamp this result between current field's Y neighbors to avoid overshoots.
-//   When Field1 and Field3 differences are very small (or 0), accept Field1 without any changes and clamping.
-// - Make the selection between bob and weave a smoothstep instead of step.
-
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 const float BOB_FACTOR_LO = 0.04;
 const float BOB_FACTOR_HI = 0.06;
-
-const float EXTENDED_WEAVE_FACTOR_LO = 0.01;
-const float EXTENDED_WEAVE_FACTOR_HI = 0.03;
 
 void main()
 {
@@ -71,15 +61,7 @@ void main()
         float diff = max(min(Mh, Ml), Mc);
 
         float bob_factor = smoothstep(BOB_FACTOR_LO, BOB_FACTOR_HI, diff);
-        float extended_weave_factor = smoothstep(EXTENDED_WEAVE_FACTOR_LO, EXTENDED_WEAVE_FACTOR_HI, Mc);
-
-        // If pixel didn't meaningfully change between field1 and field3, accept the color as-is without any neighborhood clamp.
-        // We know field3 and field1 at correct position, so extrapolate any delta.
-        // Clamp the result to within the neighborhood of current field to avoid overshoots.
-        vec3 extended_weave_color = clamp(field1 * 1.5 - field3 * 0.5, min(current0, current1), max(current0, current1));
-        vec3 weave_color = mix(field1, extended_weave_color, extended_weave_factor);
-
-        vec3 color = mix(weave_color, 0.5 * (current0 + current1), bob_factor);
+        vec3 color = mix(field1, 0.5 * (current0 + current1), bob_factor);
         FragColor = vec4(color, 1.0);
     }
 }
