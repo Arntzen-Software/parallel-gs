@@ -1671,6 +1671,7 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 			insert_label(cmd, "  PABE: %u", (state.blend_mode & BLEND_MODE_PABE_BIT) ? 1 : 0);
 			insert_label(cmd, "  ATE: %u", (state.blend_mode & BLEND_MODE_ATE_BIT) ? 1 : 0);
 			insert_label(cmd, "  ATEMODE: %u", (state.blend_mode >> BLEND_MODE_ATE_MODE_OFFSET) & ((1u << BLEND_MODE_ATE_MODE_BITS) - 1u));
+			insert_label(cmd, "  AFAIL: %u", (state.blend_mode >> BLEND_MODE_AFAIL_MODE_OFFSET) & ((1u << BLEND_MODE_AFAIL_MODE_BITS) - 1u));
 			insert_label(cmd, "  COLCLAMP: %u", (state.blend_mode & BLEND_MODE_COLCLAMP_BIT) ? 1 : 0);
 			insert_label(cmd, "  A: %u", (state.blend_mode >> BLEND_MODE_A_MODE_OFFSET) & ((1u << BLEND_MODE_A_MODE_BITS) - 1u));
 			insert_label(cmd, "  B: %u", (state.blend_mode >> BLEND_MODE_B_MODE_OFFSET) & ((1u << BLEND_MODE_B_MODE_BITS) - 1u));
