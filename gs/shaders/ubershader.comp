@@ -881,7 +881,7 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 	precise vec2 uv_1 = uv * scale_1;
 
 	// Want a soft-floor here, not round behavior.
-	const float UV_EPSILON_PRE_SNAP = 1.0 / 16.0;
+	const float UV_EPSILON_PRE_SNAP = 1.0 / 64.0;
 	// We need to bias less than 1 / 512th texel, so that linear filter will RTE to correct subpixel.
 	// This is a 1 / 1024th pixel bias to counter-act any non-POT inv_scale_1 causing a round-down event.
 	const float UV_EPSILON_POST_SNAP = 16.0 / 1024.0;
