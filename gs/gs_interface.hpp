@@ -162,6 +162,14 @@ struct VSyncInfo
 	// Generally, analog video does not have a fixed horizontal resolution, so we're free to fudge it a bit.
 	// Avoids extra bi-linear blur for 512x448 games, but will interact funny with integer scaling for example.
 	bool adapt_to_internal_horizontal_resolution;
+
+	// If only one circuit is active (usually requires anti_blur to force single circuit),
+	// no deinterlacing is required, CRTC offsets are disabled, overscan is disabled,
+	// and there's no blending against background color,
+	// the final circuit merge step is skipped.
+	// This can help games which don't scan out the full 224 lines for example.
+	// This will look funny if the game is constantly changing vertical scanout resolution.
+	bool raw_circuit_scanout;
 };
 
 struct GSOptions

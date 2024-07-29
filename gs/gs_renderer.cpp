@@ -2615,6 +2615,36 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		}
 	}
 
+	ScanoutResult result = {};
+
+	if (info.raw_circuit_scanout &&
+	    !info.crtc_offsets && !info.overscan &&
+	    info.adapt_to_internal_horizontal_resolution &&
+	    !force_deinterlace && !is_interlaced)
+	{
+		bool is_raw_circuit1 = !circuit2 && MMOD == PMODEBits::MMOD_ALPHA_ALP && ALP == 0xff;
+		bool is_raw_circuit2 = !circuit1 && SLBG == PMODEBits::SLBG_ALPHA_BLEND_CIRCUIT2;
+
+		if (is_raw_circuit1)
+			result.image = std::move(circuit1);
+		else if (is_raw_circuit2)
+			result.image = std::move(circuit2);
+
+		cmd.image_barrier(*result.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		                  info.dst_layout,
+		                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		                  info.dst_stage, info.dst_access);
+
+		result.internal_width = result.image->get_width();
+		result.internal_height = result.image->get_height();
+		flush_submit(0);
+		return result;
+	}
+
+	result.internal_width = mode_width;
+	result.internal_height = mode_height;
+
 	image_info.width = mode_width;
 	image_info.height = mode_height;
 	image_info.misc |= Vulkan::IMAGE_MISC_MUTABLE_SRGB_BIT;
@@ -2729,10 +2759,6 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	}
 
 	cmd.end_render_pass();
-
-	ScanoutResult result = {};
-	result.internal_width = mode_width;
-	result.internal_height = mode_height;
 
 	if (is_interlaced || force_deinterlace)
 	{
