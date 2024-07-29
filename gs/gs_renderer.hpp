@@ -23,6 +23,12 @@ struct ScanoutResult
 	Vulkan::ImageHandle image;
 	uint32_t internal_width;
 	uint32_t internal_height;
+	// This is relevant for aspect ratio correction.
+	// If only a fraction of the horizontal or vertical region was scanned out,
+	// we have to adjust the input aspect ratio.
+	// Mode width/height are used as reference for the target output aspect ratio.
+	uint32_t mode_width;
+	uint32_t mode_height;
 };
 
 struct FlushStats

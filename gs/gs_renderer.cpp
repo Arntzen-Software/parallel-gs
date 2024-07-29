@@ -2617,6 +2617,8 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	}
 
 	ScanoutResult result = {};
+	result.mode_width = mode_width;
+	result.mode_height = mode_height;
 
 	if (info.raw_circuit_scanout &&
 	    !info.crtc_offsets && !info.overscan &&
