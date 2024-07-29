@@ -2631,24 +2631,27 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	    info.adapt_to_internal_horizontal_resolution &&
 	    !force_deinterlace && !is_interlaced)
 	{
-		bool is_raw_circuit1 = !circuit2 && MMOD == PMODEBits::MMOD_ALPHA_ALP && ALP == 0xff;
-		bool is_raw_circuit2 = !circuit1 && SLBG == PMODEBits::SLBG_ALPHA_BLEND_CIRCUIT2;
+		bool is_raw_circuit1 = circuit1 && !circuit2 && MMOD == PMODEBits::MMOD_ALPHA_ALP && ALP == 0xff;
+		bool is_raw_circuit2 = circuit2 && !circuit1 && SLBG == PMODEBits::SLBG_ALPHA_BLEND_CIRCUIT2;
 
 		if (is_raw_circuit1)
 			result.image = std::move(circuit1);
 		else if (is_raw_circuit2)
 			result.image = std::move(circuit2);
 
-		cmd.image_barrier(*result.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		                  info.dst_layout,
-		                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-		                  info.dst_stage, info.dst_access);
+		if (result.image)
+		{
+			cmd.image_barrier(*result.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			                  info.dst_layout,
+			                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			                  info.dst_stage, info.dst_access);
 
-		result.internal_width = result.image->get_width();
-		result.internal_height = result.image->get_height();
-		flush_submit(0);
-		return result;
+			result.internal_width = result.image->get_width();
+			result.internal_height = result.image->get_height();
+			flush_submit(0);
+			return result;
+		}
 	}
 
 	result.internal_width = mode_width;
