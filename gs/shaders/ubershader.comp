@@ -85,6 +85,11 @@ layout(rgba32f, set = 0, binding = BINDING_FEEDBACK_VARY) writeonly uniform imag
 layout(r32ui, set = 0, binding = BINDING_FEEDBACK_DEPTH) writeonly uniform uimage2DArray FeedbackDepth;
 #endif
 
+layout(push_constant) uniform Registers
+{
+	ShadingDescriptor registers;
+};
+
 struct ShadeRequest
 {
 	int coverage;
@@ -245,6 +250,8 @@ TileInfo get_tile_info()
 			info.fb_pixel.y >> SAMPLING_RATE_DIM_LOG2,
 			constants.fb_depth_page * PGS_BLOCKS_PER_PAGE,
 			constants.fb_page_stride, ZB_FMT, VRAM_MASK));
+
+		info.fb_index_depth += int(registers.fb_index_depth_offset);
 	}
 	else
 		info.fb_index_depth = 0;
@@ -291,12 +298,6 @@ vec2 last_ij = vec2(0.0);
 bool last_z_passed = false;
 #endif
 ////
-
-layout(push_constant) uniform Registers
-{
-	uint lo_primitive_index;
-	uint hi_primitive_index;
-} registers;
 
 bool z_test_coverage(uint z, bool z_test_greater)
 {

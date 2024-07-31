@@ -320,8 +320,10 @@ private:
 	void dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
 	void dispatch_shading_debug(
 			Vulkan::CommandBuffer &cmd, const RenderPass &rp,
-			uint32_t width, uint32_t height);
+			uint32_t width, uint32_t height, ShadingDescriptor push);
 	void flush_palette_upload();
+
+	void dispatch_cache_read_only_depth(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t depth_psm);
 
 	struct SamplingRect
 	{

@@ -170,6 +170,13 @@ struct SingleSampleHeuristic
 	uint depth_range_offset[256];
 };
 
+struct ShadingDescriptor
+{
+	uint lo_primitive_index;
+	uint hi_primitive_index;
+	uint fb_index_depth_offset;
+};
+
 // PrimitiveAttribute::state
 // If set, performs a greater-than or greater-or-equals test. If false, depth test always passes.
 CONSTEXPR int STATE_BIT_Z_TEST = 16;
@@ -336,15 +343,15 @@ CONSTEXPR int AFAIL_RGB_ONLY = 3;
 #define BINDING_SAMPLER_LINEAR 13
 #define BINDING_SAMPLER_COUNT 2
 
-#define BINDING_CLUT 15
-#define BINDING_TEXTURE_INFO 16
+#define BINDING_CLUT 14
+#define BINDING_TEXTURE_INFO 15
 
-#define BINDING_FEEDBACK_COLOR 17
-#define BINDING_FEEDBACK_DEPTH 18
-#define BINDING_FEEDBACK_PRIM 19
-#define BINDING_FEEDBACK_VARY 20
+#define BINDING_FEEDBACK_COLOR 16
+#define BINDING_FEEDBACK_DEPTH 17
+#define BINDING_FEEDBACK_PRIM 18
+#define BINDING_FEEDBACK_VARY 19
 
-#define BINDING_SINGLE_SAMPLE_HEURISTIC 21
+#define BINDING_SINGLE_SAMPLE_HEURISTIC 20
 
 #define DESCRIPTOR_SET_IMAGES 1
 

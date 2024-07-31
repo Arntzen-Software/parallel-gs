@@ -11,6 +11,7 @@
 #include "shaders/slangmosh.hpp"
 #include "shaders/swizzle_utils.h"
 #include "thread_id.hpp"
+#include "gs_util.hpp"
 #include <utility>
 #include <algorithm>
 #include <cmath>
@@ -78,6 +79,10 @@ void GSRenderer::init_vram(const GSOptions &options)
 		info.size = vram_size * (1 + 1 + int(options.super_sampling));
 	else
 		info.size = vram_size;
+
+	// Need a shadow copy of VRAM for various difficult feedback hazards.
+	// Simpler to reuse the same buffer.
+	info.size *= 2;
 
 	info.domain = Vulkan::BufferDomain::Device;
 	// For convenience.
@@ -1233,10 +1238,80 @@ static uint32_t deduce_effectice_z_psm(uint32_t color_psm, uint32_t depth_psm)
 	return depth_psm;
 }
 
+void GSRenderer::dispatch_cache_read_only_depth(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t depth_psm)
+{
+	auto z_rect = compute_page_rect(rp.fb.z.desc.ZBP * PGS_BLOCKS_PER_PAGE,
+	                                rp.base_x, rp.base_y, rp.coarse_tiles_width << rp.coarse_tile_size_log2,
+	                                rp.coarse_tiles_height << rp.coarse_tile_size_log2, rp.fb.frame.desc.FBW,
+	                                depth_psm);
+
+	uint32_t num_vram_slices = 1;
+	uint32_t sample_rate_log2 = rp.sampling_rate_y_log2 + rp.sampling_rate_x_log2;
+	if (sample_rate_log2 > 0)
+		num_vram_slices = 2u + (1u << sample_rate_log2);
+
+	// Upper half of VRAM is reserved for read-only caching.
+	VkDeviceSize read_only_offset = buffers.gpu->get_create_info().size / 2;
+
+	cmd.begin_region("depth-read-only-cache");
+	cmd.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+				VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+	{
+		VkDeviceSize offset = 0;
+		VkDeviceSize range = 0;
+
+		const auto flush_range = [&]() {
+			if (range)
+			{
+				for (uint32_t slice = 0; slice < num_vram_slices; slice++)
+				{
+					cmd.copy_buffer(*buffers.gpu, vram_size * slice + offset + read_only_offset,
+									*buffers.gpu, vram_size * slice + offset,
+									range);
+				}
+
+				range = 0;
+			}
+		};
+
+		const auto add_range = [&](VkDeviceSize new_offset, VkDeviceSize new_range) {
+			if (!range)
+			{
+				offset = new_offset;
+				range = new_range;
+			}
+			else if (offset + range == new_offset)
+			{
+				range += new_range;
+			}
+			else
+			{
+				flush_range();
+				offset = new_offset;
+				range = new_range;
+			}
+		};
+
+		for (uint32_t y = 0; y < z_rect.page_height; y++)
+		{
+			for (uint32_t x = 0; x < z_rect.page_width; x++)
+			{
+				uint32_t page_index = z_rect.base_page + y * z_rect.page_stride + x;
+				uint32_t page_offset = (page_index * PGS_PAGE_ALIGNMENT_BYTES) & (vram_size - 1);
+				add_range(page_offset, PGS_PAGE_ALIGNMENT_BYTES);
+			}
+		}
+
+		flush_range();
+	}
+	cmd.barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+	            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+	cmd.end_region();
+}
+
 void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
 {
 	cmd.begin_region("shading");
-	cmd.set_program(shaders.ubershader[int(rp.feedback_color)][int(rp.feedback_depth)]);
 
 	Vulkan::ImageHandle feedback_color, feedback_depth, feedback_prim, feedback_vary;
 
@@ -1337,12 +1412,28 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 
 	uint32_t variant_flags = 0;
 
-	bool single_primitive_step = rp.z_sensitive && rp.fb.frame.desc.FBP == rp.fb.z.desc.ZBP;
+	bool fb_z_alias = rp.z_sensitive && rp.fb.frame.desc.FBP == rp.fb.z.desc.ZBP;
+	bool single_primitive_step = false;
+
+	if (fb_z_alias)
+	{
+		for (uint32_t i = 0; i < rp.num_primitives; i++)
+		{
+			// If we have duelling color and Z write we're in deep trouble, so have to fall back
+			// to single primitive stepping.
+			if ((rp.prims[i].state & (1u << STATE_BIT_Z_WRITE)) != 0)
+			{
+				single_primitive_step = true;
+				break;
+			}
+		}
+	}
 
 	if (rp.has_aa1)
 		variant_flags |= VARIANT_FLAG_HAS_AA1_BIT;
 	if (rp.has_scanmsk)
 		variant_flags |= VARIANT_FLAG_HAS_SCANMSK_BIT;
+
 	if (single_primitive_step)
 		variant_flags |= VARIANT_FLAG_HAS_PRIMITIVE_RANGE_BIT;
 
@@ -1370,9 +1461,25 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	assert(rp.sampling_rate_x_log2 <= 2);
 	assert(rp.sampling_rate_y_log2 <= 2);
 
+	// Only way to make this work is to cache VRAM into a shadow copy.
+	uint32_t fb_index_depth_offset = 0;
+	if (fb_z_alias && !single_primitive_step)
+	{
+		uint32_t half_gpu_size = buffers.gpu->get_create_info().size / 2;
+		if (get_bits_per_pixel(depth_psm) == 16)
+			fb_index_depth_offset = half_gpu_size / sizeof(uint16_t);
+		else
+			fb_index_depth_offset = half_gpu_size / sizeof(uint32_t);
+
+		dispatch_cache_read_only_depth(cmd, rp, depth_psm);
+	}
+
+	cmd.set_program(shaders.ubershader[int(rp.feedback_color)][int(rp.feedback_depth)]);
+	ShadingDescriptor push = { 0, UINT32_MAX, fb_index_depth_offset };
+
 	if (rp.feedback_color)
 	{
-		dispatch_shading_debug(cmd, rp, width, height);
+		dispatch_shading_debug(cmd, rp, width, height, push);
 	}
 	else if (single_primitive_step)
 	{
@@ -1386,8 +1493,9 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 		uint32_t wg_y = (height + 7) / 8;
 		for (uint32_t i = 0; i < rp.num_primitives; i++)
 		{
-			const uint32_t range[] = { i, i };
-			cmd.push_constants(range, 0, sizeof(range));
+			push.lo_primitive_index = i;
+			push.hi_primitive_index = i;
+			cmd.push_constants(&push, 0, sizeof(push));
 			cmd.dispatch(1u << (rp.sampling_rate_x_log2 + rp.sampling_rate_y_log2), wg_x, wg_y);
 			cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 			            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1396,6 +1504,7 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	}
 	else
 	{
+		cmd.push_constants(&push, 0, sizeof(push));
 		uint32_t wg_x = (width + 7) / 8;
 		uint32_t wg_y = (height + 7) / 8;
 		cmd.dispatch(1u << (rp.sampling_rate_x_log2 + rp.sampling_rate_y_log2), wg_x, wg_y);
@@ -1415,18 +1524,20 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	cmd.end_region();
 }
 
-void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t width, uint32_t height)
+void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const RenderPass &rp,
+                                        uint32_t width, uint32_t height, ShadingDescriptor push)
 {
 	uint32_t stride = rp.debug_capture_stride ? rp.debug_capture_stride : rp.num_primitives;
 	for (uint32_t i = 0; i < rp.num_primitives; i += stride)
 	{
-		const uint32_t range[] = { i, std::min<uint32_t>(rp.num_primitives, i + stride) - 1 };
-		cmd.push_constants(range, 0, sizeof(range));
+		push.lo_primitive_index = i;
+		push.hi_primitive_index = std::min<uint32_t>(rp.num_primitives, i + stride) - 1;
+		cmd.push_constants(&push, 0, sizeof(push));
 
 		if (device->consumes_debug_markers())
 		{
-			begin_region(cmd, "Prim [%u, %u]", range[0], range[1]);
-			for (uint32_t j = range[0]; j <= range[1]; j++)
+			begin_region(cmd, "Prim [%u, %u]", push.lo_primitive_index, push.hi_primitive_index);
+			for (uint32_t j = push.lo_primitive_index; j <= push.hi_primitive_index; j++)
 			{
 				insert_label(cmd, "Prim #%u", j);
 				auto s = rp.prims[j].state;
