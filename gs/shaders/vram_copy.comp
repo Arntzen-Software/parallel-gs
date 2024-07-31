@@ -14,6 +14,7 @@ layout(constant_id = 1) const uint SOURCE_FMT = 0;
 layout(constant_id = 2) const uint STORAGE_FMT = 0;
 layout(constant_id = 3) const uint VRAM_MASK = 4 * 1024 * 1024 - 1;
 layout(constant_id = 4) const uint TRANSFER_DIR = 0;
+layout(constant_id = 5) const bool INVALIDATE_SUPER_SAMPLE = false;
 
 #include "utils.h"
 #include "swizzle_utils.h"
@@ -121,14 +122,29 @@ void main()
 		{
 			tex_data = uint(transfer32.data[source_addr]);
 		}
-		vram32.data[dest_addr] = uint(bitfieldInsert(rgba_data, tex_data, 0, 24));
+
+		uint write_word = uint(bitfieldInsert(rgba_data, tex_data, 0, 24));
+		vram32.data[dest_addr] = write_word;
+		// Only bother with this for 32-bit and 16-bit.
+		// Explicitly invalidate the super-sample, which can matter for depth since
+		// only the first sample is counted as a reference.
+		if (INVALIDATE_SUPER_SAMPLE)
+			vram32.data[dest_addr + (VRAM_MASK + 1) / 4] = write_word ^ -1u;
 	}
 	else if (is_tex_16bit)
 	{
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 4 < transfer.host_offset_qwords)
 			return;
 		if (TRANSFER_DIR != HOST_TO_LOCAL || source_addr < transfer16.data.length())
-			vram16.data[dest_addr] = transfer16.data[source_addr];
+		{
+			uint write_word = uint(transfer16.data[source_addr]);
+			vram16.data[dest_addr] = uint16_t(write_word);
+			// Only bother with this for 32-bit and 16-bit.
+			// Explicitly invalidate the super-sample, which can matter for depth since
+			// only the first sample is counted as a reference.
+			if (INVALIDATE_SUPER_SAMPLE)
+				vram16.data[dest_addr + (VRAM_MASK + 1) / 2] = uint16_t(write_word ^ -1u);
+		}
 	}
 	else if (is_tex_8bit)
 	{

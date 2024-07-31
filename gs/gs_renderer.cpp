@@ -248,9 +248,10 @@ void GSRenderer::kick_compilation_tasks()
 			{ 64, PSMT4 },
 		};
 
-		cmd->set_specialization_constant_mask(0x1f);
+		cmd->set_specialization_constant_mask(0x3f);
 		cmd->set_specialization_constant(3, vram_size - 1);
 		cmd->set_specialization_constant(4, HOST_TO_LOCAL);
+		cmd->set_specialization_constant(5, uint32_t(buffers.gpu->get_create_info().size > vram_size * 2));
 
 		for (auto &format : formats)
 		{
@@ -1599,12 +1600,13 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd, const CopyDescriptor
 
 	const uint32_t workgroup_size = is_fused_nibble ? 32 : 64;
 
-	cmd.set_specialization_constant_mask(0x1f);
+	cmd.set_specialization_constant_mask(0x3f);
 	cmd.set_specialization_constant(0, workgroup_size);
 	cmd.set_specialization_constant(1, desc.bitbltbuf.desc.SPSM);
 	cmd.set_specialization_constant(2, desc.bitbltbuf.desc.DPSM);
 	cmd.set_specialization_constant(3, vram_size - 1);
 	cmd.set_specialization_constant(4, desc.trxdir.desc.XDIR);
+	cmd.set_specialization_constant(5, uint32_t(buffers.gpu->get_create_info().size > vram_size * 2));
 
 	cmd.set_storage_buffer(0, 0, *buffers.gpu);
 	if (desc.trxdir.desc.XDIR == HOST_TO_LOCAL)
