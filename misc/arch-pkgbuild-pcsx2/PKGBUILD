@@ -5,7 +5,7 @@
 # Contributor: Themaister <post@themaister.net>
 
 pkgname=pcsx2-parallel-gs-git
-pkgver=2.1.36.r2.g9466cbe4fd
+pkgver=2.1.56.r2.g5f311b4a8b
 pkgrel=1
 pkgdesc='A Sony PlayStation 2 emulator with experimental paraLLEl-GS support'
 arch=(x86_64)
@@ -81,7 +81,6 @@ source=(
 	0001-Add-an-ad-hoc-GS-stream-format.patch
 	0002-Early-integration-of-parallel-GS.patch
 )
-install=pcsx2-git.install
 
 prepare() 
 {
@@ -151,7 +150,7 @@ build()
     -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
     -DDISABLE_ADVANCE_SIMD=ON \
     -DCMAKE_PREFIX_PATH="${srcdir}/deps-build" \
-    -DCMAKE_BUILD_RPATH="/opt/pcsx2/lib"
+    -DCMAKE_BUILD_RPATH="/opt/pcsx2-parallel-gs/lib"
 
     cd build
     ccache -p
