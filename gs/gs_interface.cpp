@@ -258,6 +258,13 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 	auto &desc = ctx.tex0.desc;
 	bool load_clut = false;
 
+	auto psm = uint32_t(desc.PSM);
+	auto cpsm = uint32_t(desc.CPSM);
+
+	// Only upload if PSM is valid.
+	if (!is_palette_format(psm))
+		return;
+
 	auto CLD = uint32_t(desc.CLD);
 
 	switch (CLD)
@@ -296,10 +303,7 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 	}
 
 	PageRectCLUT page = {};
-
 	uint32_t palette_width, palette_height;
-	auto psm = uint32_t(desc.PSM);
-	auto cpsm = uint32_t(desc.CPSM);
 	bool is_8bit_palette = false;
 
 	if (psm == PSMT8 || psm == PSMT8H)
