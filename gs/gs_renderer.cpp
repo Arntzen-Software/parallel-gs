@@ -2566,7 +2566,6 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		    priv.dispfb1.PSM == priv.dispfb2.PSM &&
 		    priv.dispfb1.FBW == priv.dispfb2.FBW &&
 		    priv.dispfb1.DBX == priv.dispfb2.DBX &&
-		    priv.display1.DX == priv.display2.DX &&
 		    priv.display1.MAGH == priv.display2.MAGH &&
 		    priv.display1.MAGV == priv.display2.MAGV)
 		{
