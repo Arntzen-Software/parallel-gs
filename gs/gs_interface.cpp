@@ -261,6 +261,10 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 	auto psm = uint32_t(desc.PSM);
 	auto cpsm = uint32_t(desc.CPSM);
 
+	// Fixup buggy case with PSMCT24, which is not supported.
+	if (cpsm == PSMCT24)
+		cpsm = PSMCT32;
+
 	// Only upload if PSM is valid.
 	if (!is_palette_format(psm))
 		return;
@@ -365,6 +369,7 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 	PaletteUploadDescriptor palette_desc = {};
 	palette_desc.texclut = registers.texclut;
 	palette_desc.tex0.desc = desc;
+	palette_desc.tex0.desc.CPSM = cpsm;
 
 	// Normalize fields we don't care about.
 	palette_desc.tex0.desc.TBP0 = 0;
@@ -844,6 +849,14 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 
 	auto psm = uint32_t(desc.tex0.desc.PSM);
 	auto cpsm = uint32_t(desc.tex0.desc.CPSM);
+
+	// Fixup buggy case with PSMCT24, which is not supported.
+	if (cpsm == PSMCT24)
+	{
+		cpsm = PSMCT32;
+		desc.tex0.desc.CPSM = PSMCT32;
+	}
+
 	uint32_t csa_mask = 0;
 
 	if (is_palette_format(psm))
