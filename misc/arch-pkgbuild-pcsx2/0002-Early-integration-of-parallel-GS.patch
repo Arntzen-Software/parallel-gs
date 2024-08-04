@@ -1,4 +1,4 @@
-From 0fa6136fb6bd919feedafa108af717a140c0dbcf Mon Sep 17 00:00:00 2001
+From 94a07da2c38a45e602e7eb94085808b160e7c40e Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Fri, 12 Jul 2024 23:01:39 +0200
 Subject: [PATCH 2/2] Early integration of parallel-GS.
@@ -12,7 +12,7 @@ Subject: [PATCH 2/2] Early integration of parallel-GS.
  pcsx2-qt/pcsx2-qt.vcxproj                     |   2 +-
  pcsx2/CMakeLists.txt                          |  20 +
  pcsx2/Config.h                                |   2 +
- pcsx2/GS/GS.cpp                               | 330 ++++++--
+ pcsx2/GS/GS.cpp                               | 340 ++++++--
  pcsx2/GS/GS.h                                 |   3 +
  pcsx2/GS/GSState.cpp                          |   2 +-
  pcsx2/GS/GSState.h                            |   2 +-
@@ -26,7 +26,7 @@ Subject: [PATCH 2/2] Early integration of parallel-GS.
  pcsx2/ImGui/ImGuiFullscreen.cpp               |   2 +
  pcsx2/Pcsx2Config.cpp                         |  23 +-
  pcsx2/pcsx2.vcxproj                           |  51 +-
- 22 files changed, 1351 insertions(+), 99 deletions(-)
+ 22 files changed, 1360 insertions(+), 100 deletions(-)
  create mode 100644 pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
@@ -301,7 +301,7 @@ index fc6d6d2bc..1ec44a4a9 100644
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
 diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
-index 0b24cd82c..02c645973 100644
+index 0b24cd82c..51406dfba 100644
 --- a/pcsx2/GS/GS.cpp
 +++ b/pcsx2/GS/GS.cpp
 @@ -22,6 +22,11 @@
@@ -668,7 +668,24 @@ index 0b24cd82c..02c645973 100644
  }
  
  void GSvsync(u32 field, bool registers_written)
-@@ -465,14 +590,37 @@ void GSvsync(u32 field, bool registers_written)
+@@ -457,7 +582,15 @@ void GSvsync(u32 field, bool registers_written)
+ 
+ 		const uint8_t priv_type = 3;
+ 		fwrite(&priv_type, sizeof(priv_type), 1, f);
+-		fwrite(g_gs_renderer->GetRegsMem(), sizeof(GSPrivRegSet), 1, f);
++
++#ifdef HAVE_PARALLEL_GS
++		if (g_pgs_renderer)
++			fwrite(g_pgs_renderer->GetRegsMem(), sizeof(GSPrivRegSet), 1, f);
++		else
++#endif
++		{
++			fwrite(g_gs_renderer->GetRegsMem(), sizeof(GSPrivRegSet), 1, f);
++		}
+ 
+ 		const uint8_t type = 1;
+ 		fwrite(&type, sizeof(type), 1, f);
+@@ -465,14 +598,37 @@ void GSvsync(u32 field, bool registers_written)
  		fwrite(&u8_field, sizeof(u8_field), 1, f);
  	}
  
@@ -708,7 +725,7 @@ index 0b24cd82c..02c645973 100644
  	if (mode == FreezeAction::Save)
  	{
  		return g_gs_renderer->Freeze(data, false);
-@@ -499,6 +647,10 @@ int GSfreeze(FreezeAction mode, freezeData* data)
+@@ -499,6 +655,10 @@ int GSfreeze(FreezeAction mode, freezeData* data)
  
  void GSQueueSnapshot(const std::string& path, u32 gsdump_frames)
  {
@@ -719,7 +736,7 @@ index 0b24cd82c..02c645973 100644
  	if (g_gs_renderer)
  		g_gs_renderer->QueueSnapshot(path, gsdump_frames);
  }
-@@ -525,11 +677,15 @@ void GSEndCapture()
+@@ -525,11 +685,15 @@ void GSEndCapture()
  
  void GSPresentCurrentFrame()
  {
@@ -736,7 +753,7 @@ index 0b24cd82c..02c645973 100644
  	if (g_gs_device->GetVSyncMode() == GSVSyncMode::FIFO)
  	{
  		// Let vsync take care of throttling.
-@@ -550,25 +706,49 @@ void GSGameChanged()
+@@ -550,25 +714,49 @@ void GSGameChanged()
  
  bool GSHasDisplayWindow()
  {
@@ -791,7 +808,7 @@ index 0b24cd82c..02c645973 100644
  }
  
  void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
-@@ -580,7 +760,12 @@ void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
+@@ -580,7 +768,12 @@ void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
  	}};
  	Console.WriteLnFmt(Color_StrongCyan, "Setting vsync mode: {}{}", modes[static_cast<size_t>(mode)],
  		allow_present_throttle ? " (throttle allowed)" : "");
@@ -805,7 +822,7 @@ index 0b24cd82c..02c645973 100644
  }
  
  bool GSWantsExclusiveFullscreen()
-@@ -629,6 +814,19 @@ std::vector<GSAdapterInfo> GSGetAdapterInfo(GSRendererType renderer)
+@@ -629,6 +822,19 @@ std::vector<GSAdapterInfo> GSGetAdapterInfo(GSRendererType renderer)
  		break;
  #endif
  
@@ -825,7 +842,7 @@ index 0b24cd82c..02c645973 100644
  #ifdef __APPLE__
  		case GSRendererType::Metal:
  		{
-@@ -652,13 +850,29 @@ u32 GSGetMaxUpscaleMultiplier(u32 max_texture_size)
+@@ -652,13 +858,29 @@ u32 GSGetMaxUpscaleMultiplier(u32 max_texture_size)
  
  GSVideoMode GSgetDisplayMode()
  {
@@ -856,7 +873,7 @@ index 0b24cd82c..02c645973 100644
  	GSRenderer* gs = g_gs_renderer.get();
  	if (!gs)
  	{
-@@ -756,8 +970,11 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
+@@ -756,8 +978,11 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
  {
  	Pcsx2Config::GSOptions old_config(std::move(GSConfig));
  	GSConfig = new_config;
@@ -870,7 +887,7 @@ index 0b24cd82c..02c645973 100644
  
  	// Handle OSD scale changes by pushing a window resize through.
  	if (new_config.OsdScale != old_config.OsdScale)
-@@ -771,6 +988,9 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
+@@ -771,6 +996,9 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
  		return;
  	}
  
@@ -2066,5 +2083,5 @@ index cbe7dac10..78e907ffd 100644
      <ClCompile Include="GS\Renderers\DX12\GSDevice12.cpp" />
      <ClCompile Include="GS\Renderers\DX12\GSTexture12.cpp" />
 -- 
-2.45.2
+2.46.0
 

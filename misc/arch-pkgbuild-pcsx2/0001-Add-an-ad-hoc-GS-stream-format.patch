@@ -1,4 +1,4 @@
-From be65c2cc2ec2098cc69ed3cb4ca0754e7c4361b5 Mon Sep 17 00:00:00 2001
+From 4d2b3d40cea34091a34e445b147a385d6228e1a6 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sun, 23 Jun 2024 14:54:43 +0200
 Subject: [PATCH 1/2] Add an ad-hoc GS stream format.
@@ -83,5 +83,5 @@ index 407cc8969..0b24cd82c 100644
  	// get cleared in HW VSync, and may be needed for a buffered draw (FFX FMVs).
  	g_gs_renderer->Flush(GSState::VSYNC);
 -- 
-2.45.2
+2.46.0
 
