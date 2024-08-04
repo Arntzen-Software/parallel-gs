@@ -859,7 +859,10 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 		desc.texa.desc.AEM = 0;
 
 		if (psm == PSMT8 || psm == PSMT8H)
+		{
 			csa_mask = 0xffff;
+			desc.tex0.desc.CSA = 0;
+		}
 		else
 			csa_mask = 1u;
 
