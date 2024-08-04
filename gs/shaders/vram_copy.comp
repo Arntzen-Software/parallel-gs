@@ -152,7 +152,7 @@ void main()
 			return;
 
 		uint source_offset = 0;
-		if (SOURCE_FMT == PSMT8H)
+		if (TRANSFER_DIR == LOCAL_TO_LOCAL && SOURCE_FMT == PSMT8H)
 		{
 			source_addr <<= 2;
 			source_offset = 3;
