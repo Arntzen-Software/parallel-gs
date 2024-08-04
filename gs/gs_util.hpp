@@ -82,8 +82,11 @@ static inline void vram_readback(void *readback_data, const void *host_data, uin
 				break;
 
 			case PSMT8:
-			case PSMT8H: // Is this allowed for readback?
 				static_cast<uint8_t *>(readback_data)[output_pixel] = static_cast<const uint8_t *>(host_data)[addr];
+				break;
+
+			case PSMT8H:
+				static_cast<uint8_t *>(readback_data)[output_pixel] = static_cast<const uint8_t *>(host_data)[4 * addr + 3];
 				break;
 
 			// 4-bit is not allowed for readback.
