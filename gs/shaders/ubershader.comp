@@ -328,6 +328,20 @@ void begin_tile()
 		if (SUPER_SAMPLE)
 		{
 			uint ref = uint(vram16.data[tile.fb_index + VRAM_SIZE_16]);
+
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+			if (sample_index == 0u)
+			{
+				imageStore(FeedbackColor,
+					ivec3((tile.fb_pixel >> SAMPLING_RATE_DIM_LOG2) - constants.base_pixel, 3),
+					unpackUnorm4x8(rgba16_to_rgba32(col, 0u, 0u, 0x80u)));
+
+				imageStore(FeedbackColor,
+					ivec3((tile.fb_pixel >> SAMPLING_RATE_DIM_LOG2) - constants.base_pixel, 4),
+					unpackUnorm4x8(rgba16_to_rgba32(ref, 0u, 0u, 0x80u)));
+			}
+#endif
+
 			if (ref == col)
 			{
 				// Load super-sampled data instead.
@@ -347,6 +361,20 @@ void begin_tile()
 		if (SUPER_SAMPLE)
 		{
 			uint ref = vram32.data[tile.fb_index + VRAM_SIZE_32];
+
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+			if (sample_index == 0u)
+			{
+				imageStore(FeedbackColor,
+					ivec3((tile.fb_pixel >> SAMPLING_RATE_DIM_LOG2) - constants.base_pixel, 3),
+					unpackUnorm4x8(fb_color));
+
+				imageStore(FeedbackColor,
+					ivec3((tile.fb_pixel >> SAMPLING_RATE_DIM_LOG2) - constants.base_pixel, 4),
+					unpackUnorm4x8(ref));
+			}
+#endif
+
 			if (ref == fb_color)
 			{
 				// Load super-sampled data instead.
@@ -536,6 +564,15 @@ void end_tile()
 	}
 
 	bool is_first_sample = !SUPER_SAMPLE || sample_index == 0;
+
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+	if (SUPER_SAMPLE && is_first_sample)
+	{
+		imageStore(FeedbackColor,
+			ivec3((tile.fb_pixel >> SAMPLING_RATE_DIM_LOG2) - constants.base_pixel, 2),
+			unpackUnorm4x8(fb_color));
+	}
+#endif
 
 	if (fb_color_dirty && is_first_sample)
 	{
