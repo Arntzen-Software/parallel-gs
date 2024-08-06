@@ -163,6 +163,7 @@ struct RenderPass
 	bool z_sensitive;
 	bool has_aa1;
 	bool has_scanmsk;
+	bool invalidate_super_sampling;
 
 	// For debugging. Aids capture tools.
 	bool feedback_color;
@@ -324,6 +325,8 @@ private:
 	void flush_palette_upload();
 
 	void dispatch_cache_read_only_depth(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t depth_psm);
+	void dispatch_invalidate_super_sampling(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
+	void dispatch_invalidate_super_sampling(Vulkan::CommandBuffer &cmd, const PageRect &rect);
 
 	struct SamplingRect
 	{
@@ -340,7 +343,7 @@ private:
 	                                         const DISPLAYBits &display, bool force_progressive);
 
 	void copy_pages(Vulkan::CommandBuffer &cmd, const Vulkan::Buffer &dst, const Vulkan::Buffer &src,
-	                const uint32_t *page_indices, uint32_t num_indices);
+	                const uint32_t *page_indices, uint32_t num_indices, bool invalidate_super_sampling);
 
 	struct CopyDescriptorPayload
 	{

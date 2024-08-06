@@ -795,7 +795,7 @@ void GSRenderer::end_host_write_vram_access()
 }
 
 void GSRenderer::copy_pages(Vulkan::CommandBuffer &cmd, const Vulkan::Buffer &dst, const Vulkan::Buffer &src,
-                            const uint32_t *page_indices, uint32_t num_indices)
+                            const uint32_t *page_indices, uint32_t num_indices, bool invalidate_super_sampling)
 {
 	VkDeviceSize merged_offset = 0;
 	VkDeviceSize merged_size = 0;
@@ -812,7 +812,12 @@ void GSRenderer::copy_pages(Vulkan::CommandBuffer &cmd, const Vulkan::Buffer &ds
 		else
 		{
 			if (merged_size)
+			{
 				cmd.copy_buffer(dst, merged_offset, src, merged_offset, merged_size);
+				// Invalidate all super-sampling state for pixels which CPU clobber.
+				if (invalidate_super_sampling)
+					cmd.fill_buffer(dst, 0, merged_offset + vram_size, merged_size);
+			}
 
 			merged_offset = offset;
 			merged_size = PageSize;
@@ -835,20 +840,26 @@ void GSRenderer::flush_host_vram_copy(const uint32_t *page_indices, uint32_t num
 	cmd.begin_region("flush-host-vram-copy");
 
 	Vulkan::QueryPoolHandle start_ts, end_ts;
-	if (enable_timestamps)
-		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
 
-	copy_pages(cmd, *buffers.gpu, *buffers.cpu, page_indices, num_indices);
+	VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_COPY_BIT;
+	bool invalidate_super_sampling = buffers.gpu->get_create_info().size > vram_size * 2;
+	if (invalidate_super_sampling)
+		stages |= VK_PIPELINE_STAGE_2_CLEAR_BIT;
+
+	if (enable_timestamps)
+		start_ts = cmd.write_timestamp(stages);
+
+	copy_pages(cmd, *buffers.gpu, *buffers.cpu, page_indices, num_indices, invalidate_super_sampling);
 	stats.num_copies += num_indices;
 
 	if (enable_timestamps)
 	{
-		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
+		end_ts = cmd.write_timestamp(stages);
 		timestamps.push_back({ TimestampType::SyncHostToVRAM, std::move(start_ts), std::move(end_ts) });
 	}
 
-	cmd.barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-	            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+	cmd.barrier(stages, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+	            stages, VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
 
 	cmd.end_region();
 	check_flush_stats();
@@ -864,7 +875,7 @@ void GSRenderer::flush_readback(const uint32_t *page_indices, uint32_t num_indic
 	Vulkan::QueryPoolHandle start_ts, end_ts;
 	if (enable_timestamps)
 		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
-	copy_pages(cmd, *buffers.cpu, *buffers.gpu, page_indices, num_indices);
+	copy_pages(cmd, *buffers.cpu, *buffers.gpu, page_indices, num_indices, false);
 	stats.num_copies += num_indices;
 
 	if (enable_timestamps)
@@ -1239,6 +1250,79 @@ static uint32_t deduce_effectice_z_psm(uint32_t color_psm, uint32_t depth_psm)
 	return depth_psm;
 }
 
+void GSRenderer::dispatch_invalidate_super_sampling(Vulkan::CommandBuffer &cmd, const PageRect &rect)
+{
+	// Clear all super-sampling state pages to 0. Nice and easy.
+	VkDeviceSize offset = 0;
+	VkDeviceSize range = 0;
+
+	const auto flush_range = [&]() {
+		if (range)
+		{
+			cmd.fill_buffer(*buffers.gpu, 0, vram_size + offset, range);
+			range = 0;
+		}
+	};
+
+	const auto add_range = [&](VkDeviceSize new_offset, VkDeviceSize new_range) {
+		if (!range)
+		{
+			offset = new_offset;
+			range = new_range;
+		}
+		else if (offset + range == new_offset)
+		{
+			range += new_range;
+		}
+		else
+		{
+			flush_range();
+			offset = new_offset;
+			range = new_range;
+		}
+	};
+
+	for (uint32_t y = 0; y < rect.page_height; y++)
+	{
+		for (uint32_t x = 0; x < rect.page_width; x++)
+		{
+			uint32_t page_index = rect.base_page + y * rect.page_stride + x;
+			uint32_t page_offset = (page_index * PGS_PAGE_ALIGNMENT_BYTES) & (vram_size - 1);
+			add_range(page_offset, PGS_PAGE_ALIGNMENT_BYTES);
+		}
+	}
+
+	flush_range();
+}
+
+void GSRenderer::dispatch_invalidate_super_sampling(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
+{
+	cmd.begin_region("invalidate-super-sample");
+	cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
+	            VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+
+	auto color_rect = compute_page_rect(rp.fb.frame.desc.FBP * PGS_BLOCKS_PER_PAGE,
+	                                    rp.base_x, rp.base_y, rp.coarse_tiles_width << rp.coarse_tile_size_log2,
+	                                    rp.coarse_tiles_height << rp.coarse_tile_size_log2, rp.fb.frame.desc.FBW,
+	                                    rp.fb.frame.desc.PSM);
+
+	dispatch_invalidate_super_sampling(cmd, color_rect);
+
+	if (rp.z_sensitive)
+	{
+		auto z_rect = compute_page_rect(rp.fb.z.desc.ZBP * PGS_BLOCKS_PER_PAGE,
+		                                rp.base_x, rp.base_y, rp.coarse_tiles_width << rp.coarse_tile_size_log2,
+		                                rp.coarse_tiles_height << rp.coarse_tile_size_log2, rp.fb.frame.desc.FBW,
+		                                rp.fb.z.desc.PSM);
+		dispatch_invalidate_super_sampling(cmd, z_rect);
+	}
+
+	cmd.barrier(VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+	            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+	            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+	cmd.end_region();
+}
+
 void GSRenderer::dispatch_cache_read_only_depth(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t depth_psm)
 {
 	auto z_rect = compute_page_rect(rp.fb.z.desc.ZBP * PGS_BLOCKS_PER_PAGE,
@@ -1487,6 +1571,9 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 
 		dispatch_cache_read_only_depth(cmd, rp, depth_psm);
 	}
+
+	if (rp.invalidate_super_sampling)
+		dispatch_invalidate_super_sampling(cmd, rp);
 
 	cmd.set_program(shaders.ubershader[int(rp.feedback_color)][int(rp.feedback_depth)]);
 	ShadingDescriptor push = { 0, UINT32_MAX, fb_index_depth_offset };

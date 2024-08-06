@@ -77,6 +77,19 @@ void GSInterface::set_super_sampling_rate(SuperSampling super_sampling)
 	renderer.invalidate_super_sampling_state();
 }
 
+static bool write_mask_is_channel_slice(uint32_t psm, uint32_t color_mask)
+{
+	// Only accept all or nothing masking, which is probably a case where game does not intend channel shuffle.
+	if (psm != PSMCT32 && psm != PSMCT24 && psm != PSMZ32 && psm != PSMZ24)
+	{
+		uint32_t fb_mask = color_mask & 0xf8f8f8;
+		if (fb_mask != 0xf8f8f8 && fb_mask != 0)
+			return true;
+	}
+
+	return false;
+}
+
 void GSInterface::flush_render_pass(FlushReason reason)
 {
 	ParallelGS::RenderPass rp = {};
@@ -137,6 +150,20 @@ void GSInterface::flush_render_pass(FlushReason reason)
 		// If there are only trivial UI passes, we should make it single-sampled.
 		rp.sampling_rate_x_log2 = sampling_rate_x_log2;
 		rp.sampling_rate_y_log2 = sampling_rate_y_log2;
+
+		// This case is to handle certain channel shuffling effects which render with 16-bit over a 32-bit FB
+		// using 0x3fff FBMSK. This ends up slicing the green channel and trying to resolve super-sampling in 16-bit
+		// domain leads to bogus results.
+		// If a channel is considered "odd" w.r.t. masking, force single-sampled rendering.
+		// Don't apply this fixup for 24/32-bit bpp, since there are no reasonable shuffle effects
+		// that operate on those bit-depths. Try to avoid false positives.
+		if ((rp.sampling_rate_x_log2 || rp.sampling_rate_y_log2) &&
+		    write_mask_is_channel_slice(render_pass.frame.desc.PSM, render_pass.color_write_mask))
+		{
+			rp.invalidate_super_sampling = true;
+			rp.sampling_rate_x_log2 = 0;
+			rp.sampling_rate_y_log2 = 0;
+		}
 
 		switch (debug_mode.draw_mode)
 		{

@@ -338,11 +338,11 @@ void begin_tile()
 
 				imageStore(FeedbackColor,
 					ivec3((tile.fb_pixel >> SAMPLING_RATE_DIM_LOG2) - constants.base_pixel, 4),
-					unpackUnorm4x8(rgba16_to_rgba32(ref, 0u, 0u, 0x80u)));
+					vec4(ref == 0xffff));
 			}
 #endif
 
-			if (ref == col)
+			if (ref == 0xffff)
 			{
 				// Load super-sampled data instead.
 				uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
@@ -361,6 +361,7 @@ void begin_tile()
 		if (SUPER_SAMPLE)
 		{
 			uint ref = vram32.data[tile.fb_index + VRAM_SIZE_32];
+			const uint ref_mask = is_fb_24bit ? 0xffffffu : ~0u;
 
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
 			if (sample_index == 0u)
@@ -371,15 +372,23 @@ void begin_tile()
 
 				imageStore(FeedbackColor,
 					ivec3((tile.fb_pixel >> SAMPLING_RATE_DIM_LOG2) - constants.base_pixel, 4),
-					unpackUnorm4x8(ref));
+					vec4((ref & ref_mask) == ref_mask));
 			}
 #endif
 
-			if (ref == fb_color)
+			if ((ref & ref_mask) == ref_mask)
 			{
 				// Load super-sampled data instead.
 				uint vram_offset = (sample_index + 2u) * VRAM_SIZE_32;
-				fb_color = vram32.data[tile.fb_index + vram_offset];
+				uint ssaa_fb_color = vram32.data[tile.fb_index + vram_offset];
+				// In case alpha was clobbered by texture uploads, preserve that channel in single sampled form.
+				if (is_fb_24bit && ref != ~0u)
+				{
+					fb_color = bitfieldInsert(fb_color, ssaa_fb_color, 0, 24);
+					fb_color_dirty = true;
+				}
+				else
+					fb_color = ssaa_fb_color;
 			}
 			else
 				fb_color_dirty = true;
@@ -394,8 +403,8 @@ void begin_tile()
 
 			if (SUPER_SAMPLE)
 			{
-				float ref = float(uint(vram16.data[tile.fb_index_depth + VRAM_SIZE_16]));
-				if (ref == fb_depth)
+				uint ref = uint(vram16.data[tile.fb_index_depth + VRAM_SIZE_16]);
+				if (ref == 0xffff)
 				{
 					// Load super-sampled data instead.
 					uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
@@ -408,24 +417,19 @@ void begin_tile()
 		else
 		{
 			uint z_uint = vram32.data[tile.fb_index_depth];
-			if (is_zb_24bit)
-				z_uint &= 0xffffffu;
-			fb_depth = z_uint;
+			const uint ref_mask = is_zb_24bit ? 0xffffffu : ~0u;
+			fb_depth = z_uint & ref_mask;
 
 			if (SUPER_SAMPLE)
 			{
 				uint uref = vram32.data[tile.fb_index_depth + VRAM_SIZE_32];
-				if (is_zb_24bit)
-					uref &= 0xffffffu;
 
-				if (uref == z_uint)
+				if ((uref & ref_mask) == ref_mask)
 				{
 					// Load super-sampled data instead.
 					uint vram_offset = (sample_index + 2u) * VRAM_SIZE_32;
 					z_uint = vram32.data[tile.fb_index_depth + vram_offset];
-					if (is_zb_24bit)
-						z_uint &= 0xffffffu;
-					fb_depth = z_uint;
+					fb_depth = z_uint & ref_mask;
 				}
 				else
 					fb_depth_dirty = true;
@@ -580,13 +584,14 @@ void end_tile()
 		{
 			// Store reference, so we can detect per-pixel when data changed in single-sampled domain.
 			if (SUPER_SAMPLE)
-				vram16.data[tile.fb_index + VRAM_SIZE_16] = uint16_t(rgba32_to_rgba16(fb_color));
+				vram16.data[tile.fb_index + VRAM_SIZE_16] = 0xffffus;
 			vram16.data[tile.fb_index] = uint16_t(rgba32_to_rgba16(fb_color));
 		}
 		else
 		{
+			// Even for 24-bpp, we preserve the 8-bit alpha in registers.
 			if (SUPER_SAMPLE)
-				vram32.data[tile.fb_index + VRAM_SIZE_32] = fb_color;
+				vram32.data[tile.fb_index + VRAM_SIZE_32] = ~0u;
 			vram32.data[tile.fb_index] = fb_color;
 		}
 	}
@@ -598,13 +603,17 @@ void end_tile()
 			if (is_zb_16bit)
 			{
 				if (SUPER_SAMPLE)
-					vram16.data[tile.fb_index_depth + VRAM_SIZE_16] = uint16_t(uint(fb_depth));
-				vram16.data[tile.fb_index_depth] = uint16_t(uint(fb_depth));
+					vram16.data[tile.fb_index_depth + VRAM_SIZE_16] = 0xffffus;
+				vram16.data[tile.fb_index_depth] = uint16_t(fb_depth);
 			}
 			else
 			{
 				if (SUPER_SAMPLE)
-					vram32.data[tile.fb_index_depth + VRAM_SIZE_32] = uint(fb_depth);
+				{
+					// Alpha channel is no longer valid in Z24. Hopefully no-one is insane enough to alias COLOR32 and Z24 :')
+					const uint ref = is_zb_24bit ? 0xffffffu : ~0u;
+					vram32.data[tile.fb_index_depth + VRAM_SIZE_32] = ref;
+				}
 
 				if (is_zb_24bit)
 				{
