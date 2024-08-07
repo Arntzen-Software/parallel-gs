@@ -65,7 +65,6 @@ const bool SUPER_SAMPLE = NUM_SAMPLES > 1;
 #include "swizzle_utils.h"
 
 const bool FEEDBACK = (VARIANT_FLAGS & VARIANT_FLAG_FEEDBACK_BIT) != 0;
-const bool INVARIANT_FP = (VARIANT_FLAGS & VARIANT_FLAG_INVARIANT_FP_BIT) != 0;
 const bool HAS_AA1 = (VARIANT_FLAGS & VARIANT_FLAG_HAS_AA1_BIT) != 0;
 const bool HAS_SCANMSK = (VARIANT_FLAGS & VARIANT_FLAG_HAS_SCANMSK_BIT) != 0;
 const bool HAS_PRIMITIVE_RANGE = (VARIANT_FLAGS & VARIANT_FLAG_HAS_PRIMITIVE_RANGE_BIT) != 0;
@@ -867,13 +866,7 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 		if (!fixed_LOD)
 		{
 			int L = int(bitfieldExtract(filtering, TEX2_L_OFFSET, TEX2_L_BITS));
-
-			precise float LOD_formula;
-			if (INVARIANT_FP)
-				LOD_formula = ldexp(-log2_approx(q), L) + float(K) * 0.0625;
-			else
-				LOD_formula = ldexp(-log2(q), L) + float(K) * 0.0625;
-
+			float LOD_formula = ldexp(-log2(abs(q)), L) + float(K) * 0.0625;
 			LOD = floor(LOD_formula * 16.0) * 0.0625; // 4-bit LOD precision
 			bilinear = LOD_formula >= 0.0 ? min_linear : mag_linear;
 		}
@@ -925,7 +918,7 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 	vec2 scale_1 = perspective ? ldexp(size.xy, ivec2(-LOD_1)) : vec2(1.0);
 	vec2 inv_scale_1 = ldexp(size.zw, ivec2(LOD_1));
 
-	precise vec2 uv_1 = uv * scale_1;
+	vec2 uv_1 = uv * scale_1;
 
 	// Want a soft-floor here, not round behavior.
 	const float UV_EPSILON_PRE_SNAP = 1.0 / 64.0;
@@ -964,7 +957,7 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 		vec2 scale_2 = ldexp(size.xy, ivec2(-LOD_2));
 		vec2 inv_scale_2 = ldexp(size.zw, ivec2(LOD_2));
 
-		precise vec2 uv_2 = uv * scale_2;
+		vec2 uv_2 = uv * scale_2;
 
 		if (sampler_clamp_s)
 			uv_2.x = texture_clamp(uv_2.x, region_coords.xz, LOD_2);
@@ -1001,22 +994,17 @@ vec4 compute_combined_color(
 	vec4 stqf1 = attrs.stqf1;
 	vec4 stqf2 = attrs.stqf2;
 
-	precise vec4 stqf = stqf0 + stqf1 * i + stqf2 * j;
+	vec4 stqf = stqf0 + stqf1 * i + stqf2 * j;
 	// Unsure if we should clip STQ here too to FP24.
 
 	if (NUM_SAMPLES > 1 && st_bb)
 		stqf.xy = clamp(stqf.xy, attrs.st_bb.xy, attrs.st_bb.zw);
 
 	// TODO: Figure out how we should handle Inf/NaN cases.
-	precise vec2 uv;
+	vec2 uv;
 
 	if (perspective)
-	{
-		if (INVARIANT_FP)
-			uv = stqf.xy * (sign(stqf.z) * rcp_float(abs(stqf.z)));
-		else
-			uv = stqf.xy / stqf.z;
-	}
+		uv = stqf.xy / stqf.z;
 	else
 		uv = stqf.xy;
 
@@ -1028,7 +1016,7 @@ vec4 compute_combined_color(
 
 	// Interpolated RGBA seems to require a floor.
 	const float RGBA_EPSILON = 1.0 / 256.0;
-	precise vec4 color = floor(255.0 * (c0 + (c1 - c0) * i + (c2 - c0) * j) + RGBA_EPSILON);
+	vec4 color = floor(255.0 * (c0 + (c1 - c0) * i + (c2 - c0) * j) + RGBA_EPSILON);
 
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
 	last_stqf.z = stqf.z;
