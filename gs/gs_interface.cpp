@@ -895,9 +895,6 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 		if (cpsm != PSMCT32)
 			desc.texa = registers.texa;
 
-		// AEM seems to not apply to palettes, but TA0/TA1 do seem to apply.
-		desc.texa.desc.AEM = 0;
-
 		if (psm == PSMT8 || psm == PSMT8H)
 		{
 			csa_mask = 0xffff;
