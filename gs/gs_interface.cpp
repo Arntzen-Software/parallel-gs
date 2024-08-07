@@ -1457,8 +1457,19 @@ void GSInterface::update_color_feedback_state()
 	if (ctx.tex1.desc.has_mipmap())
 		return;
 
+	auto tbp0 = uint32_t(ctx.tex0.desc.TBP0);
 	auto tex_psm = uint32_t(ctx.tex0.desc.PSM);
-	const bool equal_address = uint32_t(ctx.tex0.desc.TBP0) == ctx.frame.desc.FBP * PGS_BLOCKS_PER_PAGE;
+
+	// A game might use REGION_CLAMP to align the effective "base pointer" of the texture to the frame buffer.
+	if (!is_palette_format(tex_psm))
+	{
+		if (ctx.clamp.desc.WMS == CLAMPBits::REGION_CLAMP && ctx.clamp.desc.MINU != 0)
+			tbp0 += PGS_BLOCKS_PER_PAGE * (uint32_t(ctx.clamp.desc.MINU) >> get_data_structure(tex_psm).page_width_log2);
+		if (ctx.clamp.desc.WMT == CLAMPBits::REGION_CLAMP && ctx.clamp.desc.MINV != 0)
+			tbp0 += PGS_BLOCKS_PER_PAGE * uint32_t(ctx.tex0.desc.TBW) * (uint32_t(ctx.clamp.desc.MINV) >> get_data_structure(tex_psm).page_height_log2);
+	}
+
+	const bool equal_address = tbp0 == ctx.frame.desc.FBP * PGS_BLOCKS_PER_PAGE;
 
 	if (equal_address)
 	{

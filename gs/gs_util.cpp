@@ -60,8 +60,16 @@ void compute_has_potential_feedback(const TEX0Bits &tex0,
 	if (base_block % PGS_BLOCKS_PER_PAGE)
 		last_page++;
 
-	color_feedback = last_page >= fb_base_page;
-	depth_feedback = last_page >= z_base_page;
+	last_page -= base_page;
+	fb_base_page -= base_page;
+	z_base_page -= base_page;
+
+	// Only accept potential feedback if the overlap ratio is < 50% as a heuristic,
+	// (i.e. we assume the overlap is benign and only caused by POT rounding).
+	// Some games use UV offsets to align the texture appropriately with frame buffer exactly.
+	// Could do more accurate analysis, but this heuristic is probably good enough.
+	color_feedback = last_page >= fb_base_page && fb_base_page * 2 > last_page;
+	depth_feedback = last_page >= z_base_page && z_base_page * 2 > last_page;
 }
 
 PageRect compute_page_rect(uint32_t base_256, uint32_t x, uint32_t y,
