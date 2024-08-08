@@ -407,9 +407,20 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 	palette_desc.tex0.desc.TBW = 0;
 	palette_desc.tex0.desc.CLD = 0;
 
-	// CSA seems to be ignored on upload for 256 color mode.
 	if (is_8bit_palette)
-		palette_desc.tex0.desc.CSA = 0;
+	{
+		if (cpsm == PSMCT32)
+		{
+			// CSA seems to be ignored on upload for 256 color mode.
+			palette_desc.tex0.desc.CSA = 0;
+		}
+		else
+		{
+			// Seems like we need to support CSA = 16 at least.
+			// Unsure how this works in practice ...
+			palette_desc.tex0.desc.CSA &= 16;
+		}
+	}
 
 	// Try to find a memoized palette. In case game constantly uploads CLUT redundantly.
 	// This is very common, and this optimization is extremely important.
