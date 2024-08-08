@@ -99,19 +99,20 @@ static constexpr uint32_t TEXTURE_ADDR = 2 * 1024 * 1024;
 
 static void upload_palettes(GSDumpGenerator &iface)
 {
-	constexpr uint16_t RED = 0x1f;
-	constexpr uint16_t GREEN = 0x1f << 5;
-	constexpr uint16_t BLUE = 0x1f << 10;
-	constexpr uint16_t OPAQUE = 0x8000;
+	constexpr uint32_t RED = 0xffu;
+	constexpr uint32_t GREEN = 0xffu << 8;
+	constexpr uint32_t BLUE = 0xffu << 16;
+	constexpr uint32_t OPAQUE = 0x60000000u;
+	constexpr uint32_t NON_OPAQUE = 0x10000000u;
 
-	static const uint16_t texture[] = {
-		0, RED, GREEN, RED | GREEN,
-		BLUE, BLUE | RED, BLUE | GREEN, BLUE | RED | GREEN,
+	static const uint32_t texture[] = {
+		NON_OPAQUE, NON_OPAQUE | RED, NON_OPAQUE | GREEN, NON_OPAQUE | RED | GREEN,
+		NON_OPAQUE | BLUE, NON_OPAQUE | BLUE | RED, NON_OPAQUE | BLUE | GREEN, NON_OPAQUE | BLUE | RED | GREEN,
 		OPAQUE, OPAQUE | RED, OPAQUE | GREEN, OPAQUE | RED | GREEN,
 		OPAQUE | BLUE, OPAQUE | BLUE | RED, OPAQUE | BLUE | GREEN, OPAQUE | BLUE | RED | GREEN,
 	};
 
-	iface.write_image_upload(PALETTE_ADDR, PSMCT16, 8, 2, texture, sizeof(texture));
+	iface.write_image_upload(PALETTE_ADDR, PSMCT32, 8, 2, texture, sizeof(texture));
 }
 
 static void run_test(GSDumpGenerator &iface)
@@ -141,10 +142,10 @@ static void run_test(GSDumpGenerator &iface)
 	tex0.TH = 1;
 	tex0.TCC = 1;
 	tex0.TFX = COMBINER_DECAL;
-#if 0
-	tex0.TBP0 = PALETTE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
+#if 1
+	tex0.TBP0 = TEXTURE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
 	tex0.PSM = PSMT8;
-	tex0.CPSM = PSMCT16;
+	tex0.CPSM = PSMCT24;
 	tex0.CSM = 0;
 	tex0.CLD = 1;
 	tex0.CBP = PALETTE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
@@ -155,6 +156,7 @@ static void run_test(GSDumpGenerator &iface)
 	alpha.A = BLEND_RGB_SOURCE;
 	alpha.B = BLEND_RGB_ZERO;
 	alpha.C = BLEND_ALPHA_SOURCE;
+	alpha.D = BLEND_RGB_ZERO;
 	iface.write_register(RegisterAddr::ALPHA_1, alpha);
 
 	write_clear_quad(iface, 0, 0, 8 * 32, 2 * 32);
