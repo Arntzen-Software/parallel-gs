@@ -91,7 +91,7 @@ struct TEX1Bits
 		LINEAR_MIPMAP_LINEAR = 5
 	};
 
-	inline bool mmin_has_mipmap() const { return MMIN > LINEAR; }
+	inline bool mmin_has_mipmap() const { return MMIN > LINEAR && MMIN <= LINEAR_MIPMAP_LINEAR; }
 	inline bool has_mipmap() const { return mmin_has_mipmap() && MXL != 0; }
 };
 
