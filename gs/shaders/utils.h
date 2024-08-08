@@ -75,7 +75,7 @@ uint rgba16_to_rgba32(uint rgb_16, uint aem, uint ta0, uint ta1)
 {
 	ivec4 c = unpack_color16(rgb_16);
 
-	bool zero_alpha = bool(aem) && (c.x | c.y | c.z) == 0;
+	bool zero_alpha = bool(aem) && rgb_16 == 0;
 	c.w = zero_alpha ? 0 : (c.w == 0 ? int(ta0) : int(ta1));
 
 	return pack_color(c);
