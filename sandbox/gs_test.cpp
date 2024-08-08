@@ -14,232 +14,67 @@
 using namespace Vulkan;
 using namespace ParallelGS;
 
-static void write_point_primitive(GSDumpGenerator &iface, int x0, int y0)
+static void write_clear_quad(GSDumpGenerator &iface, int x0, int y0, int x1, int y1)
 {
 	struct Vertex
 	{
-		PackedRGBAQBits rgbaq;
+		PackedRGBAQBits rgba;
 		PackedXYZBits xyz;
 	} vertices[2] = {};
 
-	for (auto &vert : vertices)
-	{
-		vert.rgbaq.R = 0x40;
-		vert.rgbaq.G = 0xff;
-		vert.rgbaq.B = 0x60;
-		vert.rgbaq.A = 0xff;
-	}
-
-	vertices[1].rgbaq.R = 0xff;
-
 	vertices[0].xyz.X = x0 << PGS_SUBPIXEL_BITS;
 	vertices[0].xyz.Y = y0 << PGS_SUBPIXEL_BITS;
-	vertices[1].xyz.X = (x0 << PGS_SUBPIXEL_BITS) + 9;
-	vertices[1].xyz.Y = (y0 << PGS_SUBPIXEL_BITS) + 9;
+	vertices[1].xyz.X = x1 << PGS_SUBPIXEL_BITS;
+	vertices[1].xyz.Y = y1 << PGS_SUBPIXEL_BITS;
+
+	vertices[0].rgba.R = 0x10;
+	vertices[0].rgba.G = 0x10;
+	vertices[0].rgba.B = 0x10;
+	vertices[0].rgba.A = 0x80;
+	vertices[1].rgba.R = 0x10;
+	vertices[1].rgba.G = 0x10;
+	vertices[1].rgba.B = 0x10;
+	vertices[1].rgba.A = 0x80;
 
 	PRIMBits prim = {};
-	prim.TME = 1;
-	prim.IIP = 1;
-	prim.PRIM = 0; // Point
+	prim.PRIM = 6; // Sprite
 
 	static const GIFAddr addr[] = { GIFAddr::RGBAQ, GIFAddr::XYZ2 };
-	iface.write_packed(prim, addr, 2, 1, vertices);
-
-	prim.TME = 0;
-	prim.IIP = 1;
-	prim.PRIM = 0; // Point
-
-	iface.write_packed(prim, addr, 2, 1, vertices + 1);
+	iface.write_packed(prim, addr, 2, 2, vertices);
 }
 
 static void write_sprite_primitive(GSDumpGenerator &iface, int x0, int y0, int x1, int y1)
 {
 	struct Vertex
 	{
-		PackedSTBits st;
-		PackedRGBAQBits rgbaq;
+		PackedUVBits uv;
 		PackedXYZBits xyz;
 	} vertices[2] = {};
-
-	for (auto &vert : vertices)
-	{
-		vert.rgbaq.R = 0x80;
-		vert.rgbaq.G = 0x80;
-		vert.rgbaq.B = 0x80;
-		vert.rgbaq.A = 0xff;
-	}
 
 	vertices[0].xyz.X = x0 << PGS_SUBPIXEL_BITS;
 	vertices[0].xyz.Y = y0 << PGS_SUBPIXEL_BITS;
 	vertices[1].xyz.X = x1 << PGS_SUBPIXEL_BITS;
 	vertices[1].xyz.Y = y1 << PGS_SUBPIXEL_BITS;
 
-	//vertices[1].rgbaq.R = 0;
-
-#if 1
-	vertices[0].st.S = 0.0f;
-	vertices[0].st.T = 0.0f;
-	vertices[0].st.Q = 1.0f;
-	vertices[1].st.S = 1.0f;
-	vertices[1].st.T = 1.0f;
-	vertices[1].st.Q = 1.0f;
-#else
-	vertices[0].st.S = 0.0f;
-	vertices[0].st.T = 0.9f;
-	vertices[0].st.Q = 1.0f;
-	vertices[1].st = vertices[0].st;
-#endif
+	vertices[0].uv.U = 0;
+	vertices[0].uv.V = 0;
+	vertices[1].uv.U = 8 << PGS_SUBPIXEL_BITS;
+	vertices[1].uv.V = 2 << PGS_SUBPIXEL_BITS;
 
 	PRIMBits prim = {};
 	prim.TME = 1;
-	prim.IIP = 1;
+	prim.FST = 1;
+	prim.ABE = 1;
 	prim.PRIM = 6; // Sprite
 
-	static const GIFAddr addr[] = { GIFAddr::ST, GIFAddr::RGBAQ, GIFAddr::XYZ2 };
-	iface.write_packed(prim, addr, 3, 2, vertices);
-}
-
-static void write_line_primitive(GSDumpGenerator &iface, int x0, int y0, int x1, int y1)
-{
-	struct Vertex
-	{
-		PackedRGBAQBits rgbaq;
-		PackedXYZBits xyz;
-	} vertices[2] = {};
-
-	for (auto &vert : vertices)
-	{
-		vert.rgbaq.R = 0x7f;
-		vert.rgbaq.G = 0x7f;
-		vert.rgbaq.B = 0x7f;
-		vert.rgbaq.A = 0x80;
-	}
-
-	vertices[0].xyz.X = x0 << PGS_SUBPIXEL_BITS;
-	vertices[0].xyz.Y = y0 << PGS_SUBPIXEL_BITS;
-	vertices[1].xyz.X = x1 << PGS_SUBPIXEL_BITS;
-	vertices[1].xyz.Y = y1 << PGS_SUBPIXEL_BITS;
-
-	vertices[0].xyz.X -= 7;
-	vertices[0].xyz.Y -= 7;
-	vertices[1].xyz.X -= 7;
-	vertices[1].xyz.Y -= 7;
-
-	//vertices[0].rgbaq.R = 0;
-	//vertices[1].rgbaq.B = 0;
-
-	PRIMBits prim = {};
-	prim.TME = 0;
-	prim.IIP = 1;
-	prim.PRIM = 2; // Line
-	prim.ABE = 1;
-
-	// Additive blend
-	ALPHABits alpha = {};
-	alpha.A = 0;
-	alpha.B = 2;
-	alpha.C = 0;
-	alpha.D = 1;
-	iface.write_register(RegisterAddr::ALPHA_1, alpha);
-
-	static const GIFAddr addr[] = { GIFAddr::RGBAQ, GIFAddr::XYZ2 };
+	static const GIFAddr addr[] = { GIFAddr::UV, GIFAddr::XYZ2 };
 	iface.write_packed(prim, addr, 2, 2, vertices);
-}
-
-static void write_quad_primitive(GSDumpGenerator &iface, int x0, int y0, int x1, int y1, bool is_fg)
-{
-	struct Vertex
-	{
-		PackedSTBits st;
-		PackedRGBAQBits rgbaq;
-		PackedXYZBits xyz;
-	} vertices[3] = {};
-
-	for (auto &vert : vertices)
-	{
-		vert.rgbaq.A = 0x80;
-	}
-
-#if 0
-	vertices[0].rgbaq.R = 0xff;
-	vertices[1].rgbaq.G = 0xff;
-	vertices[2].rgbaq.B = 0xff;
-	vertices[3].rgbaq.R = 0x80;
-	vertices[3].rgbaq.G = 0x80;
-	vertices[3].rgbaq.B = 0x80;
-#endif
-
-	vertices[0].st.S = 0.0f;
-	vertices[0].st.T = 0.0f;
-	vertices[0].st.Q = 0.5f;
-	vertices[1].st.S = 1.0f;
-	vertices[1].st.T = 0.0f;
-	vertices[1].st.Q = 0.5f;
-	vertices[2].st.S = 0.0f;
-	vertices[2].st.T = 1.0f;
-	vertices[2].st.Q = 0.5f;
-
-	vertices[0].xyz.X = x0 << PGS_SUBPIXEL_BITS;
-	vertices[0].xyz.Y = y0 << PGS_SUBPIXEL_BITS;
-	vertices[1].xyz.X = x1 << PGS_SUBPIXEL_BITS;
-	vertices[1].xyz.Y = y0 << PGS_SUBPIXEL_BITS;
-	vertices[2].xyz.X = x0 << PGS_SUBPIXEL_BITS;
-	vertices[2].xyz.Y = y1 << PGS_SUBPIXEL_BITS;
-
-	if (is_fg)
-	{
-		vertices[0].xyz.X += 4; // 0.5 pixel offset
-		vertices[0].xyz.Y += 4;
-		vertices[1].xyz.X += 4;
-		vertices[1].xyz.Y += 4;
-		vertices[2].xyz.X += 4;
-		vertices[2].xyz.Y += 4;
-		vertices[0].rgbaq.G = 100;
-		vertices[1].rgbaq.G = 100 + 32;
-		vertices[2].rgbaq.G = 100;
-	}
-	else
-	{
-		vertices[1].xyz.X += 128;
-		vertices[2].xyz.Y += 128;
-		vertices[0].rgbaq.R = 0x20;
-		vertices[1].rgbaq.R = 0x20;
-		vertices[2].rgbaq.R = 0x20;
-		vertices[0].rgbaq.B = 0;
-		vertices[1].rgbaq.B = 0;
-		vertices[2].rgbaq.B = 0;
-		vertices[0].rgbaq.G = 0;
-		vertices[1].rgbaq.G = 0;
-		vertices[2].rgbaq.G = 0;
-	}
-
-	const uint32_t Z = is_fg ? 100 : 50;
-	vertices[0].xyz.Z = Z;
-	vertices[1].xyz.Z = Z;
-	vertices[2].xyz.Z = Z;
-
-	PRIMBits prim = {};
-	prim.TME = 0;
-	prim.IIP = 1;
-	prim.AA1 = is_fg ? 1 : 0;
-	prim.PRIM = 4; // TriStrip
-
-	ALPHABits alpha = {};
-	alpha.A = 0;
-	alpha.B = 1;
-	alpha.C = 0;
-	alpha.D = 1;
-	iface.write_register(RegisterAddr::ALPHA_1, alpha);
-
-	static const GIFAddr addr[] = { GIFAddr::ST, GIFAddr::RGBAQ, GIFAddr::XYZ2 };
-	iface.write_packed(prim, addr, 3, 3, vertices);
 }
 
 static void setup_frame_buffer(GSDumpGenerator &iface)
 {
 	TESTBits test = {};
-	test.ZTE = 1;
-	test.ZTST = 3;
+	test.ZTE = 0;
 	iface.write_register(RegisterAddr::TEST_1, test);
 
 	FRAMEBits frame = {};
@@ -248,15 +83,14 @@ static void setup_frame_buffer(GSDumpGenerator &iface)
 	iface.write_register(RegisterAddr::FRAME_1, frame);
 
 	ZBUFBits zbuf = {};
-	zbuf.ZMSK = 0;
-	zbuf.ZBP = 0x100000 / PGS_PAGE_ALIGNMENT_BYTES;
+	zbuf.ZMSK = 1;
 	iface.write_register(RegisterAddr::ZBUF_1, zbuf);
 
 	SCISSORBits scissor = {};
 	scissor.SCAX0 = 0;
 	scissor.SCAY0 = 0;
-	scissor.SCAX1 = 350 - 1;
-	scissor.SCAY1 = 350 - 1;
+	scissor.SCAX1 = 640 - 1;
+	scissor.SCAY1 = 448 - 1;
 	iface.write_register(RegisterAddr::SCISSOR_1, scissor);
 }
 
@@ -268,29 +102,16 @@ static void upload_palettes(GSDumpGenerator &iface)
 	constexpr uint16_t RED = 0x1f;
 	constexpr uint16_t GREEN = 0x1f << 5;
 	constexpr uint16_t BLUE = 0x1f << 10;
-	constexpr uint16_t WHITE = RED | GREEN | BLUE;
-
-	constexpr uint16_t HALF_RED = 0xf;
-	constexpr uint16_t HALF_GREEN = 0xf << 5;
-	constexpr uint16_t HALF_BLUE = 0xf << 10;
-	constexpr uint16_t HALF_WHITE = HALF_RED | HALF_GREEN | HALF_BLUE;
+	constexpr uint16_t OPAQUE = 0x8000;
 
 	static const uint16_t texture[] = {
-		RED, GREEN, BLUE, WHITE,
-		HALF_RED, HALF_GREEN, HALF_BLUE, HALF_WHITE,
-		WHITE, BLUE, GREEN, RED,
-		HALF_WHITE, HALF_BLUE, HALF_GREEN, HALF_RED,
-	};
-
-	static const uint16_t texture1[] = {
-		HALF_RED, HALF_GREEN, HALF_BLUE, HALF_WHITE,
-		RED, GREEN, BLUE, WHITE,
-		HALF_WHITE, HALF_BLUE, HALF_GREEN, HALF_RED,
-		WHITE, BLUE, GREEN, RED,
+		0, RED, GREEN, RED | GREEN,
+		BLUE, BLUE | RED, BLUE | GREEN, BLUE | RED | GREEN,
+		OPAQUE, OPAQUE | RED, OPAQUE | GREEN, OPAQUE | RED | GREEN,
+		OPAQUE | BLUE, OPAQUE | BLUE | RED, OPAQUE | BLUE | GREEN, OPAQUE | BLUE | RED | GREEN,
 	};
 
 	iface.write_image_upload(PALETTE_ADDR, PSMCT16, 8, 2, texture, sizeof(texture));
-	iface.write_image_upload(PALETTE_ADDR + PGS_BLOCK_ALIGNMENT_BYTES, PSMCT16, 8, 2, texture1, sizeof(texture1));
 }
 
 static void run_test(GSDumpGenerator &iface)
@@ -301,89 +122,51 @@ static void run_test(GSDumpGenerator &iface)
 	const uint8_t texture[] = {
 		0, 1, 2, 3, 4, 5, 6, 7,
 		8, 9, 10, 11, 12, 13, 14, 15,
-		0, 1, 2, 3, 4, 5, 6, 7,
-		8, 9, 10, 11, 12, 13, 14, 15,
-		0, 1, 2, 3, 4, 5, 6, 7,
-		8, 9, 10, 11, 12, 13, 14, 15,
-		0, 1, 2, 3, 4, 5, 6, 7,
-		8, 9, 10, 11, 12, 13, 14, 15,
 	};
 
-	iface.write_image_upload(TEXTURE_ADDR, PSMT8, 8, 8, texture, sizeof(texture));
+	iface.write_image_upload(TEXTURE_ADDR, PSMT8, 8, 2, texture, sizeof(texture));
 	iface.write_register(RegisterAddr::TEXFLUSH, uint64_t(0));
 
+	TEXABits texa = {};
+	texa.TA0 = 0x20;
+	texa.TA1 = 0x70;
+	texa.AEM = 1;
+	iface.write_register(RegisterAddr::TEXA, texa);
+
 	TEX0Bits tex0 = {};
-	tex0.TBP0 = TEXTURE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
+	tex0.TBP0 = PALETTE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
 	tex0.TBW = 8 / 64;
-	tex0.PSM = PSMT8;
+	tex0.PSM = PSMCT16;
 	tex0.TW = 3;
-	tex0.TH = 3;
-	tex0.TCC = 0;
-	tex0.TFX = 0;
+	tex0.TH = 1;
+	tex0.TCC = 1;
+	tex0.TFX = COMBINER_DECAL;
+#if 0
+	tex0.TBP0 = PALETTE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
+	tex0.PSM = PSMT8;
 	tex0.CPSM = PSMCT16;
 	tex0.CSM = 0;
 	tex0.CLD = 1;
-
-	tex0.CSA = 0;
 	tex0.CBP = PALETTE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
-	iface.write_register(RegisterAddr::TEX0_1, tex0);
-
-	tex0.CSA = 1;
-	tex0.CBP = (PALETTE_ADDR + PGS_BLOCK_ALIGNMENT_BYTES) / PGS_BLOCK_ALIGNMENT_BYTES;
-	iface.write_register(RegisterAddr::TEX0_1, tex0);
-
-	tex0.CLD = 0;
-	tex0.CSA = 0;
-	tex0.CBP = PALETTE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
-	iface.write_register(RegisterAddr::TEX0_1, tex0);
-
-#if 0
-	write_quad_primitive(iface, 50, 50, 150, 150);
-
-	tex0.CSA = 1;
-	tex0.CBP = (PALETTE_ADDR + BLOCK_ALIGNMENT_BYTES) / BLOCK_ALIGNMENT_BYTES;
-	iface.write_register(RegisterAddr::TEX0_1, tex0);
-
-	TEX1Bits tex1 = {};
-	tex1.MMAG = 0;
-	tex1.MMIN = 3;
-	iface.write_register(RegisterAddr::TEX1_1, tex1);
-
-	CLAMPBits clamp = {};
-	clamp.WMS = 3;
-	clamp.WMT = 3;
-	clamp.MINU = 2;
-	clamp.MINV = 2;
-	clamp.MAXU = 4;
-	iface.write_register(RegisterAddr::CLAMP_1, clamp);
-
-	// Technically needed when replacing which palette we're using.
-	iface.write_register(RegisterAddr::TEXFLUSH, uint64_t(0));
-	write_quad_primitive(iface, 200, 50, 300, 150);
-
-	write_point_primitive(iface, 50, 200);
-
-	constexpr int OFF = 80;
-
-	// Top-left to Bottom-right
-	write_sprite_primitive(iface, 50, 200, 100, 250);
-
-	// Bottom-right to top-left
-	write_sprite_primitive(iface, 100 + OFF, 250, 50 + OFF, 200);
-
-	// Top-right to bottom-left
-	write_sprite_primitive(iface, 100, 200 + OFF, 50, 250 + OFF);
-
-	// Bottom-left to top-right
-	write_sprite_primitive(iface, 50 + OFF, 250 + OFF, 100 + OFF, 200 + OFF);
-#else
-	write_quad_primitive(iface, 0, 0, 16, 16, false);
-	//write_quad_primitive(iface, 0, 0, 4, 4, false);
-	//write_line_primitive(iface, 50, 50, 100, 100);
-	//write_line_primitive(iface, 100, 100, 120, 110);
-	//write_line_primitive(iface, 120, 110, 130, 110);
-	//write_line_primitive(iface, 50, 81, 100, 21);
 #endif
+	iface.write_register(RegisterAddr::TEX0_1, tex0);
+
+	ALPHABits alpha = {};
+	alpha.A = BLEND_RGB_SOURCE;
+	alpha.B = BLEND_RGB_ZERO;
+	alpha.C = BLEND_ALPHA_SOURCE;
+	iface.write_register(RegisterAddr::ALPHA_1, alpha);
+
+	write_clear_quad(iface, 0, 0, 8 * 32, 2 * 32);
+
+	TESTBits test = {};
+	test.ATE = 1;
+	test.ATST = ATST_NOTEQUAL;
+	test.AREF = 0;
+	test.AFAIL = AFAIL_KEEP;
+	iface.write_register(RegisterAddr::TEST_1, test);
+
+	write_sprite_primitive(iface, 0, 0, 8 * 32, 2 * 32);
 }
 
 int main()
