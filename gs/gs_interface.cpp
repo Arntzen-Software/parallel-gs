@@ -2469,7 +2469,6 @@ void GSInterface::a_d_PRIM(uint64_t payload)
 	}
 
 	reset_vertex_queue();
-	registers.internal_q = 1.0f;
 
 	TRACE("PRIM", registers.prim);
 }
@@ -3191,7 +3190,7 @@ void GSInterface::gif_transfer(uint32_t path_index, const void *data, size_t siz
 		{
 			path.tag = qwords[i];
 			TRACE_HEADER("GIFTag", path.tag);
-			if (path.tag.FLG == GIFTagBits::PACKED && path.tag.PRE != 0)
+			if (path.tag.FLG == GIFTagBits::PACKED && path.tag.PRE != 0 && path.tag.NLOOP)
 			{
 				// Set PRIM register.
 				a_d_PRIM(path.tag.PRIM);
@@ -3203,6 +3202,9 @@ void GSInterface::gif_transfer(uint32_t path_index, const void *data, size_t siz
 			path.reg = 0;
 			i++;
 			nreg = path.tag.NREG == 0 ? 16 : path.tag.NREG;
+
+			if (path.tag.NLOOP)
+				registers.internal_q = 1.0f;
 		}
 		else
 		{
