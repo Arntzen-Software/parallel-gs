@@ -201,6 +201,7 @@ void GSInterface::flush_render_pass(FlushReason reason)
 	render_pass.color_write_mask = 0;
 	render_pass.z_sensitive = false;
 	render_pass.z_write = false;
+	render_pass.last_triangle_is_parallelogram_candidate = false;
 	render_pass.has_color_feedback = false;
 	render_pass.has_aa1 = false;
 	render_pass.has_scanmsk = false;
@@ -992,10 +993,24 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 		}
 		else
 		{
-			// Questionable, but it seems almost impossible to do this correctly and fast.
-			// Need to emulate the PS2 texture cache exactly, which is just insane.
-			// This should be fine in most cases.
-			cache_texture = false;
+			if (render_pass.last_triangle_is_parallelogram_candidate)
+			{
+				// Questionable heuristic. If it looks like we're going to be rendering sprites, be a bit more aggressive.
+				ivec4 hazard_bb(
+						std::max<int>(uv_bb.x, bb.x),
+						std::max<int>(uv_bb.y, bb.y),
+						std::min<int>(uv_bb.z, bb.z),
+						std::min<int>(uv_bb.w, bb.w));
+
+				cache_texture = hazard_bb.x > hazard_bb.z || hazard_bb.y > hazard_bb.w;
+			}
+			else
+			{
+				// Questionable, but it seems almost impossible to do this correctly and fast.
+				// Need to emulate the PS2 texture cache exactly, which is just insane.
+				// This should be fine in most cases.
+				cache_texture = false;
+			}
 		}
 	}
 	else if (feedback_mode == ColorFeedbackMode::BypassHazards)
@@ -1735,6 +1750,9 @@ void GSInterface::drawing_kick_append()
 		hi_pos = muglm::max(pos[2].pos, hi_pos);
 	}
 
+	auto pre_snap_lo = lo_pos;
+	auto pre_snap_hi = hi_pos;
+
 	hi_pos -= 1;
 	// Tighten the bounding box according to top-left raster rules.
 	if (quad || !registers.prim.desc.AA1)
@@ -1765,11 +1783,49 @@ void GSInterface::drawing_kick_append()
 		return;
 	}
 
+	bool is_parallelogram_candidate = false;
+	if (num_vertices == 3)
+	{
+		// If two adjacent triangles look a lot like a sprite we can fuse the two triangles into a quad,
+		// which is more efficient for our renderer.
+		// Also, skip any hazard checking when doing this.
+		// This helps avoid a lot of false positives when doing feedback rendering with two triangles which form a quad.
+		// Also speeds up raster / binning since we only have to consider one primitive.
+
+		ivec3 order;
+		is_parallelogram_candidate = triangle_is_parallelogram_candidate(
+				pos, attr, pre_snap_lo, pre_snap_hi, prim.desc, order);
+
+		// If no state changed, try to match the parallelogram.
+		if (state_tracker.dirty_flags == 0 && is_parallelogram_candidate &&
+		    render_pass.last_triangle_is_parallelogram_candidate &&
+		    triangles_form_parallelogram(pos, attr, order,
+		                                 render_pass.positions.data() + (render_pass.primitive_count - 1) * 3,
+		                                 render_pass.attributes.data() + (render_pass.primitive_count - 1) * 3,
+		                                 render_pass.last_triangle_parallelogram_order,
+		                                 prim.desc))
+		{
+			auto &state = render_pass.prim[render_pass.primitive_count - 1].state;
+			state |= (1u << STATE_BIT_PARALLELOGRAM) |
+			         (render_pass.last_triangle_parallelogram_order.x << STATE_PARALLELOGRAM_PROVOKING_OFFSET);
+
+			render_pass.last_triangle_is_parallelogram_candidate = false;
+			TRACE("Promote Parallelogram", DummyBits{});
+			return;
+		}
+
+		render_pass.last_triangle_parallelogram_order = order;
+	}
+
 	update_color_feedback_state();
 	auto feedback_mode = ColorFeedbackMode::None;
 	ivec4 uv_bb = {};
 	if (render_pass.is_color_feedback)
+	{
+		// Some heuristics would like to know about this.
+		render_pass.last_triangle_is_parallelogram_candidate = is_parallelogram_candidate;
 		feedback_mode = deduce_color_feedback_mode<quad, num_vertices>(pos, attr, ctx, prim.desc, uv_bb, bb);
+	}
 
 	// If there's a partial transfer in-flight, flush it.
 	// The write should technically happen as soon as we write HWREG.
@@ -1898,6 +1954,8 @@ void GSInterface::drawing_kick_append()
 	memcpy(render_pass.positions.data() + 3 * render_pass.primitive_count, pos, sizeof(pos));
 	memcpy(render_pass.attributes.data() + 3 * render_pass.primitive_count, attr, sizeof(attr));
 	render_pass.primitive_count++;
+	// Commit this here as well. Need to do it after flushing state, since that may reset any tracking state.
+	render_pass.last_triangle_is_parallelogram_candidate = is_parallelogram_candidate;
 
 	// Mark state as explicitly not dirty now. If we ended up flushing render pass due to e.g. texture state,
 	// some dirty bits will remain set, despite not actually being dirty.

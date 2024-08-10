@@ -314,6 +314,7 @@ private:
 		uint32_t color_write_mask = 0;
 		bool z_sensitive = false;
 		bool z_write = false;
+		bool last_triangle_is_parallelogram_candidate = false;
 		bool is_color_feedback = false;
 		bool is_awkward_color_feedback = false;
 		bool is_potential_color_feedback = false;
@@ -321,6 +322,7 @@ private:
 		bool has_color_feedback = false;
 		bool has_aa1 = false;
 		bool has_scanmsk = false;
+		ivec3 last_triangle_parallelogram_order;
 
 		uint32_t feedback_psm = 0;
 		uint32_t feedback_cpsm = 0;

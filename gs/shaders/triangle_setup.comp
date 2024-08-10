@@ -115,6 +115,7 @@ void main_inner(uint index)
     bool sprite = bitfieldExtract(state_word, STATE_BIT_SPRITE, 1) != 0;
     bool line = bitfieldExtract(state_word, STATE_BIT_LINE, 1) != 0;
     bool multisample = state_is_multisample(state_word);
+    uint provoking = bitfieldExtract(state_word, STATE_PARALLELOGRAM_PROVOKING_OFFSET, STATE_PARALLELOGRAM_PROVOKING_COUNT);
 
     VertexPosition v0 = vertex_position.data[3u * index + 0u];
     VertexPosition v1 = vertex_position.data[3u * index + 1u];
@@ -147,6 +148,18 @@ void main_inner(uint index)
             swap(a, b);
             swap(za, zb);
         }
+    }
+    else if (provoking == 1)
+    {
+        order = order.yxz;
+        swap(a, b);
+        swap(za, zb);
+    }
+    else if (provoking == 2)
+    {
+        order = order.zyx;
+        swap(a, c);
+        swap(za, zc);
     }
 
     if (sprite)
