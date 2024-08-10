@@ -972,9 +972,9 @@ void GSRenderer::bind_frame_resources(const RenderPass &rp)
 	cmd.set_sampler(0, BINDING_SAMPLER_LINEAR, Vulkan::StockSampler::LinearWrap);
 
 	cmd.set_storage_buffer(0, BINDING_VRAM, *buffers.gpu);
-	cmd.set_buffer_view(0, BINDING_FLOAT_RCP_LUT, *buffers.float_rcp_lut_view);
 
 	triangle_setup_cmd->set_buffer_view(0, BINDING_FIXED_RCP_LUT, *buffers.fixed_rcp_lut_view);
+	triangle_setup_cmd->set_buffer_view(0, BINDING_FLOAT_RCP_LUT, *buffers.float_rcp_lut_view);
 
 	auto pos_offset = allocate_device_scratch(
 			rp.num_primitives * 3 * sizeof(rp.positions[0]),

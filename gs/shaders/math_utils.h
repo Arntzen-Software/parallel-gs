@@ -71,14 +71,14 @@ float newton_rhapson_step(float xn, float a)
 	return result;
 }
 
-// ~22.5 bits of precision.
-// 1.0 / v is a little more accurate,
-// but this one is vendor invariant if rounding mode is known (RTE).
 float rcp_float(float v)
 {
 	uint u32 = floatBitsToUint(v);
-	uint s = u32 & 0x80000000u;
 	int exp = int(bitfieldExtract(u32, 23, 8));
+
+	// Handle divide by subnormal or 0.
+	if (exp == 0)
+		return uintBitsToFloat(0x7f800000);
 
 	int shifted_exp = 127 - exp;
 
@@ -91,39 +91,14 @@ float rcp_float(float v)
 	// Normalize exponent to 0. Inputs in [1.0, 2.0) range.
 	u32 |= 127u << 23u;
 	float a = uintBitsToFloat(u32);
+	// 4 iterations is probably overkill, but perf isn't super important since this is done once per-primitive.
 	float xn1 = newton_rhapson_step(xn0, a);
 	float xn2 = newton_rhapson_step(xn1, a);
-	float result = ldexp(xn2, shifted_exp);
-	// Handle divide by subnormal or 0.
-	result = exp == 0 ? (1.0 / 0.0) : result;
-	// XOR in sign bit.
-	result = uintBitsToFloat(floatBitsToUint(result) ^ s);
+	float xn3 = newton_rhapson_step(xn2, a);
+	float xn4 = newton_rhapson_step(xn3, a);
+	float result = ldexp(xn4, shifted_exp);
 	return result;
 }
 #endif
-
-float quantize_fp32_rte(float v, int bits)
-{
-	uint u32 = floatBitsToUint(v);
-	uint mask = (1u << bits) - 1u;
-	uint bias = mask >> 1u;
-	bias += (u32 >> bits) & 1u; // Tie positive or negative to get RTE behavior.
-	u32 = (u32 + bias) & ~mask;
-	return uintBitsToFloat(u32);
-}
-
-float log2_approx(float v)
-{
-	int exp = 0;
-	float fract = frexp(v, exp);
-	precise float result = (exp - 1) + 2 * (fract - 0.5);
-	return result;
-}
-
-vec3 clip_mantissa(vec3 stq)
-{
-	// The lower 8 bits of the mantissa are supposed to be rounded down.
-	return uintBitsToFloat(floatBitsToUint(stq) & ~0xffu);
-}
 
 #endif
