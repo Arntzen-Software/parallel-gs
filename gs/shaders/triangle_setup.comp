@@ -11,6 +11,7 @@
 //spirv_execution_mode(extensions = ["SPV_KHR_float_controls"], capabilities = [4467], 4462, 32);
 
 #define USE_RCP_FIXED
+#define USE_RCP_FLOAT
 #define PRIMITIVE_LIST_QUALIFIER readonly
 #define PRIMITIVE_SETUP_QUALIFIER writeonly
 
@@ -282,13 +283,8 @@ void main_inner(uint index)
     {
         stqf0 = vec4(attr0.st, attr0.q, attr0.fog);
         stqf1 = vec4(attr1.st, attr1.q, attr1.fog);
-        stqf0.xyz = clip_mantissa(stqf0.xyz);
-        stqf1.xyz = clip_mantissa(stqf1.xyz);
         if (!sprite && !line)
-        {
             stqf2 = vec4(attr2.st, attr2.q, attr2.fog);
-            stqf2.xyz = clip_mantissa(stqf2.xyz);
-        }
     }
     else
     {
@@ -318,8 +314,81 @@ void main_inner(uint index)
         stqf2 = stqf0;
     }
 
+    if (perspective)
+    {
+        // Negative Q is allowed, but they all have to match sign.
+        // This should be fine.
+        if (stqf0.z < 0.0)
+        {
+            stqf0.xy = -stqf0.xy;
+            stqf1.xy = -stqf1.xy;
+            stqf2.xy = -stqf2.xy;
+        }
+
+        stqf0.z = abs(stqf0.z);
+        stqf1.z = abs(stqf1.z);
+        stqf2.z = abs(stqf2.z);
+
+        uint qbits = floatBitsToUint(max(max(stqf0.z, stqf1.z), stqf2.z));
+        uint qexp = bitfieldExtract(qbits, 23, 8);
+
+        // 8-bit mantissa for Q is rounded down.
+        stqf0.z = uintBitsToFloat(floatBitsToUint(stqf0.z) & ~0xffu);
+        stqf1.z = uintBitsToFloat(floatBitsToUint(stqf1.z) & ~0xffu);
+        stqf2.z = uintBitsToFloat(floatBitsToUint(stqf2.z) & ~0xffu);
+
+        // Apparently ST is rounded depending on how large Q is.
+        // This suggests a re-scaling operation into fixed point in hardware.
+        // This would make a lot of sense, since interpolating in FP on a DDA archicture would be exceptionally strange.
+        // This exact formulation is very unlikely to be HW accurate, but it feels like a reasonable approximation
+        // if I had to write a fixed point interpolator myself.
+        // With rescaling and flipping signs (Q has to have uniform sign),
+        // Q could be represented in 16-bit uint with 0x8000 representing 2^n, with 15 mantissa bits left from the quantize.
+        uint sexp = bitfieldExtract(floatBitsToUint(max(max(abs(stqf0.x), abs(stqf1.x)), abs(stqf2.x))), 23, 8);
+        uint texp = bitfieldExtract(floatBitsToUint(max(max(abs(stqf0.y), abs(stqf1.y)), abs(stqf2.y))), 23, 8);
+
+        // 9 bits is apparently suggested by HW tests. I cannot confirm or verify this.
+        // It does make sense if we consider that S/T might be quantized to 16-bit sint.
+        // If we take into account that UV should be clamped to +/- 2047.0, these results start making more sense.
+        // Consider 1 bit for sign, 0x4000 marking 1.0, and 14 mantissa bits left.
+        // S = 1.0 + 2^-14, Q = 1.0 could be represented as 0x4001.
+        // For large S, we could store an extra shift factor. We already shift up the result by TW/TH,
+        // so folding that exponential shift in for normalized textures make a lot of sense.
+        // For small S, S could be scaled in fixed point so the shifter can be a pure left shift.
+        // Seems reasonable from a hardware design PoV.
+        uint schop = min(9 + max(sexp, qexp) - sexp, 23);
+        uint tchop = min(9 + max(texp, qexp) - texp, 23);
+        uint smask = (1u << schop) - 1u;
+        uint tmask = (1u << tchop) - 1u;
+        uvec2 stmask = ~uvec2(smask, tmask);
+
+        stqf0.xy = uintBitsToFloat(floatBitsToUint(stqf0.xy) & stmask);
+        stqf1.xy = uintBitsToFloat(floatBitsToUint(stqf1.xy) & stmask);
+        stqf2.xy = uintBitsToFloat(floatBitsToUint(stqf2.xy) & stmask);
+
+        // For trivial perspective, we should strive for maximum accuracy, since some games rely on that.
+        // Resolve the perspective in highest possible accuracy.
+        // With fixed RCP, we can get essentially 24.0 bits, but without we have to rely on ~22.5 bit RCP
+        // with different behavior per vendor.
+        //
+        // Technically, we should do perspective divider after interpolation,
+        // but this is at least mathematically equivalent.
+        // This level of accuracy only seems to matter in extreme single STQ value scenarios anyway.
+        if (stqf0.z == stqf1.z && stqf0.z == stqf2.z)
+        {
+            float inv_q = rcp_float(stqf0.z);
+            stqf0.xy *= inv_q;
+            stqf1.xy *= inv_q;
+            stqf2.xy *= inv_q;
+            stqf0.z = 1.0;
+            stqf1.z = 1.0;
+            stqf2.z = 1.0;
+        }
+    }
+
     precise vec4 distqf = fix ? vec4(0.0) : (stqf1 - stqf0);
     precise vec4 djstqf = fix ? vec4(0.0) : (stqf2 - stqf0);
+
     transformed_attr.data[index].stqf0 = stqf0;
     transformed_attr.data[index].stqf1 = distqf;
     transformed_attr.data[index].stqf2 = djstqf;

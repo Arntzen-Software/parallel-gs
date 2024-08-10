@@ -926,7 +926,7 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 	// This is a 1 / 1024th pixel bias to counter-act any non-POT inv_scale_1 causing a round-down event.
 	const float UV_EPSILON_POST_SNAP = 16.0 / 1024.0;
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
-	last_stqf.xy = vec2(uv_1) + UV_EPSILON_PRE_SNAP / 16.0;
+	last_stqf.xy = vec2(uv_1);
 #endif
 
 	if (sampler_clamp_s)
@@ -994,20 +994,6 @@ vec4 compute_combined_color(
 	vec4 stqf1 = attrs.stqf1;
 	vec4 stqf2 = attrs.stqf2;
 
-	vec4 stqf = stqf0 + stqf1 * i + stqf2 * j;
-	// Unsure if we should clip STQ here too to FP24.
-
-	if (NUM_SAMPLES > 1 && st_bb)
-		stqf.xy = clamp(stqf.xy, attrs.st_bb.xy, attrs.st_bb.zw);
-
-	// TODO: Figure out how we should handle Inf/NaN cases.
-	vec2 uv;
-
-	if (perspective)
-		uv = stqf.xy / stqf.z;
-	else
-		uv = stqf.xy;
-
 	vec4 c0 = unpackUnorm4x8(attrs.rgba0);
 	vec4 c1 = unpackUnorm4x8(attrs.rgba1);
 	vec4 c2 = unpackUnorm4x8(attrs.rgba2);
@@ -1017,7 +1003,6 @@ vec4 compute_combined_color(
 	vec4 color = floor(255.0 * (c0 + (c1 - c0) * i + (c2 - c0) * j) + RGBA_EPSILON);
 
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
-	last_stqf.z = stqf.z;
 	last_rgba = color;
 #endif
 
@@ -1029,8 +1014,20 @@ vec4 compute_combined_color(
 	vec4 combined_color;
 	if (tme)
 	{
+		vec3 stq = stqf0.xyz + stqf1.xyz * i + stqf2.xyz * j;
+		// Unsure if we should clip STQ here too to FP24.
+		if (NUM_SAMPLES > 1 && st_bb)
+			stq.xy = clamp(stq.xy, attrs.st_bb.xy, attrs.st_bb.zw);
+#if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
+		last_stqf.z = stq.z;
+#endif
+
+		vec2 uv = stq.xy;
+		if (perspective && stq.z != 1.0)
+			uv /= stq.z;
+
 		uint tex2 = primitive_attr.data[primitive_index].tex2;
-		vec4 sampled = sample_texture(tex, tex2, uv, stqf.z, perspective);
+		vec4 sampled = sample_texture(tex, tex2, uv, stq.z, perspective);
 		switch (mode)
 		{
 		case COMBINER_DECAL:
@@ -1054,8 +1051,8 @@ vec4 compute_combined_color(
 
 	if (fog_enable)
 	{
+		float fog_coeff = roundEven(stqf0.w + stqf1.w * i + stqf2.w * j);
 		vec3 fogcol = round(unpackUnorm4x8(primitive_attr.data[primitive_index].fogcol).rgb * 255.0);
-		float fog_coeff = roundEven(stqf.w);
 		combined_color.rgb =
 			floor((combined_color.rgb * fog_coeff) * (1.0 / 256.0)) +
 			floor(((255.0 - fog_coeff) * fogcol) * (1.0 / 256.0));
