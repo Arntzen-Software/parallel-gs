@@ -743,9 +743,11 @@ uint32_t GSInterface::drawing_kick_update_state_vector()
 	}
 
 	if (prim.desc.ABE)
+	{
 		state.blend_mode |= BLEND_MODE_ABE_BIT;
+		state.blend_mode |= registers.pabe.desc.PABE ? BLEND_MODE_PABE_BIT : 0;
+	}
 
-	state.blend_mode |= registers.pabe.desc.PABE ? BLEND_MODE_PABE_BIT : 0;
 	state.blend_mode |= registers.colclamp.desc.CLAMP ? BLEND_MODE_COLCLAMP_BIT : 0;
 	state.blend_mode |= ctx.fba.desc.FBA ? BLEND_MODE_FB_ALPHA_BIT : 0;
 
