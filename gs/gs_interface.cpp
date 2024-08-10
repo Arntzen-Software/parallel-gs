@@ -1610,11 +1610,17 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 		uv_max = max(uv_max, uv2);
 	}
 
-	// Consider linear filtering if using that. Expand the BB appropriately.
 	if (ctx.tex1.desc.MMAG != 0)
 	{
+		// Consider linear filtering if using that. Expand the BB appropriately.
 		uv_min -= ivec2(1 << (PGS_SUBPIXEL_BITS - 1));
 		uv_max += ivec2((1 << (PGS_SUBPIXEL_BITS - 1)) - 1);
+	}
+	else
+	{
+		// Consider FP rounding errors.
+		uv_min -= ivec2(1);
+		uv_max += ivec2(1);
 	}
 
 	// This can safely become a REGION_CLAMP.
