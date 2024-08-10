@@ -1310,8 +1310,7 @@ void GSInterface::drawing_kick_update_state(ColorFeedbackMode feedback_mode, con
 		}
 	}
 
-	// If AFAIL is FB_ONLY, it cannot stop color writes from happening, so we ignore ATE for opaque check.
-	if ((ctx.test.desc.ATE && ctx.test.desc.ATST != ATST_ALWAYS && ctx.test.desc.AFAIL != AFAIL_FB_ONLY) ||
+	if ((ctx.test.desc.ATE && ctx.test.desc.ATST != ATST_ALWAYS) ||
 	    ctx.test.desc.DATE || ctx.frame.desc.FBMSK != 0)
 	{
 		color_write_needs_previous_pixels = true;
