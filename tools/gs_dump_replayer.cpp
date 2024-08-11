@@ -12,17 +12,50 @@
 #include "thread_group.hpp"
 #include "gs_interface.hpp"
 #include "gs_dump_generator.hpp"
+#include "cli_parser.hpp"
 #include "timer.hpp"
 #include <stdlib.h>
 
 using namespace Vulkan;
 using namespace ParallelGS;
+using namespace Util;
+
+static void print_help()
+{
+	LOGI("Usage: parallel-gs-replayer <dump.gs> [--ssaa <rate>] [--strided] [--full] [--iterations <count>]\n");
+}
 
 int main(int argc, char **argv)
 {
-	if (argc != 2)
+	std::string dump_path;
+	DebugMode debug_mode;
+	debug_mode.feedback_render_target = true;
+	debug_mode.draw_mode = DebugMode::DrawDebugMode::None;
+	unsigned total_iterations = 1;
+	GSOptions opts = {};
+
+	CLICallbacks cbs;
+	cbs.add("--help", [&](CLIParser &parser) { parser.end(); print_help(); });
+	cbs.add("--ssaa", [&](CLIParser &parser) { opts.super_sampling = SuperSampling(parser.next_uint()); });
+	cbs.add("--strided", [&](CLIParser &) { debug_mode.draw_mode = DebugMode::DrawDebugMode::Strided; });
+	cbs.add("--full", [&](CLIParser &) { debug_mode.draw_mode = DebugMode::DrawDebugMode::Full; });
+	cbs.add("--iterations", [&](CLIParser &parser) { total_iterations = parser.next_uint(); });
+	cbs.default_handler = [&](const char *arg) { dump_path = arg; };
+
+	CLIParser cli_parser(std::move(cbs), argc - 1, argv + 1);
+	if (!cli_parser.parse())
 	{
-		LOGE("Usage: parallel-gs-replayer <dump.gs>\n");
+		print_help();
+		return EXIT_FAILURE;
+	}
+
+	if (cli_parser.is_ended_state())
+		return EXIT_SUCCESS;
+
+	if (dump_path.empty())
+	{
+		LOGE("Must provide dump.\n");
+		print_help();
 		return EXIT_FAILURE;
 	}
 
@@ -38,8 +71,6 @@ int main(int argc, char **argv)
 	device.set_context(ctx);
 	device.init_frame_contexts(4);
 
-	GSOptions opts = {};
-
 	GSInterface iface;
 	if (!iface.init(&device, opts))
 		return EXIT_FAILURE;
@@ -47,9 +78,6 @@ int main(int argc, char **argv)
 	bool use_rdoc = Device::init_renderdoc_capture();
 	if (use_rdoc)
 	{
-		DebugMode debug_mode;
-		debug_mode.feedback_render_target = true;
-		debug_mode.draw_mode = DebugMode::DrawDebugMode::Strided;
 		iface.set_debug_mode(debug_mode);
 		device.begin_renderdoc_capture();
 	}
@@ -59,7 +87,7 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 
 	unsigned iterations = 0;
-	uint64_t start_ns = 0, end_ns = 0;
+	uint64_t start_ns = 0;
 	unsigned vsyncs = 0;
 
 	do
@@ -90,8 +118,8 @@ int main(int argc, char **argv)
 
 		if (iterations == 0)
 			start_ns = Util::get_current_time_nsecs();
-	} while (++iterations < 1);
-	end_ns = Util::get_current_time_nsecs();
+	} while (++iterations < total_iterations);
+	uint64_t end_ns = Util::get_current_time_nsecs();
 
 	double total_time = double(end_ns - start_ns) * 1e-9;
 	LOGI("Total time per VBlank: %.3f ms\n", 1e3 * total_time / double(vsyncs));
