@@ -696,8 +696,8 @@ TexRect GSRenderer::compute_effective_texture_rect(const TextureDescriptor &desc
 
 	rect.x = effective_u.base;
 	rect.y = effective_v.base;
-	rect.width = std::min<uint32_t>(rect.width, effective_u.extent);
-	rect.height = std::min<uint32_t>(rect.height, effective_v.extent);
+	rect.width = effective_u.extent;
+	rect.height = effective_v.extent;
 
 	return rect;
 }

@@ -1558,12 +1558,6 @@ void GSInterface::update_color_feedback_state()
 		return;
 	}
 
-	uint32_t width = 1u << uint32_t(ctx.tex0.desc.TW);
-
-	// Ensures that image covers entire frame buffer.
-	if (ctx.frame.desc.FBW * PGS_BUFFER_WIDTH_SCALE > width)
-		return;
-
 	// If we're in feedback, we have to recheck state every draw. We expect that anyway
 	// since FB will likely have to be flushed every draw anyway ...
 	render_pass.is_color_feedback = true;
@@ -1658,6 +1652,8 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 		if (bb.x < minu || bb.z > maxu)
 			return ColorFeedbackMode::Sliced;
 	}
+	else if (bb.z >= width)
+		return ColorFeedbackMode::Sliced;
 
 	if (uint32_t(ctx.clamp.desc.WMT) == CLAMPBits::REGION_CLAMP)
 	{
@@ -1666,6 +1662,8 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 		if (bb.y < minv || bb.w > maxv)
 			return ColorFeedbackMode::Sliced;
 	}
+	else if (bb.w >= height)
+		return ColorFeedbackMode::Sliced;
 
 	ivec2 uv0_delta = uv0 - pos[0].pos;
 	ivec2 uv1_delta = uv1 - pos[1].pos;
