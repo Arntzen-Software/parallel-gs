@@ -39,6 +39,7 @@ struct FlushStats
 	uint32_t num_render_passes;
 	uint32_t num_palette_updates;
 	uint32_t num_copies;
+	uint32_t num_copy_barriers;
 };
 
 enum class TimestampType

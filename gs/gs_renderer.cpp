@@ -524,6 +524,7 @@ void GSRenderer::flush_submit(uint64_t value)
 	total_stats.num_primitives += stats.num_primitives;
 	total_stats.num_palette_updates += stats.num_palette_updates;
 	total_stats.num_render_passes += stats.num_render_passes;
+	total_stats.num_copy_barriers += stats.num_copy_barriers;
 	stats = {};
 
 	if (direct_cmd)
@@ -2356,6 +2357,8 @@ void GSRenderer::flush_transfer()
 void GSRenderer::transfer_overlap_barrier()
 {
 	flush_transfer();
+	stats.num_copy_barriers++;
+
 	if (direct_cmd)
 	{
 		direct_cmd->barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
