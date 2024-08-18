@@ -43,6 +43,34 @@ static void write_clear_quad(GSDumpGenerator &iface, int x0, int y0, int x1, int
 	iface.write_packed(prim, addr, 2, 2, vertices);
 }
 
+static void write_line_primitive(GSDumpGenerator &iface, float x0, float y0, float x1, float y1)
+{
+	struct Vertex
+	{
+		PackedRGBAQBits rgba;
+		PackedXYZBits xyz;
+	} vertices[2] = {};
+
+	for (auto &v : vertices)
+	{
+		v.rgba.R = 0xff;
+		v.rgba.G = 0xff;
+		v.rgba.B = 0xff;
+		v.rgba.A = 0x80;
+	}
+
+	vertices[0].xyz.X = int(x0 * float(1 << PGS_SUBPIXEL_BITS));
+	vertices[0].xyz.Y = int(y0 * float(1 << PGS_SUBPIXEL_BITS));
+	vertices[1].xyz.X = int(x1 * float(1 << PGS_SUBPIXEL_BITS));
+	vertices[1].xyz.Y = int(y1 * float(1 << PGS_SUBPIXEL_BITS));
+
+	PRIMBits prim = {};
+	prim.PRIM = int(PRIMType::LineList);
+
+	static const GIFAddr addr[] = { GIFAddr::RGBAQ, GIFAddr::XYZ2 };
+	iface.write_packed(prim, addr, 2, 2, vertices);
+}
+
 static void write_sprite_primitive(GSDumpGenerator &iface, int x0, int y0, int x1, int y1)
 {
 	struct Vertex
@@ -131,7 +159,7 @@ static void run_test(GSDumpGenerator &iface)
 	tex0.CSM = 0;
 	tex0.CLD = 1;
 	tex0.CBP = PALETTE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
-	tex0.CSA = 30;
+	tex0.CSA = 0;
 	iface.write_register(RegisterAddr::TEX0_1, tex0);
 
 	tex0.PSM = PSMT8;
@@ -151,8 +179,9 @@ static void run_test(GSDumpGenerator &iface)
 	alpha.D = BLEND_RGB_ZERO;
 	iface.write_register(RegisterAddr::ALPHA_1, alpha);
 
-	write_clear_quad(iface, 0, 0, 8 * 32, 8 * 32);
-	write_sprite_primitive(iface, 0, 0, 8 * 32, 8 * 32);
+	write_clear_quad(iface, 0, 0, 8, 8);
+	write_sprite_primitive(iface, 0, 0, 16, 16);
+	write_line_primitive(iface, 5.0f, 3.0f - 1.0f / 16.0f, 2.0f, 3.0f - 1.0f / 16.0f);
 }
 
 int main()
@@ -213,8 +242,8 @@ int main()
 		priv.display1.DY = 50;
 		priv.display1.MAGH = 3;
 		priv.display1.MAGV = 0;
-		priv.display1.DW = 640 * 4 - 1;
-		priv.display1.DH = 480 - 1;
+		priv.display1.DW = 16 * 4 - 1;
+		priv.display1.DH = 16 - 1;
 
 		dump.write_vsync(0, iface);
 		dump.write_vsync(1, iface);

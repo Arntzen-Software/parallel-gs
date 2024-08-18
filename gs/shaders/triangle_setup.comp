@@ -128,6 +128,24 @@ void main_inner(uint index)
     uint zc = v2.z;
     ivec4 primitive_bb = ivec4(primitive_attr.data[index].bb);
 
+    // Rough approximation of bresenham. We need to handle the case where primitives expect exit rule.
+    // The simplest workaround is just to offset by one sub-pixel if we observe edge case.
+    // Need hardware tests to determine exactly how the rules go.
+    if (line)
+    {
+        if (b.x > a.x)
+        {
+            a.x += 1;
+            b.x += 1;
+        }
+
+        if (b.y > a.y)
+        {
+            a.y += 1;
+            b.y += 1;
+        }
+    }
+
     if ((!parallelogram || line) && !fix)
     {
         // Unsure if PS2 primitives are rotationally invariant.
