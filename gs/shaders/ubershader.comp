@@ -785,7 +785,12 @@ vec4 feedback_texture(uint tex_index)
 	if (is_palette_format(FEEDBACK_PSM))
 	{
 		uint color_index;
-		uint csa = bitfieldExtract(tex_index, 0, TEX_TEXTURE_INDEX_BITS - 1) * 16;
+		uint csa = bitfieldExtract(tex_index, 0, 5);
+		uint clut_instance = bitfieldExtract(tex_index, 5, TEX_TEXTURE_INDEX_BITS - 6);
+
+		if (FEEDBACK_CPSM == PSMCT32)
+			csa &= 15u;
+
 		switch (FEEDBACK_PSM)
 		{
 			case PSMT8H:
@@ -805,7 +810,17 @@ vec4 feedback_texture(uint tex_index)
 				break;
 		}
 
-		color_index += csa;
+		color_index += csa * 16;
+
+		if (FEEDBACK_PSM == PSMT8 || FEEDBACK_PSM == PSMT8H)
+		{
+			const uint MAX_CSA = FEEDBACK_CPSM == PSMCT32 ? 15u : 31u;
+			uint csa_bank = color_index >> 4u;
+			csa_bank = min(csa_bank, MAX_CSA);
+			color_index = csa_bank * 16u + (color_index & 15u);
+		}
+
+		color_index += clut_instance * 512u;
 
 		if (FEEDBACK_CPSM == PSMCT32)
 		{

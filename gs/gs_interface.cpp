@@ -288,6 +288,7 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 
 	auto psm = uint32_t(desc.PSM);
 	auto cpsm = uint32_t(desc.CPSM);
+	auto csa = uint32_t(desc.CSA);
 
 	// Fixup buggy case with PSMCT24, which is not supported.
 	if (cpsm == PSMCT24)
@@ -336,7 +337,10 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 
 	PageRectCLUT page = {};
 	uint32_t palette_width, palette_height;
-	bool is_8bit_palette = false;
+
+	// Only target lower bank.
+	if (cpsm == PSMCT32)
+		csa &= 15;
 
 	if (psm == PSMT8 || psm == PSMT8H)
 	{
@@ -351,8 +355,7 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 			palette_height = 16;
 		}
 
-		page.csa_mask = 0xffff;
-		is_8bit_palette = true;
+		page.csa_mask = 0xffffu << csa;
 	}
 	else
 	{
@@ -360,7 +363,6 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 		{
 			palette_width = 16;
 			palette_height = 1;
-
 		}
 		else
 		{
@@ -368,7 +370,7 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 			palette_height = 4;
 		}
 
-		page.csa_mask = 1u << uint32_t(desc.CSA);
+		page.csa_mask = 1u << csa;
 	}
 
 	// For 32-bit color, read upper CLUT bank as well.
@@ -407,21 +409,7 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 	palette_desc.tex0.desc.TCC = 0;
 	palette_desc.tex0.desc.TBW = 0;
 	palette_desc.tex0.desc.CLD = 0;
-
-	if (is_8bit_palette)
-	{
-		if (cpsm == PSMCT32)
-		{
-			// CSA seems to be ignored on upload for 256 color mode.
-			palette_desc.tex0.desc.CSA = 0;
-		}
-		else
-		{
-			// Seems like we need to support CSA = 16 at least.
-			// Unsure how this works in practice ...
-			palette_desc.tex0.desc.CSA &= 16;
-		}
-	}
+	palette_desc.tex0.desc.CSA = csa;
 
 	// Try to find a memoized palette. In case game constantly uploads CLUT redundantly.
 	// This is very common, and this optimization is extremely important.
@@ -908,12 +896,11 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 		// Only allowed CPSM formats are CT32 and CT16(S).
 		if (cpsm != PSMCT32)
 			desc.texa = registers.texa;
+		else
+			desc.tex0.desc.CSA &= 15;
 
 		if (psm == PSMT8 || psm == PSMT8H)
-		{
-			csa_mask = 0xffff;
-			desc.tex0.desc.CSA = 0;
-		}
+			csa_mask = 0xffffu;
 		else
 			csa_mask = 1u;
 
@@ -921,7 +908,10 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 
 		// For 32-bit color, read upper CLUT bank as well.
 		if (cpsm == PSMCT32)
+		{
+			csa_mask &= 0xffff;
 			csa_mask |= csa_mask << 16;
+		}
 	}
 	else
 	{

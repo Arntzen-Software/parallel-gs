@@ -2224,7 +2224,8 @@ void GSRenderer::flush_palette_upload()
 		else
 		{
 			// CSM2
-			clut_desc.csa = 0;
+			if (clut_desc.csa != 0)
+				LOGW("CSM2: CSA is not 0.\n");
 		}
 
 		instance = (instance + 1) % CLUTInstances;

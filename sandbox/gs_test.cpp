@@ -58,8 +58,8 @@ static void write_sprite_primitive(GSDumpGenerator &iface, int x0, int y0, int x
 
 	vertices[0].uv.U = 0;
 	vertices[0].uv.V = 0;
-	vertices[1].uv.U = 8 << PGS_SUBPIXEL_BITS;
-	vertices[1].uv.V = 2 << PGS_SUBPIXEL_BITS;
+	vertices[1].uv.U = 16 << PGS_SUBPIXEL_BITS;
+	vertices[1].uv.V = 16 << PGS_SUBPIXEL_BITS;
 
 	PRIMBits prim = {};
 	prim.TME = 1;
@@ -99,20 +99,12 @@ static constexpr uint32_t TEXTURE_ADDR = 2 * 1024 * 1024;
 
 static void upload_palettes(GSDumpGenerator &iface)
 {
-	constexpr uint32_t RED = 0xffu;
-	constexpr uint32_t GREEN = 0xffu << 8;
-	constexpr uint32_t BLUE = 0xffu << 16;
-	constexpr uint32_t OPAQUE = 0x60000000u;
-	constexpr uint32_t NON_OPAQUE = 0x10000000u;
+	uint32_t lut[256];
+	for (int i = 0; i < 256; i++)
+		lut[i] = 0x010101 * i + (0x80u << 24);
 
-	static const uint32_t texture[] = {
-		NON_OPAQUE, NON_OPAQUE | RED, NON_OPAQUE | GREEN, NON_OPAQUE | RED | GREEN,
-		NON_OPAQUE | BLUE, NON_OPAQUE | BLUE | RED, NON_OPAQUE | BLUE | GREEN, NON_OPAQUE | BLUE | RED | GREEN,
-		OPAQUE, OPAQUE | RED, OPAQUE | GREEN, OPAQUE | RED | GREEN,
-		OPAQUE | BLUE, OPAQUE | BLUE | RED, OPAQUE | BLUE | GREEN, OPAQUE | BLUE | RED | GREEN,
-	};
-
-	iface.write_image_upload(PALETTE_ADDR, PSMCT32, 8, 2, texture, sizeof(texture));
+	iface.write_image_upload(PALETTE_ADDR,
+	                         PSMCT32, 16, 16, lut, sizeof(lut));
 }
 
 static void run_test(GSDumpGenerator &iface)
@@ -120,37 +112,37 @@ static void run_test(GSDumpGenerator &iface)
 	setup_frame_buffer(iface);
 	upload_palettes(iface);
 
-	const uint8_t texture[] = {
-		0, 1, 2, 3, 4, 5, 6, 7,
-		8, 9, 10, 11, 12, 13, 14, 15,
-	};
+	uint8_t texture[256];
+	for (int i = 0; i < 256; i++)
+		texture[i] = uint8_t(i);
 
-	iface.write_image_upload(TEXTURE_ADDR, PSMT8, 8, 2, texture, sizeof(texture));
+	iface.write_image_upload(TEXTURE_ADDR, PSMT8, 16, 16, texture, sizeof(texture));
 	iface.write_register(RegisterAddr::TEXFLUSH, uint64_t(0));
 
-	TEXABits texa = {};
-	texa.TA0 = 0x20;
-	texa.TA1 = 0x70;
-	texa.AEM = 1;
-	iface.write_register(RegisterAddr::TEXA, texa);
-
 	TEX0Bits tex0 = {};
-	tex0.TBP0 = PALETTE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
-	tex0.TBW = 8 / 64;
-	tex0.PSM = PSMCT16;
-	tex0.TW = 3;
-	tex0.TH = 1;
+	tex0.TBW = 16 / 64;
+	tex0.TW = 4;
+	tex0.TH = 4;
 	tex0.TCC = 1;
 	tex0.TFX = COMBINER_DECAL;
-#if 1
 	tex0.TBP0 = TEXTURE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
 	tex0.PSM = PSMT8;
-	tex0.CPSM = PSMCT24;
+	tex0.CPSM = PSMCT32;
 	tex0.CSM = 0;
 	tex0.CLD = 1;
 	tex0.CBP = PALETTE_ADDR / PGS_BLOCK_ALIGNMENT_BYTES;
-#endif
+	tex0.CSA = 30;
 	iface.write_register(RegisterAddr::TEX0_1, tex0);
+
+	tex0.PSM = PSMT8;
+	tex0.CSA = 0;
+	tex0.CLD = 0;
+	iface.write_register(RegisterAddr::TEX0_1, tex0);
+
+	TEXABits texa = {};
+	texa.TA0 = 0x80;
+	texa.TA1 = 0x80;
+	iface.write_register(RegisterAddr::TEXA, texa);
 
 	ALPHABits alpha = {};
 	alpha.A = BLEND_RGB_SOURCE;
@@ -159,16 +151,8 @@ static void run_test(GSDumpGenerator &iface)
 	alpha.D = BLEND_RGB_ZERO;
 	iface.write_register(RegisterAddr::ALPHA_1, alpha);
 
-	write_clear_quad(iface, 0, 0, 8 * 32, 2 * 32);
-
-	TESTBits test = {};
-	test.ATE = 1;
-	test.ATST = ATST_NOTEQUAL;
-	test.AREF = 0;
-	test.AFAIL = AFAIL_KEEP;
-	iface.write_register(RegisterAddr::TEST_1, test);
-
-	write_sprite_primitive(iface, 0, 0, 8 * 32, 2 * 32);
+	write_clear_quad(iface, 0, 0, 8 * 32, 8 * 32);
+	write_sprite_primitive(iface, 0, 0, 8 * 32, 8 * 32);
 }
 
 int main()

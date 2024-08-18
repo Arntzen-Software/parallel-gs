@@ -61,14 +61,22 @@ const bool is_clut_16bit = CLUT_FMT == PSMCT16 || CLUT_FMT == PSMCT16S;
 
 const uint PGS_CLUT_SIZE_16 = PGS_CLUT_SIZE / 2;
 
-uint wrap_clut(uint index)
+// Apparently, we're supposed to clamp, rather than wrap.
+uint clamp_clut(uint index)
 {
-	return index & (PGS_CLUT_SIZE_16 - 1);
+	if (TEXTURE_FMT == PSMT8 || TEXTURE_FMT == PSMT8H)
+	{
+		uint csa_bank = index >> 4u;
+		csa_bank = min(csa_bank, is_clut_16bit ? 31 : 15);
+		index = csa_bank * 16 + (index & 15u);
+	}
+
+	return index;
 }
 
 uint get_clut_color(uint index, uint offset)
 {
-	uint buffer_index = wrap_clut(offset * 16 + index);
+	uint buffer_index = clamp_clut(offset * 16 + index);
 	uint instance_offset = registers.instance * PGS_CLUT_SIZE_16;
 	uint col;
 
