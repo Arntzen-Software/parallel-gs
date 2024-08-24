@@ -1495,6 +1495,10 @@ void GSInterface::update_color_feedback_state()
 	auto tbp0 = uint32_t(ctx.tex0.desc.TBP0);
 	auto tex_psm = uint32_t(ctx.tex0.desc.PSM);
 
+	// Check if there is any possibility of feedback first.
+	if ((psm_word_write_mask(tex_psm) & psm_word_write_mask(ctx.frame.desc.PSM)) == 0)
+		return;
+
 	// A game might use REGION_CLAMP to align the effective "base pointer" of the texture to the frame buffer.
 	if (!is_palette_format(tex_psm))
 	{
