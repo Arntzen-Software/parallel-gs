@@ -346,7 +346,6 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 	// Wave-ops is critical.
 	constexpr VkSubgroupFeatureFlags required_subgroup_flags =
 			VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
-			VK_SUBGROUP_FEATURE_CLUSTERED_BIT |
 			VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
 			VK_SUBGROUP_FEATURE_VOTE_BIT |
 			VK_SUBGROUP_FEATURE_BALLOT_BIT |
@@ -367,7 +366,7 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 		LOGE("  - storageBuffer8BitAccess\n");
 		LOGE("  - storageBuffer16BitAccess\n");
 		LOGE("  - shaderInt16\n");
-		LOGE("  - Arithmetic / Clustered / Shuffle / Vote / Ballot / Basic subgroup operations\n");
+		LOGE("  - Arithmetic / Shuffle / Vote / Ballot / Basic subgroup operations\n");
 		LOGE("  - SubgroupSize control for [16, 64] invocations per subgroup\n");
 		return false;
 	}

@@ -9,7 +9,6 @@
 #extension GL_KHR_shader_subgroup_vote : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
 #extension GL_KHR_shader_subgroup_shuffle : require
-#extension GL_KHR_shader_subgroup_clustered : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_samplerless_texture_functions : require
@@ -552,15 +551,16 @@ void end_tile()
 		ballot_color |= ballot_color >> 1u;
 		ballot_depth |= ballot_depth >> 1u;
 
-		// GLSL does not accept cluster reduction as spec constant.
-		if (NUM_SAMPLES == 16)
-			fb_color = packUnorm4x8(subgroupClusteredAdd(unpackUnorm4x8(fb_color), 16) / 16.0);
-		else if (NUM_SAMPLES == 8)
-			fb_color = packUnorm4x8(subgroupClusteredAdd(unpackUnorm4x8(fb_color), 8) / 8.0);
-		else if (NUM_SAMPLES == 4)
-			fb_color = packUnorm4x8(subgroupClusteredAdd(unpackUnorm4x8(fb_color), 4) / 4.0);
-		else
-			fb_color = packUnorm4x8(subgroupClusteredAdd(unpackUnorm4x8(fb_color), 2) / 2.0);
+		vec4 fb_color_float = unpackUnorm4x8(fb_color);
+		if (NUM_SAMPLES >= 16)
+			fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 8);
+		if (NUM_SAMPLES >= 8)
+			fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 4);
+		if (NUM_SAMPLES >= 4)
+			fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 2);
+		fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 1);
+		fb_color_float /= float(NUM_SAMPLES);
+		fb_color = packUnorm4x8(fb_color_float);
 
 		fb_color_dirty = subgroupInverseBallot(ballot_color);
 		fb_depth_dirty = subgroupInverseBallot(ballot_depth);

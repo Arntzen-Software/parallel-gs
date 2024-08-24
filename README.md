@@ -55,7 +55,7 @@ This is best left to blog posts.
 - `storageBuffer8BitAccess`
 - `storageBuffer16BitAccess`
 - `shaderInt16`
-- Full subgroup support
+- Full subgroup support (minus clustered)
 - Subgroup size control with full groups between 16 and 64 threads per subgroup
 
 This should not be a problem for any desktop driver or somewhat modern mobile GPU.
