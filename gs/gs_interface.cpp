@@ -1054,7 +1054,7 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 			// If we have repeat, we must observe those semantics accurately.
 			desc.clamp.desc.WMS = CLAMPBits::REGION_CLAMP;
 			desc.clamp.desc.MINU = std::max<int>(0, uv_bb.x);
-			desc.clamp.desc.MAXU = uv_bb.z;
+			desc.clamp.desc.MAXU = std::min<int>(int(width) - 1, uv_bb.z);
 		}
 
 		if (desc.clamp.desc.WMT == CLAMPBits::REGION_CLAMP)
@@ -1071,7 +1071,7 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 			// If we have repeat, we must observe those semantics accurately.
 			desc.clamp.desc.WMT = CLAMPBits::REGION_CLAMP;
 			desc.clamp.desc.MINV = std::max<int>(0, uv_bb.y);
-			desc.clamp.desc.MAXV = uv_bb.w;
+			desc.clamp.desc.MAXV = std::min<int>(int(height) - 1, uv_bb.w);
 		}
 	}
 
