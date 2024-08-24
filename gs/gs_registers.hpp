@@ -701,8 +701,12 @@ struct SMODE1Bits
 	FIELD32(VHP, 1);
 	PAD32(27);
 	enum { CMOD_PROGRESSIVE = 0, CMOD_NTSC = 2, CMOD_PAL = 3 };
-	enum { LC_ANALOG = 32 };
-	enum { CLOCK_DIVIDER_COMPOSITE = 4, CLOCK_DIVIDER_COMPONENT = 2 /* Seems to be the case based on progressive scan games. */ };
+	enum { LC_ANALOG = 32, LC_HDTV = 22 };
+	enum {
+		CLOCK_DIVIDER_COMPOSITE = 4,
+		CLOCK_DIVIDER_COMPONENT = 2 /* Seems to be the case based on progressive scan games. */,
+		CLOCK_DIVIDER_HDTV = 1
+	};
 };
 
 struct SMODE2Bits

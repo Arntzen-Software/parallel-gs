@@ -2564,6 +2564,37 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		clock_divider = SMODE1Bits::CLOCK_DIVIDER_COMPOSITE;
 		insert_label(cmd, "PAL, field %u", info.phase);
 	}
+	else if (priv.smode1.CMOD == SMODE1Bits::CMOD_PROGRESSIVE && priv.smode1.LC == SMODE1Bits::LC_HDTV)
+	{
+		if (priv.smode2.INT)
+		{
+			mode_width = 1920;
+			mode_height = 540;
+			// These numbers are probably very wrong.
+			// Just fiddled with it until it looked kinda ok.
+			scan_offset_x = 236;
+			scan_offset_y = 0;
+			insert_label(cmd, "HDTV 1080i, field %u", info.phase);
+		}
+		else
+		{
+			mode_width = 1280;
+			mode_height = 720;
+			// These numbers are probably very wrong.
+			// Just fiddled with it until it looked kinda ok.
+			scan_offset_x = 300;
+			scan_offset_y = 0;
+			insert_label(cmd, "HDTV 720p", info.phase);
+		}
+
+		if (!is_interlaced && !force_deinterlace)
+		{
+			mode_height *= 2;
+			scan_offset_y *= 2;
+		}
+
+		clock_divider = SMODE1Bits::CLOCK_DIVIDER_HDTV;
+	}
 	else
 	{
 		LOGE("Unknown video format.\n");
