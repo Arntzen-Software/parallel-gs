@@ -123,12 +123,13 @@ void PageTracker::mark_fb_read(const PageRect &rect)
 	}
 }
 
-void PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &src_rect)
+bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &src_rect)
 {
 	auto dst_block = get_block_state(dst_rect);
 	auto src_block = get_block_state(src_rect);
 
 	bool need_tex_invalidate = false;
+	bool has_hazard = false;
 
 	if (page_has_flag_with_fb_access_mask(
 			dst_rect, PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT, dst_rect.write_mask) ||
@@ -183,16 +184,32 @@ void PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 				accessed_copy_pages.push_back(page);
 			if ((state.flags & (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
 				accessed_readback_pages.push_back(page);
+
+			bool is_hazard = (src_rect.block_mask & state.copy_write_block_mask) != 0;
+			if (is_hazard)
+			{
+				if ((state.flags & PAGE_STATE_NEEDS_SHADOW_PAGE_BIT) == 0)
+				{
+					state.flags |= PAGE_STATE_NEEDS_SHADOW_PAGE_BIT;
+					cb.sync_shadow_page(page);
+					accessed_shadow_pages.push_back(page);
+				}
+				has_hazard = true;
+			}
+
 			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
 			state.copy_read_block_mask |= src_rect.block_mask;
 			TRACE("TRACKER || PAGE 0x%x, READ |= 0x%x -> 0x%x\n",
 			      page & page_state_mask,
 			      src_rect.block_mask, state.copy_read_block_mask);
+
+			// If we detect a COPY hazard here, it means that we have overlapping copy, and need to handle it carefully.
 		}
 	}
 
 	if (need_tex_invalidate)
 		invalidate_texture_cache(UINT32_MAX);
+	return has_hazard;
 }
 
 void PageTracker::mark_texture_read(const PageRect &rect)
@@ -315,6 +332,13 @@ void PageTracker::clear_copy_pages()
 		page.copy_write_block_mask = 0;
 	}
 	accessed_copy_pages.clear();
+
+	for (uint32_t page_index : accessed_shadow_pages)
+	{
+		auto &page = page_state[page_index];
+		page.flags &= ~PAGE_STATE_NEEDS_SHADOW_PAGE_BIT;
+	}
+	accessed_shadow_pages.clear();
 }
 
 void PageTracker::clear_cache_pages()

@@ -43,6 +43,39 @@ static void begin_region(Vulkan::CommandBuffer &cmd, const char *fmt, Args... ar
 	cmd.begin_region(label);
 }
 
+struct RangeMerger
+{
+	VkDeviceSize merged_offset = 0;
+	VkDeviceSize merged_range = 0;
+
+	template <typename Op>
+	void push(VkDeviceSize new_offset, VkDeviceSize new_range, Op &&op)
+	{
+		if (!merged_range)
+		{
+			merged_offset = new_offset;
+			merged_range = new_range;
+		}
+		else if (merged_offset + merged_range == new_offset)
+		{
+			merged_range += new_range;
+		}
+		else
+		{
+			op(merged_offset, merged_range);
+			merged_offset = new_offset;
+			merged_range = new_range;
+		}
+	}
+
+	template <typename Op>
+	void flush(Op &&op)
+	{
+		if (merged_range)
+			op(merged_offset, merged_range);
+	}
+};
+
 void GSRenderer::invalidate_super_sampling_state()
 {
 	if (!device || !buffers.gpu)
@@ -797,35 +830,21 @@ void GSRenderer::end_host_write_vram_access()
 void GSRenderer::copy_pages(Vulkan::CommandBuffer &cmd, const Vulkan::Buffer &dst, const Vulkan::Buffer &src,
                             const uint32_t *page_indices, uint32_t num_indices, bool invalidate_super_sampling)
 {
-	VkDeviceSize merged_offset = 0;
-	VkDeviceSize merged_size = 0;
+	RangeMerger merger;
 
 	// page_indices is implicitly sorted, so a trivial linear merger is fine and works well.
 
-	for (uint32_t i = 0; i < num_indices; i++)
+	const auto flush_cb = [&](VkDeviceSize offset, VkDeviceSize range)
 	{
-		VkDeviceSize offset = page_indices[i] * PageSize;
-		if (merged_offset + merged_size == offset)
-		{
-			merged_size += PageSize;
-		}
-		else
-		{
-			if (merged_size)
-			{
-				cmd.copy_buffer(dst, merged_offset, src, merged_offset, merged_size);
-				// Invalidate all super-sampling state for pixels which CPU clobber.
-				if (invalidate_super_sampling)
-					cmd.fill_buffer(dst, 0, merged_offset + vram_size, merged_size);
-			}
+		cmd.copy_buffer(dst, offset, src, offset, range);
+		// Invalidate all super-sampling state for pixels which CPU clobber.
+		if (invalidate_super_sampling)
+			cmd.fill_buffer(dst, 0, offset + vram_size, range);
+	};
 
-			merged_offset = offset;
-			merged_size = PageSize;
-		}
-	}
-
-	if (merged_size)
-		cmd.copy_buffer(dst, merged_offset, src, merged_offset, merged_size);
+	for (uint32_t i = 0; i < num_indices; i++)
+		merger.push(page_indices[i] * PageSize, PageSize, flush_cb);
+	merger.flush(flush_cb);
 }
 
 void GSRenderer::flush_host_vram_copy(const uint32_t *page_indices, uint32_t num_indices)
@@ -1252,34 +1271,10 @@ static uint32_t deduce_effectice_z_psm(uint32_t color_psm, uint32_t depth_psm)
 
 void GSRenderer::dispatch_invalidate_super_sampling(Vulkan::CommandBuffer &cmd, const PageRect &rect)
 {
-	// Clear all super-sampling state pages to 0. Nice and easy.
-	VkDeviceSize offset = 0;
-	VkDeviceSize range = 0;
+	RangeMerger merger;
 
-	const auto flush_range = [&]() {
-		if (range)
-		{
-			cmd.fill_buffer(*buffers.gpu, 0, vram_size + offset, range);
-			range = 0;
-		}
-	};
-
-	const auto add_range = [&](VkDeviceSize new_offset, VkDeviceSize new_range) {
-		if (!range)
-		{
-			offset = new_offset;
-			range = new_range;
-		}
-		else if (offset + range == new_offset)
-		{
-			range += new_range;
-		}
-		else
-		{
-			flush_range();
-			offset = new_offset;
-			range = new_range;
-		}
+	const auto flush_range = [&](VkDeviceSize offset, VkDeviceSize range) {
+		cmd.fill_buffer(*buffers.gpu, 0, vram_size + offset, range);
 	};
 
 	for (uint32_t y = 0; y < rect.page_height; y++)
@@ -1288,11 +1283,11 @@ void GSRenderer::dispatch_invalidate_super_sampling(Vulkan::CommandBuffer &cmd, 
 		{
 			uint32_t page_index = rect.base_page + y * rect.page_stride + x;
 			uint32_t page_offset = (page_index * PGS_PAGE_ALIGNMENT_BYTES) & (vram_size - 1);
-			add_range(page_offset, PGS_PAGE_ALIGNMENT_BYTES);
+			merger.push(page_offset, PGS_PAGE_ALIGNMENT_BYTES, flush_range);
 		}
 	}
 
-	flush_range();
+	merger.flush(flush_range);
 }
 
 void GSRenderer::dispatch_invalidate_super_sampling(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
@@ -1323,6 +1318,32 @@ void GSRenderer::dispatch_invalidate_super_sampling(Vulkan::CommandBuffer &cmd, 
 	cmd.end_region();
 }
 
+void GSRenderer::flush_shadow_page_sync(const uint32_t *page_indices, uint32_t num_indices)
+{
+	ensure_command_buffer(direct_cmd, Vulkan::CommandBuffer::Type::Generic);
+	auto &cmd = *direct_cmd;
+
+	// Upper half of VRAM is reserved for read-only caching.
+	VkDeviceSize read_only_offset = buffers.gpu->get_create_info().size / 2;
+
+	cmd.begin_region("shadow-vram-cache");
+	cmd.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+	            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+	{
+		RangeMerger merger;
+		const auto flush_range = [&](VkDeviceSize offset, VkDeviceSize range) {
+			cmd.copy_buffer(*buffers.gpu, offset + read_only_offset, *buffers.gpu, offset, range);
+		};
+
+		for (uint32_t i = 0; i < num_indices; i++)
+			merger.push(page_indices[i] * PageSize, PageSize, flush_range);
+		merger.flush(flush_range);
+	}
+	cmd.barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+	            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+	cmd.end_region();
+}
+
 void GSRenderer::dispatch_cache_read_only_depth(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t depth_psm)
 {
 	auto z_rect = compute_page_rect(rp.fb.z.desc.ZBP * PGS_BLOCKS_PER_PAGE,
@@ -1342,38 +1363,13 @@ void GSRenderer::dispatch_cache_read_only_depth(Vulkan::CommandBuffer &cmd, cons
 	cmd.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
 				VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_READ_BIT);
 	{
-		VkDeviceSize offset = 0;
-		VkDeviceSize range = 0;
-
-		const auto flush_range = [&]() {
-			if (range)
+		RangeMerger merger;
+		const auto flush_range = [&](VkDeviceSize offset, VkDeviceSize range) {
+			for (uint32_t slice = 0; slice < num_vram_slices; slice++)
 			{
-				for (uint32_t slice = 0; slice < num_vram_slices; slice++)
-				{
-					cmd.copy_buffer(*buffers.gpu, vram_size * slice + offset + read_only_offset,
-									*buffers.gpu, vram_size * slice + offset,
-									range);
-				}
-
-				range = 0;
-			}
-		};
-
-		const auto add_range = [&](VkDeviceSize new_offset, VkDeviceSize new_range) {
-			if (!range)
-			{
-				offset = new_offset;
-				range = new_range;
-			}
-			else if (offset + range == new_offset)
-			{
-				range += new_range;
-			}
-			else
-			{
-				flush_range();
-				offset = new_offset;
-				range = new_range;
+				cmd.copy_buffer(*buffers.gpu, vram_size * slice + offset + read_only_offset,
+				                *buffers.gpu, vram_size * slice + offset,
+				                range);
 			}
 		};
 
@@ -1383,11 +1379,11 @@ void GSRenderer::dispatch_cache_read_only_depth(Vulkan::CommandBuffer &cmd, cons
 			{
 				uint32_t page_index = z_rect.base_page + y * z_rect.page_stride + x;
 				uint32_t page_offset = (page_index * PGS_PAGE_ALIGNMENT_BYTES) & (vram_size - 1);
-				add_range(page_offset, PGS_PAGE_ALIGNMENT_BYTES);
+				merger.push(page_offset, PGS_PAGE_ALIGNMENT_BYTES, flush_range);
 			}
 		}
 
-		flush_range();
+		merger.flush(flush_range);
 	}
 	cmd.barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
 	            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
@@ -1710,9 +1706,14 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd, const CopyDescriptor
 
 	cmd.set_storage_buffer(0, 0, *buffers.gpu);
 	if (desc.trxdir.desc.XDIR == HOST_TO_LOCAL)
+	{
 		cmd.set_storage_buffer(0, 1, *payload.alloc.buffer, payload.alloc.offset, desc.host_data_size);
+	}
 	else
-		cmd.set_storage_buffer(0, 1, *buffers.gpu);
+	{
+		VkDeviceSize offset = payload.copy.needs_shadow_vram ? buffers.gpu->get_create_info().size / 2 : 0;
+		cmd.set_storage_buffer(0, 1, *buffers.gpu, offset, vram_size);
+	}
 
 	TransferDescriptor ubo = {};
 	ubo.width = desc.trxreg.desc.RRW;

@@ -36,6 +36,8 @@ enum PageStateFlagBits : uint32_t
 	PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT = 1 << 2,
 	// On mark submission, page will get updated host write timeline.
 	PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT = 1 << 3,
+
+	PAGE_STATE_NEEDS_SHADOW_PAGE_BIT = 1 << 4
 };
 using PageStateFlags = uint32_t;
 
@@ -130,6 +132,7 @@ struct PageTrackerCallback
 	virtual void flush(PageTrackerFlushFlags flags, FlushReason reason) = 0;
 	virtual void sync_host_vram_page(uint32_t page_index) = 0;
 	virtual void sync_vram_host_page(uint32_t page_index) = 0;
+	virtual void sync_shadow_page(uint32_t page_index) = 0;
 	virtual void invalidate_texture_hash(Util::Hash hash, bool clut) = 0;
 	virtual void forget_in_render_pass_memoization() = 0;
 	virtual void recycle_image_handle(Vulkan::ImageHandle image) = 0;
@@ -148,7 +151,7 @@ public:
 	// HOST -> LOCAL
 	void mark_transfer_write(const PageRect &rect);
 	// LOCAL -> LOCAL
-	void mark_transfer_copy(const PageRect &dst_rect, const PageRect &src_rect);
+	bool mark_transfer_copy(const PageRect &dst_rect, const PageRect &src_rect);
 
 	// If there are existing writes on a page and TEXFLUSH is called,
 	// invalidate all cached textures associated with that page.
@@ -201,6 +204,7 @@ private:
 	std::vector<uint32_t> accessed_cache_pages;
 	std::vector<uint32_t> accessed_copy_pages;
 	std::vector<uint32_t> accessed_readback_pages;
+	std::vector<uint32_t> accessed_shadow_pages;
 
 	void clear_cache_pages();
 	void clear_copy_pages();

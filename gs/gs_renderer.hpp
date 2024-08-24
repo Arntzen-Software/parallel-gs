@@ -111,6 +111,7 @@ struct CopyDescriptor
 	size_t host_data_size;
 	size_t host_data_size_offset;
 	size_t host_data_size_required;
+	bool needs_shadow_vram;
 };
 
 struct FBDescriptor
@@ -218,6 +219,8 @@ public:
 	void copy_vram(const CopyDescriptor &desc);
 	void flush_transfer();
 	void transfer_overlap_barrier();
+	// To deal with local -> local hazards.
+	void flush_shadow_page_sync(const uint32_t *page_indices, uint32_t num_indices);
 
 	// FB stage.
 	void flush_rendering(const RenderPass &rp);
