@@ -115,12 +115,14 @@ enum StateDirtyFlagBits : uint32_t
 	STATE_DIRTY_PRIM_TEMPLATE_BIT = 1 << 3,
 	STATE_DIRTY_FEEDBACK_BIT = 1 << 4,
 	STATE_DIRTY_DEGENERATE_BIT = 1 << 5,
+	STATE_DIRTY_SCISSOR_BIT = 1 << 6,
 	STATE_DIRTY_ALL_BITS = STATE_DIRTY_FB_BIT |
 	                       STATE_DIRTY_TEX_BIT |
 	                       STATE_DIRTY_STATE_BIT |
 	                       STATE_DIRTY_PRIM_TEMPLATE_BIT |
 	                       STATE_DIRTY_FEEDBACK_BIT |
-	                       STATE_DIRTY_DEGENERATE_BIT
+	                       STATE_DIRTY_DEGENERATE_BIT |
+	                       STATE_DIRTY_SCISSOR_BIT
 };
 using StateDirtyFlags = uint32_t;
 
@@ -334,6 +336,9 @@ private:
 
 		int32_t ofx = 0;
 		int32_t ofy = 0;
+
+		ivec2 scissor_lo;
+		ivec2 scissor_hi;
 	} render_pass;
 
 	// Register handlers

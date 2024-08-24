@@ -1777,13 +1777,20 @@ void GSInterface::drawing_kick_append()
 		hi_pos += ivec2(1);
 	}
 
-	ivec2 sci_lo = ivec2(ctx.scissor.desc.SCAX0, ctx.scissor.desc.SCAY0);
-	ivec2 sci_hi = ivec2(ctx.scissor.desc.SCAX1, ctx.scissor.desc.SCAY1);
-	lo_pos = muglm::max(lo_pos, sci_lo);
-	hi_pos = muglm::min(hi_pos, sci_hi);
+	if (get_and_clear_dirty_flag(STATE_DIRTY_SCISSOR_BIT))
+	{
+		ivec2 sci_lo = ivec2(ctx.scissor.desc.SCAX0, ctx.scissor.desc.SCAY0);
+		ivec2 sci_hi = ivec2(ctx.scissor.desc.SCAX1, ctx.scissor.desc.SCAY1);
+		// This is somewhat dubious, but there's no logical reason to render outside one page's worth of width
+		// when using FBW = 0 for whatever reason. Duplicating page writes would wreak havoc.
+		int fbw_deduced_width = std::max<int>(1, int(ctx.frame.desc.FBW)) * PGS_BUFFER_WIDTH_SCALE;
+		sci_hi.x = std::min<int>(sci_hi.x, fbw_deduced_width - 1);
+		render_pass.scissor_lo = sci_lo;
+		render_pass.scissor_hi = sci_hi;
+	}
 
-	// TODO: separate state update for scissor update.
-	hi_pos.x = std::min<int>(hi_pos.x, int(ctx.frame.desc.FBW * PGS_BUFFER_WIDTH_SCALE) - 1);
+	lo_pos = muglm::max(lo_pos, render_pass.scissor_lo);
+	hi_pos = muglm::min(hi_pos, render_pass.scissor_hi);
 	ivec4 bb = ivec4(lo_pos, hi_pos);
 
 	// Check for degenerate BB. Can happen if primitive is clipped away completely by scissor.
@@ -2516,7 +2523,8 @@ void GSInterface::a_d_PRIM(uint64_t payload)
 			                             STATE_DIRTY_PRIM_TEMPLATE_BIT |
 			                             STATE_DIRTY_TEX_BIT |
 			                             STATE_DIRTY_FB_BIT |
-			                             STATE_DIRTY_FEEDBACK_BIT;
+			                             STATE_DIRTY_FEEDBACK_BIT |
+			                             STATE_DIRTY_SCISSOR_BIT;
 
 			render_pass.ofx = int32_t(registers.ctx[prim.desc.CTXT].xyoffset.desc.OFX);
 			render_pass.ofy = int32_t(registers.ctx[prim.desc.CTXT].xyoffset.desc.OFY);
@@ -2696,7 +2704,8 @@ void GSInterface::a_d_PRMODE(uint64_t payload)
 			                             STATE_DIRTY_PRIM_TEMPLATE_BIT |
 			                             STATE_DIRTY_TEX_BIT |
 			                             STATE_DIRTY_FB_BIT |
-			                             STATE_DIRTY_FEEDBACK_BIT;
+			                             STATE_DIRTY_FEEDBACK_BIT |
+			                             STATE_DIRTY_SCISSOR_BIT;
 
 			render_pass.ofx = int32_t(registers.ctx[prim.desc.CTXT].xyoffset.desc.OFX);
 			render_pass.ofy = int32_t(registers.ctx[prim.desc.CTXT].xyoffset.desc.OFY);
@@ -2777,13 +2786,15 @@ void GSInterface::a_d_TEXFLUSH(uint64_t)
 
 void GSInterface::a_d_SCISSOR_1(uint64_t payload)
 {
-	update_internal_register(registers.ctx[0].scissor.bits, payload, STATE_DIRTY_DEGENERATE_BIT);
+	update_internal_register(registers.ctx[0].scissor.bits, payload,
+	                         STATE_DIRTY_SCISSOR_BIT | STATE_DIRTY_DEGENERATE_BIT);
 	TRACE("SCISSOR_1", registers.ctx[0].scissor);
 }
 
 void GSInterface::a_d_SCISSOR_2(uint64_t payload)
 {
-	update_internal_register(registers.ctx[1].scissor.bits, payload, STATE_DIRTY_DEGENERATE_BIT);
+	update_internal_register(registers.ctx[1].scissor.bits, payload,
+	                         STATE_DIRTY_SCISSOR_BIT | STATE_DIRTY_DEGENERATE_BIT);
 	TRACE("SCISSOR_2", registers.ctx[1].scissor);
 }
 
@@ -2867,7 +2878,7 @@ void GSInterface::a_d_FRAME_1(uint64_t payload)
 {
 	update_internal_register(registers.ctx[0].frame.bits, payload,
 	                         STATE_DIRTY_DEGENERATE_BIT | STATE_DIRTY_FEEDBACK_BIT |
-	                         STATE_DIRTY_FB_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT);
+	                         STATE_DIRTY_FB_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_SCISSOR_BIT);
 	TRACE("FRAME_1", registers.ctx[0].frame);
 }
 
@@ -2875,7 +2886,7 @@ void GSInterface::a_d_FRAME_2(uint64_t payload)
 {
 	update_internal_register(registers.ctx[1].frame.bits, payload,
 	                         STATE_DIRTY_DEGENERATE_BIT | STATE_DIRTY_FEEDBACK_BIT |
-	                         STATE_DIRTY_FB_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT);
+	                         STATE_DIRTY_FB_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_SCISSOR_BIT);
 	TRACE("FRAME_2", registers.ctx[1].frame);
 }
 
