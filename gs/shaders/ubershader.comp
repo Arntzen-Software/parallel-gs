@@ -873,7 +873,7 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 	float LOD = 0.0;
 	bool bilinear = mag_linear;
 
-	if (max_miplevel > 0 && perspective)
+	if (max_miplevel > 0)
 	{
 		int K = bitfieldExtract(int(filtering), TEX2_K_OFFSET, TEX2_K_BITS);
 		bool fixed_LOD = bool(bitfieldExtract(filtering, TEX2_FIXED_LOD_OFFSET, TEX2_FIXED_LOD_BITS));
@@ -930,7 +930,8 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 		LOD_2 = LOD_1;
 	}
 
-	vec2 scale_1 = perspective ? ldexp(size.xy, ivec2(-LOD_1)) : vec2(1.0);
+	vec2 base_scale = perspective ? size.xy : vec2(1.0);
+	vec2 scale_1 = ldexp(base_scale, ivec2(-LOD_1));
 	vec2 inv_scale_1 = ldexp(size.zw, ivec2(LOD_1));
 
 	vec2 uv_1 = clamp(uv * scale_1, vec2(-2047.0), vec2(2047.0));
@@ -969,7 +970,7 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 
 	if (fract_LOD != 0.0)
 	{
-		vec2 scale_2 = ldexp(size.xy, ivec2(-LOD_2));
+		vec2 scale_2 = ldexp(base_scale, ivec2(-LOD_2));
 		vec2 inv_scale_2 = ldexp(size.zw, ivec2(LOD_2));
 
 		vec2 uv_2 = clamp(uv * scale_2, vec2(-2047.0), vec2(2047.0));
