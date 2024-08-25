@@ -10,6 +10,7 @@
 #extension GL_KHR_shader_subgroup_arithmetic : require
 #extension GL_KHR_shader_subgroup_shuffle : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_8bit_storage : require
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_samplerless_texture_functions : require
 
@@ -614,16 +615,13 @@ void end_tile()
 					vram32.data[tile.fb_index_depth + VRAM_SIZE_32] = ref;
 				}
 
+				// Masked write is important if color and depth alias and color attempts to write information in alpha.
+				// The masked write ensures it won't be considered a race condition.
+				// color will alias, but not much we can do about that ...
 				if (is_zb_24bit)
-				{
-					uint old_z = vram32.data[tile.fb_index_depth];
-					old_z = bitfieldInsert(old_z, fb_depth, 0, 24);
-					vram32.data[tile.fb_index_depth] = old_z;
-				}
+					vram24.data[tile.fb_index_depth] = u8vec3(uvec3(fb_depth) >> uvec3(0, 8, 16));
 				else
-				{
 					vram32.data[tile.fb_index_depth] = fb_depth;
-				}
 			}
 		}
 	}

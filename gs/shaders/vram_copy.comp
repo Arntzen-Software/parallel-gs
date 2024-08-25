@@ -31,6 +31,11 @@ layout(std430, set = 0, binding = 0) buffer VRAM32
 	uint data[];
 } vram32;
 
+layout(std430, set = 0, binding = 0) buffer VRAM24
+{
+	u8vec3 data[];
+} vram24;
+
 layout(std430, set = 0, binding = 0) buffer VRAM16
 {
 	uint16_t data[];
@@ -110,7 +115,6 @@ void main()
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 2 < transfer.host_offset_qwords)
 			return;
 
-		uint rgba_data = uint(vram32.data[dest_addr]);
 		uint tex_data;
 		if (TRANSFER_DIR == HOST_TO_LOCAL)
 		{
@@ -126,10 +130,9 @@ void main()
 			tex_data = uint(transfer32.data[source_addr]);
 		}
 
-		uint write_word = uint(bitfieldInsert(rgba_data, tex_data, 0, 24));
-		vram32.data[dest_addr] = write_word;
+		vram24.data[dest_addr] = u8vec3(uvec3(tex_data) >> uvec3(0, 8, 16));
 		if (INVALIDATE_SUPER_SAMPLE)
-			vram32.data[dest_addr + (VRAM_MASK + 1) / 4] = 0;
+			vram32.data[dest_addr + (VRAM_MASK + 1) / 4] = 0; // Don't care about trying to preserve SSAA for top bit only.
 	}
 	else if (is_tex_16bit)
 	{

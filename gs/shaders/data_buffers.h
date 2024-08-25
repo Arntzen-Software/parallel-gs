@@ -14,6 +14,11 @@ layout(set = 0, binding = BINDING_VRAM, std430) buffer VRAM32
 	uint data[];
 } vram32;
 
+layout(set = 0, binding = BINDING_VRAM, std430) buffer VRAM24
+{
+	u8vec3 data[];
+} vram24;
+
 layout(set = 0, binding = BINDING_VRAM, std430) buffer VRAM16
 {
 	uint16_t data[];
