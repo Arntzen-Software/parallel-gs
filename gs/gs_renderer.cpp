@@ -1507,6 +1507,8 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	uint32_t variant_flags = 0;
 
 	bool fb_z_alias = rp.z_sensitive && rp.fb.frame.desc.FBP == rp.fb.z.desc.ZBP;
+	uint32_t last_primitive_index_single_step = 0;
+	uint32_t last_primitive_index_z_sensitive = 0;
 	bool single_primitive_step = false;
 
 	if (fb_z_alias)
@@ -1518,7 +1520,12 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 			if ((rp.prims[i].state & (1u << STATE_BIT_Z_WRITE)) != 0)
 			{
 				single_primitive_step = true;
-				break;
+				last_primitive_index_single_step = i;
+				last_primitive_index_z_sensitive = i;
+			}
+			else if ((rp.prims[i].state & (1u << STATE_BIT_Z_TEST)) != 0)
+			{
+				last_primitive_index_z_sensitive = i;
 			}
 		}
 	}
@@ -1588,7 +1595,7 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 		// this hard, we might not have a choice ...
 		uint32_t wg_x = (width + 7) / 8;
 		uint32_t wg_y = (height + 7) / 8;
-		for (uint32_t i = 0; i < rp.num_primitives; i++)
+		for (uint32_t i = 0; i <= last_primitive_index_single_step; i++)
 		{
 			push.lo_primitive_index = i;
 			push.hi_primitive_index = i;
@@ -1597,6 +1604,33 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 			cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 			            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
 			            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+		}
+
+		// If there is still work to do that is read-only, use cached depth for the rest of the render pass.
+		if (last_primitive_index_single_step + 1 < rp.num_primitives)
+		{
+			if (last_primitive_index_z_sensitive > last_primitive_index_single_step)
+			{
+				// If we still need to read depth, have to cache it read-only.
+				uint32_t half_gpu_size = buffers.gpu->get_create_info().size / 2;
+				if (get_bits_per_pixel(depth_psm) == 16)
+					fb_index_depth_offset = half_gpu_size / sizeof(uint16_t);
+				else
+					fb_index_depth_offset = half_gpu_size / sizeof(uint32_t);
+				push.fb_index_depth_offset = fb_index_depth_offset;
+
+				dispatch_cache_read_only_depth(cmd, rp, depth_psm);
+			}
+			else
+			{
+				// If no further primitives need to read-depth, treat it as non-depth to speed up things.
+				cmd.set_specialization_constant(3, UINT32_MAX);
+			}
+
+			push.lo_primitive_index = last_primitive_index_single_step + 1;
+			push.hi_primitive_index = UINT32_MAX;
+			cmd.push_constants(&push, 0, sizeof(push));
+			cmd.dispatch(1u << (rp.sampling_rate_x_log2 + rp.sampling_rate_y_log2), wg_x, wg_y);
 		}
 	}
 	else
