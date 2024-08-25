@@ -405,7 +405,9 @@ void main_inner(uint index)
         // Technically, we should do perspective divider after interpolation,
         // but this is at least mathematically equivalent.
         // This level of accuracy only seems to matter in extreme single STQ value scenarios anyway.
-        if (stqf0.z == stqf1.z && stqf0.z == stqf2.z)
+        uint tex2_state = primitive_attr.data[index].tex2;
+        bool needs_lod_computation = bitfieldExtract(tex2_state, TEX2_FIXED_LOD_OFFSET, TEX2_FIXED_LOD_BITS) == 0;
+        if (!needs_lod_computation && stqf0.z == stqf1.z && stqf0.z == stqf2.z)
         {
             float inv_q = rcp_float(stqf0.z);
             stqf0.xy *= inv_q;

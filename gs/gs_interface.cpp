@@ -1289,11 +1289,18 @@ void GSInterface::drawing_kick_update_state(ColorFeedbackMode feedback_mode, con
 			break;
 		}
 
-		p.tex2 = ctx.tex1.desc.LCM << TEX2_FIXED_LOD_OFFSET;
-		p.tex2 |= ctx.tex1.desc.L << TEX2_L_OFFSET;
-		p.tex2 |= ctx.tex1.desc.K << TEX2_K_OFFSET;
 		if (ctx.tex1.desc.mmin_has_mipmap())
+		{
+			p.tex2 = ctx.tex1.desc.LCM << TEX2_FIXED_LOD_OFFSET;
+			p.tex2 |= ctx.tex1.desc.L << TEX2_L_OFFSET;
+			p.tex2 |= ctx.tex1.desc.K << TEX2_K_OFFSET;
 			p.tex |= ctx.tex1.desc.MXL << TEX_MAX_MIP_LEVEL_OFFSET;
+		}
+		else
+		{
+			// Always flag fixed LOD so we can do early perspective divide.
+			p.tex2 = 1u << TEX2_FIXED_LOD_OFFSET;
+		}
 	}
 
 	// Update state after updating texture state, since reading a texture may cause a flush,
