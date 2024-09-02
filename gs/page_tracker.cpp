@@ -128,7 +128,7 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 	auto dst_block = get_block_state(dst_rect);
 	auto src_block = get_block_state(src_rect);
 
-	bool need_tex_invalidate = false;
+	bool need_tex_invalidate = true;
 	bool has_hazard = false;
 
 	if (page_has_flag_with_fb_access_mask(
@@ -137,11 +137,12 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 			src_rect, PAGE_STATE_FB_WRITE_BIT, src_rect.write_mask))
 	{
 		flush_render_pass(FlushReason::CopyHazard);
+		// Flushing render pass implicitly flushes texture cache.
+		need_tex_invalidate = false;
 	}
 	else if ((dst_block.cached_read_block_mask & dst_rect.block_mask) != 0)
 	{
 		flush_cached();
-		need_tex_invalidate = true;
 	}
 	else if (((dst_block.copy_write_block_mask | dst_block.copy_read_block_mask) & dst_rect.block_mask) != 0 ||
 	         (src_block.copy_write_block_mask & src_rect.block_mask) != 0)
@@ -406,7 +407,7 @@ BlockState PageTracker::get_block_state(const PageRect &rect) const
 
 void PageTracker::mark_transfer_write(const PageRect &rect)
 {
-	bool need_tex_invalidate = false;
+	bool need_tex_invalidate = true;
 
 	// There are hazards if there is pending work that is dispatched after or concurrently.
 	auto block = get_block_state(rect);
@@ -414,12 +415,11 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 			rect, PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT, rect.write_mask) != 0)
 	{
 		flush_render_pass(FlushReason::CopyHazard);
+		// Flushing render pass implicitly invalidates texture cache.
+		need_tex_invalidate = false;
 	}
 	else if ((block.cached_read_block_mask & rect.block_mask) != 0)
-	{
 		flush_cached();
-		need_tex_invalidate = true;
-	}
 	else if (((block.copy_read_block_mask | block.copy_write_block_mask) & rect.block_mask) != 0)
 		flush_copy();
 
