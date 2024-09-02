@@ -5,7 +5,7 @@
 # Contributor: Themaister <post@themaister.net>
 
 pkgname=pcsx2-parallel-gs-git
-pkgver=2.1.56.r2.ge0ac9ae418
+pkgver=2.1.106.r3.g79276d33a9
 pkgrel=1
 pkgdesc='A Sony PlayStation 2 emulator with experimental paraLLEl-GS support'
 arch=(x86_64)
@@ -69,7 +69,7 @@ SHADERC_SPIRVTOOLS=dd4b663e13c07fea4fbb3f70c1c91c86731099f7
 INSTALLDIR="${srcdir}/deps-build"
 
 source=(
-    git+https://github.com/PCSX2/pcsx2.git
+    git+https://github.com/PCSX2/pcsx2.git#commit=fd5a6522702c3279c2a968f395983a46374b7fa2
     git+https://github.com/Arntzen-Software/parallel-gs.git
     git+https://github.com/PCSX2/pcsx2_patches.git
     git+https://github.com/ianlancetaylor/libbacktrace.git#commit=$LIBBACKTRACE
