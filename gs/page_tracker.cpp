@@ -185,17 +185,8 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 			if ((state.flags & (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
 				accessed_readback_pages.push_back(page);
 
-			bool is_hazard = (src_rect.block_mask & state.copy_write_block_mask) != 0;
-			if (is_hazard)
-			{
-				if ((state.flags & PAGE_STATE_NEEDS_SHADOW_PAGE_BIT) == 0)
-				{
-					state.flags |= PAGE_STATE_NEEDS_SHADOW_PAGE_BIT;
-					cb.sync_shadow_page(page);
-					accessed_shadow_pages.push_back(page);
-				}
+			if ((src_rect.block_mask & state.copy_write_block_mask) != 0)
 				has_hazard = true;
-			}
 
 			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
 			state.copy_read_block_mask |= src_rect.block_mask;
@@ -207,8 +198,29 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 		}
 	}
 
+	if (has_hazard)
+	{
+		for (unsigned y = 0; y < src_rect.page_height; y++)
+		{
+			for (unsigned x = 0; x < src_rect.page_width; x++)
+			{
+				unsigned page = src_rect.base_page + y * src_rect.page_stride + x;
+				page &= page_state_mask;
+				auto &state = page_state[page];
+
+				if ((state.flags & PAGE_STATE_NEEDS_SHADOW_PAGE_BIT) == 0)
+				{
+					state.flags |= PAGE_STATE_NEEDS_SHADOW_PAGE_BIT;
+					cb.sync_shadow_page(page);
+					accessed_shadow_pages.push_back(page);
+				}
+			}
+		}
+	}
+
 	if (need_tex_invalidate)
 		invalidate_texture_cache(UINT32_MAX);
+
 	return has_hazard;
 }
 
