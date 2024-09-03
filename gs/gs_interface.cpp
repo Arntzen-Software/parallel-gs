@@ -2220,6 +2220,8 @@ void GSInterface::init_transfer()
 		                                  transfer_state.copy.bitbltbuf.desc.SPSM);
 
 		transfer_state.copy.needs_shadow_vram = tracker.mark_transfer_copy(dst_rect, src_rect);
+		if (tracker.invalidate_texture_cache(render_pass.clut_instance))
+			mark_texture_state_dirty();
 		renderer.copy_vram(transfer_state.copy);
 	}
 	else if (XDIR == HOST_TO_LOCAL)
