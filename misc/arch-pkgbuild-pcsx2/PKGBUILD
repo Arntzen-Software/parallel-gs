@@ -5,7 +5,7 @@
 # Contributor: Themaister <post@themaister.net>
 
 pkgname=pcsx2-parallel-gs-git
-pkgver=2.1.106.r3.g79276d33a9
+pkgver=2.1.106.r4.gd45115ff53
 pkgrel=1
 pkgdesc='A Sony PlayStation 2 emulator with experimental paraLLEl-GS support'
 arch=(x86_64)
@@ -81,6 +81,7 @@ source=(
 	0001-Add-an-ad-hoc-GS-stream-format.patch
 	0002-Early-integration-of-parallel-GS.patch
 	0003-Handle-AutomaticBFF-cases.patch
+	0004-Hook-up-GSreset.patch
 )
 
 prepare() 
@@ -99,6 +100,7 @@ prepare()
 	git am "${srcdir}/0001-Add-an-ad-hoc-GS-stream-format.patch"
 	git am "${srcdir}/0002-Early-integration-of-parallel-GS.patch"
 	git am "${srcdir}/0003-Handle-AutomaticBFF-cases.patch"
+	git am "${srcdir}/0004-Hook-up-GSreset.patch"
 
 	echo "Linking in parallel-gs."
 	cd pcsx2/GS
@@ -190,6 +192,7 @@ sha256sums=(
 	'SKIP'
 	'SKIP'
 	'176748c2ed9b578359f559125afbcf212fd35ea60667b683dc2862d682673964'
+	'SKIP'
 	'SKIP'
 	'SKIP'
 	'SKIP')

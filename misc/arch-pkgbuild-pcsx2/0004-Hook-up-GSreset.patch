@@ -1,0 +1,58 @@
+From c05ac2f292cd4bf74047de0eeda221e5d0ea98d5 Mon Sep 17 00:00:00 2001
+From: Hans-Kristian Arntzen <post@arntzen-software.no>
+Date: Wed, 4 Sep 2024 19:24:55 +0200
+Subject: [PATCH 4/4] Hook up GSreset.
+
+---
+ pcsx2/GS/GS.cpp                                  | 5 +++++
+ pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp | 5 +++++
+ pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h   | 1 +
+ 3 files changed, 11 insertions(+)
+
+diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
+index 7e348caca1..a080c92e3a 100644
+--- a/pcsx2/GS/GS.cpp
++++ b/pcsx2/GS/GS.cpp
+@@ -478,6 +478,11 @@ void GSclose()
+ 
+ void GSreset(bool hardware_reset)
+ {
++#ifdef HAVE_PARALLEL_GS
++	if (g_pgs_renderer)
++		g_pgs_renderer->Reset(hardware_reset);
++#endif
++
+ 	if (!g_gs_renderer)
+ 		return;
+ 
+diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
+index 5ff60d8574..a529ce9e74 100644
+--- a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
++++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
+@@ -209,6 +209,11 @@ bool GSRendererPGS::Init()
+ 	return true;
+ }
+ 
++void GSRendererPGS::Reset(bool /*hardware_reset*/)
++{
++	iface.reset_context_state();
++}
++
+ void GSRendererPGS::UpdateConfig()
+ {
+ 	u8 super_sampling = GSConfig.PGSSuperSampling;
+diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
+index 289b974838..ae14e4b6ef 100644
+--- a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
++++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
+@@ -23,6 +23,7 @@ public:
+ 	void ResizeWindow(int width, int height, float scale);
+ 	const WindowInfo &GetWindowInfo() const;
+ 	void SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle);
++	void Reset(bool hardware_reset);
+ 
+ 	void Transfer(const u8 *mem, u32 size);
+ 
+-- 
+2.46.0
+
