@@ -254,30 +254,29 @@ void main()
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 16 < transfer.host_offset_qwords)
 			return;
 		int dest_offset = STORAGE_FMT == PSMT4HL ? 24 : 28;
-		uint dest_data = uint(vram32.data[dest_addr]);
-
 		uint source_data;
 		if (TRANSFER_DIR == HOST_TO_LOCAL)
 		{
 			if (source_addr >= transfer8.data.length() * 2)
 				return;
-			source_data = uint(bitfieldExtract(uint(transfer8.data[source_addr >> 1u]), int(source_addr & 1u) * 4, 4));
+			source_data = bitfieldExtract(uint(transfer8.data[source_addr >> 1u]), int(source_addr & 1u) * 4, 4);
 		}
 		else if (TRANSFER_DIR == LOCAL_TO_LOCAL)
 		{
 			if (SOURCE_FMT == PSMT4)
 			{
 				int source_offset = int(source_addr & 1u) << 2;
-				source_data = bitfieldExtract(int(transfer8.data[source_addr >> 1]), source_offset, 4);
+				source_data = bitfieldExtract(uint(transfer8.data[source_addr >> 1]), source_offset, 4);
 			}
 			else
 			{
 				int source_offset = SOURCE_FMT == PSMT4HL ? 24 : 28;
-				source_data = bitfieldExtract(int(transfer32.data[source_addr]), source_offset, 4);
+				source_data = bitfieldExtract(transfer32.data[source_addr], source_offset, 4);
 			}
 		}
 
-		vram32.data[dest_addr] = uint(bitfieldInsert(dest_data, source_data, dest_offset, 4));
+		uint dest_data = vram32.data[dest_addr];
+		vram32.data[dest_addr] = bitfieldInsert(dest_data, source_data, dest_offset, 4);
 		if (INVALIDATE_SUPER_SAMPLE)
 			vram32.data[dest_addr + (VRAM_MASK + 1) / 4] &= 0xffffff;
 	}
