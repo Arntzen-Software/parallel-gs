@@ -1261,10 +1261,15 @@ static uint32_t deduce_effectice_z_psm(uint32_t color_psm, uint32_t depth_psm)
 		else if (depth_psm == PSMZ16S || depth_psm == PSMZ16)
 			return PSMCT16S;
 	}
+
+#if 0
+	// Trying to fix up anything here only seems to cause issues.
+	// FIXME: Figure out what is supposed to happen.
 	else if (color_psm == PSMCT16) // Group 2
 		return PSMZ16;
 	else if (color_psm == PSMZ16) // Whacky group 2
 		return PSMCT16;
+#endif
 
 	return depth_psm;
 }
