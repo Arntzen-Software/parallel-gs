@@ -12,6 +12,7 @@
 #include "flat_renderer.hpp"
 #include "ui_manager.hpp"
 #include "shaders/slangmosh.hpp"
+#include "hash.hpp"
 #include <string.h>
 
 using namespace Granite;
@@ -289,6 +290,24 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		cmd.draw(3);
 	}
 
+#if 0
+	Util::Hash last_hash = 0;
+
+	void read_page_memory()
+	{
+		auto *mapped = static_cast<const uint32_t *>(iface->map_vram_read(0x300000, PGS_PAGE_ALIGNMENT_BYTES));
+		Util::Hasher h;
+		for (uint32_t i = 0; i < PGS_PAGE_ALIGNMENT_BYTES / sizeof(uint32_t); i++)
+			h.u32(mapped[i] & 0x0f000000);
+
+		if (h.get() != last_hash)
+		{
+			LOGI("Hash changed at V #%u: %016llx\n", vsync_index, static_cast<unsigned long long>(h.get()));
+			last_hash = h.get();
+		}
+	}
+#endif
+
 	void render_frame(double, double)
 	{
 		if (!iface)
@@ -335,6 +354,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			else
 				is_eof = true;
 		}
+
+		//read_page_memory();
 
 		auto cmd = device.request_command_buffer();
 		if (vsync.image)
