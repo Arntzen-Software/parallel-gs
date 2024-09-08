@@ -143,11 +143,14 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 		flush_cached();
 		need_tex_invalidate = true;
 	}
-	else if (((dst_block.copy_write_block_mask | dst_block.copy_read_block_mask) & dst_rect.block_mask) != 0 ||
+	else if ((dst_block.copy_read_block_mask & dst_rect.block_mask) != 0 ||
 	         (src_block.copy_write_block_mask & src_rect.block_mask) != 0)
 	{
 		flush_copy();
 	}
+
+	// Write-after-Write hazards for copies are handled internally through atomics.
+	// We only need to care about write-after-read and read-after-write.
 
 	for (unsigned y = 0; y < dst_rect.page_height; y++)
 	{
@@ -160,6 +163,8 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 				accessed_readback_pages.push_back(page);
 			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT |
 			               PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT;
+			if (state.copy_write_block_mask == 0)
+				cb.mark_copy_write_page(page);
 			if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
 				accessed_copy_pages.push_back(page);
 			state.copy_write_block_mask |= dst_rect.block_mask;
@@ -432,8 +437,11 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 		flush_cached();
 		need_tex_invalidate = true;
 	}
-	else if (((block.copy_read_block_mask | block.copy_write_block_mask) & rect.block_mask) != 0)
+	else if ((block.copy_read_block_mask & rect.block_mask) != 0)
 		flush_copy();
+
+	// Write-after-Write hazards for copies are handled internally through atomics.
+	// We only need to care about write-after-read and read-after-write.
 
 	for (unsigned y = 0; y < rect.page_height; y++)
 	{
@@ -446,6 +454,8 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 				accessed_readback_pages.push_back(page);
 			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT |
 			               PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
+			if (state.copy_write_block_mask == 0)
+				cb.mark_copy_write_page(page);
 			if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
 				accessed_copy_pages.push_back(page);
 			state.copy_write_block_mask |= rect.block_mask;

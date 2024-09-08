@@ -236,6 +236,7 @@ private:
 	void sync_host_vram_page(uint32_t page_index) override;
 	void sync_vram_host_page(uint32_t page_index) override;
 	void sync_shadow_page(uint32_t page_index) override;
+	void mark_copy_write_page(uint32_t page_index) override;
 	void invalidate_texture_hash(Util::Hash hash, bool clut) override;
 	void forget_in_render_pass_memoization() override;
 	void recycle_image_handle(Vulkan::ImageHandle image) override;
@@ -250,7 +251,6 @@ private:
 
 	std::vector<uint32_t> sync_host_vram_pages;
 	std::vector<uint32_t> sync_vram_host_pages;
-	std::vector<uint32_t> sync_vram_shadow_pages;
 	std::vector<uint32_t> page_buffer;
 
 	struct TransferState

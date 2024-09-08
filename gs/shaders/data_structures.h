@@ -153,7 +153,6 @@ struct TransferDescriptor
 	uint source_stride;
 	uint dest_addr;
 	uint dest_stride;
-	uint transfer_dir;
 	uint source_x;
 	uint source_y;
 	uint dest_x;
@@ -161,6 +160,13 @@ struct TransferDescriptor
 	uint width;
 	uint height;
 	uint host_offset_qwords;
+};
+
+struct LinkedVRAMCopyWrite
+{
+	uint dispatch_order;
+	uint write_mask;
+	uint next;
 };
 
 struct SingleSampleHeuristic

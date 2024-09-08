@@ -8,6 +8,8 @@
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_shader_8bit_storage : require
 #extension GL_EXT_scalar_block_layout : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_vote : require
 
 layout(local_size_x_id = 0) in;
 layout(constant_id = 1) const uint SOURCE_FMT = 0;
@@ -15,6 +17,7 @@ layout(constant_id = 2) const uint STORAGE_FMT = 0;
 layout(constant_id = 3) const uint VRAM_MASK = 4 * 1024 * 1024 - 1;
 layout(constant_id = 4) const uint TRANSFER_DIR = 0;
 layout(constant_id = 5) const bool INVALIDATE_SUPER_SAMPLE = false;
+layout(constant_id = 6) const bool PREPARE_ONLY = false;
 
 #include "utils.h"
 #include "swizzle_utils.h"
@@ -71,8 +74,65 @@ layout(std140, set = 0, binding = 2) uniform TransferDesc
 	TransferDescriptor transfer;
 };
 
+layout(push_constant) uniform Registers
+{
+	uint dispatch_order;
+} registers;
+
+layout(std430, set = 0, binding = 3) buffer AtomicCounterBuffer
+{
+	uint link_count;
+	uint linked_list[];
+};
+
+layout(std430, set = 0, binding = 4) buffer LinkedPayloads
+{
+	LinkedVRAMCopyWrite linked_writes[];
+};
+
 // Workaround glslang issue with 8/16-bit constants and storage.
 layout(constant_id = 7) const uint CONSTANT_ZERO = 0;
+
+// Scan through the VRAM writes for a particular dword.
+// If there are writes with a dispatch ID larger than our own, remove write mask.
+// In pratically all cases, this should be done after one iteration to confirm that indeed,
+// there are no races.
+bool get_effective_write_mask(uint word_addr, uint base_mask, out uint write_mask)
+{
+	bool has_exclusive = true;
+	uint link = linked_list[word_addr];
+
+	while (link != ~0u)
+	{
+		LinkedVRAMCopyWrite pending_write = linked_writes[link];
+		// Later writes win.
+		if (pending_write.dispatch_order > registers.dispatch_order)
+		{
+			base_mask &= ~pending_write.write_mask;
+			has_exclusive = false;
+		}
+		else if (pending_write.dispatch_order < registers.dispatch_order &&
+			(pending_write.write_mask & ~base_mask) != 0)
+		{
+			// If our write doesn't invalidate all previous threads, we don't have exclusive access.
+			has_exclusive = false;
+		}
+
+		link = pending_write.next;
+	}
+
+	write_mask = base_mask;
+	return has_exclusive;
+}
+
+void register_vram_write(uint word_addr, uint write_mask)
+{
+	// Simple atomic linked list.
+	// We make sure not to dispatch enough threads in one go that this can overflow buffers.
+	uint link_index = atomicAdd(link_count, 1u);
+	uint next_link = atomicExchange(linked_list[word_addr], link_index);
+	linked_writes[link_index] = LinkedVRAMCopyWrite(registers.dispatch_order, write_mask, next_link);
+}
 
 void main()
 {
@@ -111,14 +171,21 @@ void main()
 	uint dest_y = (coord.y + transfer.dest_y) & (2048 - 1);
 
 	uint source_addr;
+
 	if (TRANSFER_DIR == HOST_TO_LOCAL)
 	{
 		source_addr = coord.y * transfer.width + coord.x;
 	}
 	else if (TRANSFER_DIR == LOCAL_TO_LOCAL)
 	{
-		source_addr = swizzle_PS2(source_x, source_y, transfer.source_addr, transfer.source_stride, SOURCE_FMT,
-			VRAM_MASK);
+		if (!PREPARE_ONLY)
+		{
+			source_addr = swizzle_PS2(source_x, source_y,
+				transfer.source_addr, transfer.source_stride,
+				SOURCE_FMT, VRAM_MASK);
+		}
+		else
+			source_addr = 0;
 	}
 
 	uint dest_addr = swizzle_PS2(dest_x, dest_y, transfer.dest_addr, transfer.dest_stride, STORAGE_FMT, VRAM_MASK);
@@ -127,63 +194,134 @@ void main()
 	{
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 2 < transfer.host_offset_qwords)
 			return;
+		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr >= transfer24.data.length())
+			return;
 
-		uint tex_data;
-		if (TRANSFER_DIR == HOST_TO_LOCAL)
+		if (PREPARE_ONLY)
 		{
-			// Drop writes that were skipped in upload.
-			if (source_addr >= transfer24.data.length())
-				return;
-
-			uvec3 bytes = uvec3(transfer24.data[source_addr]);
-			tex_data = bytes.x | (bytes.y << 8) | (bytes.z << 16);
+			register_vram_write(dest_addr, 0xffffffu);
 		}
 		else
 		{
-			tex_data = uint(transfer32.data[source_addr]);
-		}
+			uint tex_data;
+			if (TRANSFER_DIR == HOST_TO_LOCAL)
+			{
+				uvec3 bytes = uvec3(transfer24.data[source_addr]);
+				tex_data = bytes.x | (bytes.y << 8) | (bytes.z << 16);
+			}
+			else
+			{
+				tex_data = uint(transfer32.data[source_addr]);
+			}
 
-		vram24.data[dest_addr] = u8vec3(uvec3(tex_data) >> uvec3(0, 8, 16));
-		if (INVALIDATE_SUPER_SAMPLE)
-			vram32.data[dest_addr + (VRAM_MASK + 1) / 4] = 0; // Don't care about trying to preserve SSAA for top bit only.
+			// If we have exclusive access over the dword, we don't need atomics.
+			// All threads need to agree how to deal with a write to a dword.
+			uint mask;
+			bool has_exclusive = get_effective_write_mask(dest_addr, 0xffffffu, mask);
+
+			if (has_exclusive)
+			{
+				vram24.data[dest_addr] = u8vec3(uvec3(tex_data) >> uvec3(0, 8, 16));
+				if (INVALIDATE_SUPER_SAMPLE)
+					vram24.data[dest_addr + (VRAM_MASK + 1) / 4] = u8vec3(uvec3(tex_data & CONSTANT_ZERO));
+			}
+			else if (mask != 0u)
+			{
+				atomicAnd(vram32.data[dest_addr], ~mask);
+				atomicOr(vram32.data[dest_addr], tex_data & mask);
+				if (INVALIDATE_SUPER_SAMPLE)
+					atomicAnd(vram32.data[dest_addr + (VRAM_MASK + 1) / 4], 0xff000000u);
+			}
+		}
 	}
 	else if (is_tex_16bit)
 	{
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 4 < transfer.host_offset_qwords)
 			return;
-		if (TRANSFER_DIR != HOST_TO_LOCAL || source_addr < transfer16.data.length())
+		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr >= transfer16.data.length())
+			return;
+
+		uint word_addr = dest_addr >> 1u;
+		uint shamt = (dest_addr & 1u) * 16u;
+		uint target_write_mask = 0xffffu << shamt;
+
+		if (PREPARE_ONLY)
+		{
+			register_vram_write(word_addr, target_write_mask);
+		}
+		else
 		{
 			uint write_word = uint(transfer16.data[source_addr]);
-			vram16.data[dest_addr] = uint16_t(write_word);
-			if (INVALIDATE_SUPER_SAMPLE)
-				vram16.data[dest_addr + (VRAM_MASK + 1) / 2] = uint16_t(write_word & CONSTANT_ZERO);
+			uint mask;
+			bool has_exclusive = get_effective_write_mask(word_addr, target_write_mask, mask);
+
+			if (has_exclusive)
+			{
+				vram16.data[dest_addr] = uint16_t(write_word);
+				if (INVALIDATE_SUPER_SAMPLE)
+					vram16.data[dest_addr + (VRAM_MASK + 1) / 2] = uint16_t(write_word & CONSTANT_ZERO);
+			}
+			else if (mask != 0u)
+			{
+				write_word <<= shamt;
+				atomicAnd(vram32.data[word_addr], ~mask);
+				atomicOr(vram32.data[word_addr], write_word & mask);
+				if (INVALIDATE_SUPER_SAMPLE)
+					atomicAnd(vram32.data[word_addr + (VRAM_MASK + 1) / 4], ~target_write_mask);
+			}
 		}
 	}
 	else if (is_tex_8bit)
 	{
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 8 < transfer.host_offset_qwords)
 			return;
+		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr >= transfer8.data.length())
+			return;
 
 		uint source_offset = 0;
+		uint dest_offset = 0;
+
 		if (TRANSFER_DIR == LOCAL_TO_LOCAL && SOURCE_FMT == PSMT8H)
 		{
 			source_addr <<= 2;
 			source_offset = 3;
 		}
 
-		uint dest_offset = 0;
 		if (STORAGE_FMT == PSMT8H)
 		{
 			dest_addr <<= 2;
 			dest_offset = 3;
 		}
 
-		if (TRANSFER_DIR != HOST_TO_LOCAL || source_addr + source_offset < transfer8.data.length())
+		uint byte_addr = dest_addr + dest_offset;
+		uint word_addr = byte_addr >> 2u;
+		uint shamt = (byte_addr & 3u) * 8u;
+		uint target_write_mask = 0xffu << shamt;
+
+		if (PREPARE_ONLY)
 		{
-			uint d = uint(transfer8.data[source_addr + source_offset]);
-			vram8.data[dest_addr + dest_offset] = uint8_t(d);
-			if (INVALIDATE_SUPER_SAMPLE)
-				vram8.data[dest_addr + dest_offset + (VRAM_MASK + 1)] = uint8_t(d & CONSTANT_ZERO);
+			register_vram_write(word_addr, target_write_mask);
+		}
+		else
+		{
+			uint write_word = uint(transfer8.data[source_addr + source_offset]);
+			uint mask;
+			bool has_exclusive = get_effective_write_mask(word_addr, target_write_mask, mask);
+
+			if (has_exclusive)
+			{
+				vram8.data[byte_addr] = uint8_t(write_word);
+				if (INVALIDATE_SUPER_SAMPLE)
+					vram8.data[byte_addr + (VRAM_MASK + 1)] = uint8_t(write_word & CONSTANT_ZERO);
+			}
+			else if (mask != 0u)
+			{
+				write_word <<= shamt;
+				atomicAnd(vram32.data[word_addr], ~mask);
+				atomicOr(vram32.data[word_addr], write_word & mask);
+				if (INVALIDATE_SUPER_SAMPLE)
+					atomicAnd(vram32.data[word_addr + (VRAM_MASK + 1) / 4], ~target_write_mask);
+			}
 		}
 	}
 	else if (STORAGE_FMT == PSMT4 && gl_WorkGroupSize.x == 32)
@@ -191,118 +329,194 @@ void main()
 		// Fused nibble approach
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 16 < transfer.host_offset_qwords)
 			return;
+		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr >= 2 * transfer8.data.length())
+			return;
 
-		// Find corresponding second nibble within the column so two pixels (nibbles) can be written at once
-		ivec2 coord_hi = coord ^ ivec2(4, 2);
-		uint write_word;
+		uint byte_addr = dest_addr >> 1u;
+		uint word_addr = byte_addr >> 2u;
+		uint shamt = (byte_addr & 3u) * 8u;
+		uint target_write_mask = 0xffu << shamt;
 
-		if (TRANSFER_DIR == HOST_TO_LOCAL)
+		if (PREPARE_ONLY)
 		{
-			if (source_addr >= 2 * transfer8.data.length())
-				return;
-
-			uint source_data_lo = uint(transfer8.data[source_addr >> 1]);
-			uint source_addr_hi = coord_hi.y * transfer.width + coord_hi.x;
-			uint source_data_hi = uint(transfer8.data[source_addr_hi >> 1]);
-
-			if ((source_addr_hi & 1u) == 0)
-				source_data_hi <<= 4;
-			else
-				source_data_lo >>= 4;
-
-			write_word = bitfieldInsert(source_data_hi, source_data_lo, 0, 4);
+			register_vram_write(word_addr, target_write_mask);
 		}
-		else if (TRANSFER_DIR == LOCAL_TO_LOCAL)
+		else
 		{
-			if (SOURCE_FMT == PSMT4)
+			// Find corresponding second nibble within the column so two pixels (nibbles) can be written at once
+			ivec2 coord_hi = coord ^ ivec2(4, 2);
+			uint write_word;
+
+			if (TRANSFER_DIR == HOST_TO_LOCAL)
 			{
-				write_word = uint(transfer8.data[source_addr >> 1]);
-			}
-			else if (SOURCE_FMT == PSMT4HH || SOURCE_FMT == PSMT4HL)
-			{
-				int source_offset = SOURCE_FMT == PSMT4HL ? 24 : 28;
-				uint source_data_lo = bitfieldExtract(transfer32.data[source_addr], source_offset, 4);
-				uint pair_addr = swizzle_PS2(coord_hi.x + transfer.source_x, coord_hi.y + transfer.source_y,
-					transfer.source_addr, transfer.source_stride, SOURCE_FMT, VRAM_MASK);
-				uint source_data_hi = bitfieldExtract(int(transfer32.data[pair_addr]), source_offset, 4) << 4;
+				uint source_data_lo = uint(transfer8.data[source_addr >> 1]);
+				uint source_addr_hi = coord_hi.y * transfer.width + coord_hi.x;
+				uint source_data_hi = uint(transfer8.data[source_addr_hi >> 1]);
+
+				if ((source_addr_hi & 1u) == 0)
+					source_data_hi <<= 4;
+				else
+					source_data_lo >>= 4;
+
 				write_word = bitfieldInsert(source_data_hi, source_data_lo, 0, 4);
 			}
+			else if (TRANSFER_DIR == LOCAL_TO_LOCAL)
+			{
+				if (SOURCE_FMT == PSMT4)
+				{
+					write_word = uint(transfer8.data[source_addr >> 1]);
+				}
+				else if (SOURCE_FMT == PSMT4HH || SOURCE_FMT == PSMT4HL)
+				{
+					int source_offset = SOURCE_FMT == PSMT4HL ? 24 : 28;
+					uint source_data_lo = bitfieldExtract(transfer32.data[source_addr], source_offset, 4);
+					uint pair_addr = swizzle_PS2(coord_hi.x + transfer.source_x, coord_hi.y + transfer.source_y,
+					transfer.source_addr, transfer.source_stride, SOURCE_FMT, VRAM_MASK);
+					uint source_data_hi = bitfieldExtract(int(transfer32.data[pair_addr]), source_offset, 4) << 4;
+					write_word = bitfieldInsert(source_data_hi, source_data_lo, 0, 4);
+				}
+			}
+
+			uint mask;
+			bool has_exclusive = get_effective_write_mask(word_addr, target_write_mask, mask);
+
+			if (has_exclusive)
+			{
+				vram8.data[byte_addr] = uint8_t(write_word);
+				if (INVALIDATE_SUPER_SAMPLE)
+					vram8.data[byte_addr + (VRAM_MASK + 1)] = uint8_t(write_word & CONSTANT_ZERO);
+			}
+			else if (mask != 0u)
+			{
+				write_word <<= shamt;
+				atomicAnd(vram32.data[word_addr], ~mask);
+				atomicOr(vram32.data[word_addr], write_word & mask);
+				if (INVALIDATE_SUPER_SAMPLE)
+					atomicAnd(vram32.data[word_addr + (VRAM_MASK + 1) / 4], ~target_write_mask);
+			}
 		}
-		vram8.data[dest_addr >> 1] = uint8_t(write_word);
-		if (INVALIDATE_SUPER_SAMPLE)
-			vram8.data[(dest_addr >> 1) + (VRAM_MASK + 1)] = uint8_t(write_word & CONSTANT_ZERO);
 	}
 	else if (STORAGE_FMT == PSMT4)
 	{
 		// Fallback, sub-word atomics.
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 16 < transfer.host_offset_qwords)
 			return;
-
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr >= 2 * transfer8.data.length())
 			return;
 
-		uint source_data;
-		if (SOURCE_FMT == PSMT4 || TRANSFER_DIR == HOST_TO_LOCAL)
+		uint word_addr = dest_addr >> 3u;
+		uint shamt = 4u * (dest_addr & 7u);
+		uint target_write_mask = 0xfu << shamt;
+
+		if (PREPARE_ONLY)
 		{
-			source_data = uint(transfer8.data[source_addr >> 1]);
-			source_data = bitfieldExtract(source_data, 4 * int(source_addr & 1u), 4);
+			register_vram_write(word_addr, target_write_mask);
 		}
 		else
 		{
-			int source_offset = SOURCE_FMT == PSMT4HL ? 24 : 28;
-			source_data = bitfieldExtract(transfer32.data[source_addr], source_offset, 4);
+			uint mask;
+			get_effective_write_mask(word_addr, target_write_mask, mask);
+
+			if (mask != 0u)
+			{
+				uint source_data;
+				if (SOURCE_FMT == PSMT4 || TRANSFER_DIR == HOST_TO_LOCAL)
+				{
+					source_data = uint(transfer8.data[source_addr >> 1]);
+					source_data = bitfieldExtract(source_data, 4 * int(source_addr & 1u), 4);
+				}
+				else
+				{
+					int source_offset = SOURCE_FMT == PSMT4HL ? 24 : 28;
+					source_data = bitfieldExtract(transfer32.data[source_addr], source_offset, 4);
+				}
+
+				source_data <<= shamt;
+				atomicAnd(vram32.data[word_addr], ~mask);
+				atomicOr(vram32.data[word_addr], source_data & mask);
+				if (INVALIDATE_SUPER_SAMPLE)
+					atomicAnd(vram32.data[word_addr + (VRAM_MASK + 1) / 4], ~mask);
+			}
 		}
-
-		uint shamt = 4u * (dest_addr & 7u);
-		uint mask = 0xfu << shamt;
-
-		atomicAnd(vram32.data[dest_addr >> 3], ~mask);
-		atomicOr(vram32.data[dest_addr >> 3], source_data << shamt);
-
-		if (INVALIDATE_SUPER_SAMPLE)
-			atomicAnd(vram32.data[(dest_addr >> 3) + (VRAM_MASK + 1) / 4], ~mask);
 	}
 	else if (STORAGE_FMT == PSMT4HL || STORAGE_FMT == PSMT4HH)
 	{
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 16 < transfer.host_offset_qwords)
 			return;
-		int dest_offset = STORAGE_FMT == PSMT4HL ? 24 : 28;
-		uint source_data;
-		if (TRANSFER_DIR == HOST_TO_LOCAL)
-		{
-			if (source_addr >= transfer8.data.length() * 2)
-				return;
-			source_data = bitfieldExtract(uint(transfer8.data[source_addr >> 1u]), int(source_addr & 1u) * 4, 4);
-		}
-		else if (TRANSFER_DIR == LOCAL_TO_LOCAL)
-		{
-			if (SOURCE_FMT == PSMT4)
-			{
-				int source_offset = int(source_addr & 1u) << 2;
-				source_data = bitfieldExtract(uint(transfer8.data[source_addr >> 1]), source_offset, 4);
-			}
-			else
-			{
-				int source_offset = SOURCE_FMT == PSMT4HL ? 24 : 28;
-				source_data = bitfieldExtract(transfer32.data[source_addr], source_offset, 4);
-			}
-		}
+		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr >= transfer8.data.length() * 2)
+			return;
 
-		uint dest_data = vram32.data[dest_addr];
-		vram32.data[dest_addr] = bitfieldInsert(dest_data, source_data, dest_offset, 4);
-		if (INVALIDATE_SUPER_SAMPLE)
-			vram32.data[dest_addr + (VRAM_MASK + 1) / 4] &= 0xffffff;
+		int dest_offset = STORAGE_FMT == PSMT4HL ? 24 : 28;
+		uint target_write_mask = 0xfu << dest_offset;
+
+		if (PREPARE_ONLY)
+		{
+			register_vram_write(dest_addr, target_write_mask);
+		}
+		else
+		{
+			uint mask;
+			get_effective_write_mask(dest_addr, target_write_mask, mask);
+
+			if (mask != 0u)
+			{
+				uint source_data;
+				if (TRANSFER_DIR == HOST_TO_LOCAL)
+				{
+					source_data = bitfieldExtract(uint(transfer8.data[source_addr >> 1u]), int(source_addr & 1u) * 4, 4);
+				}
+				else if (TRANSFER_DIR == LOCAL_TO_LOCAL)
+				{
+					if (SOURCE_FMT == PSMT4)
+					{
+						int source_offset = int(source_addr & 1u) << 2;
+						source_data = bitfieldExtract(uint(transfer8.data[source_addr >> 1]), source_offset, 4);
+					}
+					else
+					{
+						int source_offset = SOURCE_FMT == PSMT4HL ? 24 : 28;
+						source_data = bitfieldExtract(transfer32.data[source_addr], source_offset, 4);
+					}
+				}
+
+				source_data <<= dest_offset;
+				atomicAnd(vram32.data[dest_addr], ~mask);
+				atomicOr(vram32.data[dest_addr], source_data & mask);
+				if (INVALIDATE_SUPER_SAMPLE)
+					atomicAnd(vram32.data[dest_addr + (VRAM_MASK + 1) / 4], ~mask);
+			}
+		}
 	}
 	else
 	{
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 2 < transfer.host_offset_qwords)
 			return;
+		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr >= transfer32.data.length())
+			return;
 
-		if (TRANSFER_DIR != HOST_TO_LOCAL || source_addr < transfer32.data.length())
+		if (PREPARE_ONLY)
 		{
-			vram32.data[dest_addr] = transfer32.data[source_addr];
-			if (INVALIDATE_SUPER_SAMPLE)
-				vram32.data[dest_addr + (VRAM_MASK + 1) / 4] = 0;
+			register_vram_write(dest_addr, ~0u);
+		}
+		else
+		{
+			uint mask;
+			bool exclusive_write = get_effective_write_mask(dest_addr, ~0u, mask);
+			uint tex_word = transfer32.data[source_addr];
+
+			if (exclusive_write)
+			{
+				vram32.data[dest_addr] = tex_word;
+				if (INVALIDATE_SUPER_SAMPLE)
+					vram32.data[dest_addr + (VRAM_MASK + 1) / 4] = 0;
+			}
+			else if (mask != 0u)
+			{
+				atomicAnd(vram32.data[dest_addr], ~mask);
+				atomicOr(vram32.data[dest_addr], tex_word & mask);
+				if (INVALIDATE_SUPER_SAMPLE)
+					atomicAnd(vram32.data[dest_addr + (VRAM_MASK + 1) / 4], 0u);
+			}
 		}
 	}
 }

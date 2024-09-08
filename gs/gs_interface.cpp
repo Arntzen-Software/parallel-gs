@@ -38,7 +38,6 @@ bool GSInterface::init(Vulkan::Device *device, const GSOptions &options)
 	uint32_t num_pages_u32 = (num_pages + 31) / 32;
 	sync_host_vram_pages.resize(num_pages_u32);
 	sync_vram_host_pages.resize(num_pages_u32);
-	sync_vram_shadow_pages.resize(num_pages_u32);
 	page_buffer.reserve(num_pages_u32);
 
 	set_super_sampling_rate(options.super_sampling);
@@ -237,18 +236,6 @@ void GSInterface::flush(PageTrackerFlushFlags flags, FlushReason reason)
 
 	if ((flags & PAGE_TRACKER_FLUSH_COPY_BIT) != 0)
 	{
-		page_buffer.clear();
-		for (size_t i = 0, n = sync_vram_shadow_pages.size(); i < n; i++)
-		{
-			Util::for_each_bit(sync_vram_shadow_pages[i], [i, this](uint32_t bit) {
-				page_buffer.push_back(i * 32 + bit);
-			});
-			sync_vram_shadow_pages[i] = 0;
-		}
-
-		if (!page_buffer.empty())
-			renderer.flush_shadow_page_sync(page_buffer.data(), page_buffer.size());
-
 		if ((flags & (PAGE_TRACKER_FLUSH_CACHE_BIT | PAGE_TRACKER_FLUSH_FB_BIT | PAGE_TRACKER_FLUSH_WRITE_BACK_BIT)) != 0)
 		{
 			TRACE_HEADER("FLUSH COPY", Reg64<DummyBits>{0});
@@ -302,7 +289,12 @@ void GSInterface::sync_vram_host_page(uint32_t page_index)
 
 void GSInterface::sync_shadow_page(uint32_t page_index)
 {
-	sync_vram_shadow_pages[page_index / 32] |= 1u << (page_index & 31);
+	renderer.mark_shadow_page_sync(page_index);
+}
+
+void GSInterface::mark_copy_write_page(uint32_t page_index)
+{
+	renderer.mark_copy_write_page(page_index);
 }
 
 void GSInterface::handle_clut_upload(uint32_t ctx_index)

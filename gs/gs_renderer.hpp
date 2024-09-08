@@ -39,6 +39,7 @@ struct FlushStats
 	uint32_t num_render_passes;
 	uint32_t num_palette_updates;
 	uint32_t num_copies;
+	uint32_t num_copy_threads;
 	uint32_t num_copy_barriers;
 };
 
@@ -219,8 +220,10 @@ public:
 	void copy_vram(const CopyDescriptor &desc);
 	void flush_transfer();
 	void transfer_overlap_barrier();
+
 	// To deal with local -> local hazards.
-	void flush_shadow_page_sync(const uint32_t *page_indices, uint32_t num_indices);
+	void mark_shadow_page_sync(uint32_t page_index);
+	void mark_copy_write_page(uint32_t page_index);
 
 	// FB stage.
 	void flush_rendering(const RenderPass &rp);
@@ -286,6 +289,8 @@ private:
 		Vulkan::BufferHandle clut;
 		Vulkan::BufferHandle gpu;
 		Vulkan::BufferHandle cpu;
+		Vulkan::BufferHandle vram_copy_atomics;
+		Vulkan::BufferHandle vram_copy_payloads;
 
 		Scratch device_scratch, rebar_scratch;
 		VkDeviceSize ssbo_alignment = 0;
@@ -355,7 +360,7 @@ private:
 		Vulkan::BufferBlockAllocation alloc;
 	};
 	std::vector<CopyDescriptorPayload> pending_copies;
-	void emit_copy_vram(Vulkan::CommandBuffer &cmd, const CopyDescriptorPayload &desc);
+	void emit_copy_vram(Vulkan::CommandBuffer &cmd, const CopyDescriptorPayload &desc, uint32_t copy_index, bool prepare_only);
 
 	struct Timestamp
 	{
@@ -397,5 +402,8 @@ private:
 	VkDeviceSize total_image_slab_size = 0;
 	VkDeviceSize max_image_slab_size = 0;
 	VkDeviceSize image_slab_high_water_mark = 0;
+
+	std::vector<uint32_t> vram_copy_write_pages;
+	std::vector<uint32_t> sync_vram_shadow_pages;
 };
 }
