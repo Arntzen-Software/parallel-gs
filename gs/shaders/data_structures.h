@@ -162,9 +162,11 @@ struct TransferDescriptor
 	uint host_offset_qwords;
 };
 
+#define PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET 4096
+CONSTEXPR int LINKED_VRAM_COPY_DISPATCH_ORDER_OFFSET = 22;
+CONSTEXPR int LINKED_VRAM_COPY_DISPATCH_ORDER_BITS = 10;
 struct LinkedVRAMCopyWrite
 {
-	uint dispatch_order;
 	uint write_mask;
 	uint next;
 };

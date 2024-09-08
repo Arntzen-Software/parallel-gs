@@ -82,7 +82,7 @@ layout(push_constant) uniform Registers
 layout(std430, set = 0, binding = 3) buffer AtomicCounterBuffer
 {
 	uint link_count;
-	uint linked_list[];
+	layout(offset = PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET) uint linked_list[];
 };
 
 layout(std430, set = 0, binding = 4) buffer LinkedPayloads
@@ -99,19 +99,28 @@ layout(constant_id = 7) const uint CONSTANT_ZERO = 0;
 // there are no races.
 bool get_effective_write_mask(uint word_addr, uint base_mask, out uint write_mask)
 {
+	if (bitfieldExtract(linked_list[word_addr / 32u + (VRAM_MASK + 1) / 4], int(word_addr & 31u), 1) == 0u)
+	{
+		write_mask = base_mask;
+		return true;
+	}
+
 	bool has_exclusive = true;
 	uint link = linked_list[word_addr];
-
 	while (link != ~0u)
 	{
-		LinkedVRAMCopyWrite pending_write = linked_writes[link];
+		uint pending_dispatch_order = bitfieldExtract(link,
+			LINKED_VRAM_COPY_DISPATCH_ORDER_OFFSET,
+			LINKED_VRAM_COPY_DISPATCH_ORDER_BITS);
+
+		LinkedVRAMCopyWrite pending_write = linked_writes[bitfieldExtract(link, 0, LINKED_VRAM_COPY_DISPATCH_ORDER_OFFSET)];
 		// Later writes win.
-		if (pending_write.dispatch_order > registers.dispatch_order)
+		if (pending_dispatch_order > registers.dispatch_order)
 		{
 			base_mask &= ~pending_write.write_mask;
 			has_exclusive = false;
 		}
-		else if (pending_write.dispatch_order < registers.dispatch_order &&
+		else if (pending_dispatch_order < registers.dispatch_order &&
 			(pending_write.write_mask & ~base_mask) != 0)
 		{
 			// If our write doesn't invalidate all previous threads, we don't have exclusive access.
@@ -130,8 +139,23 @@ void register_vram_write(uint word_addr, uint write_mask)
 	// Simple atomic linked list.
 	// We make sure not to dispatch enough threads in one go that this can overflow buffers.
 	uint link_index = atomicAdd(link_count, 1u);
-	uint next_link = atomicExchange(linked_list[word_addr], link_index);
-	linked_writes[link_index] = LinkedVRAMCopyWrite(registers.dispatch_order, write_mask, next_link);
+	uint next_link = atomicExchange(linked_list[word_addr],
+		link_index | (registers.dispatch_order << LINKED_VRAM_COPY_DISPATCH_ORDER_OFFSET));
+
+	if (next_link != ~0u)
+	{
+		uint pending_dispatch_order = bitfieldExtract(next_link,
+			LINKED_VRAM_COPY_DISPATCH_ORDER_OFFSET,
+			LINKED_VRAM_COPY_DISPATCH_ORDER_BITS);
+
+		if (registers.dispatch_order != pending_dispatch_order)
+		{
+			// Hazard within the u32. Flag this.
+			atomicOr(linked_list[word_addr / 32u + (VRAM_MASK + 1) / 4], 1u << (word_addr & 31u));
+		}
+	}
+
+	linked_writes[link_index] = LinkedVRAMCopyWrite(write_mask, next_link);
 }
 
 void main()

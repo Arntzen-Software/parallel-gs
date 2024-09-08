@@ -34,7 +34,8 @@ static constexpr VkDeviceSize MaximumAllocatedImageMemory = 100 * 1000 * 1000;
 static constexpr VkDeviceSize MaximumAllocatedScratchMemory = 100 * 1000 * 1000;
 static constexpr uint32_t MaxPendingPaletteUploads = 4096;
 static constexpr uint32_t MaxPendingCopies = 4096;
-static constexpr uint32_t MaxPendingCopyThreads = 4 * 1024 * 1024;
+static constexpr uint32_t MaxPendingCopyThreads = 4 * 1024 * 1024; // 22 bits.
+static constexpr uint32_t MaxPendingCopiesWithoutFlush = 1023; // 10 bits. Reserve highest value for unlinked node.
 
 // Pink-ish. Intended to look good in RenderDoc's default light theme.
 static constexpr float LabelColor[] = { 1.0f, 0.8f, 0.8f, 1.0f };
@@ -147,10 +148,13 @@ void GSRenderer::init_vram(const GSOptions &options)
 	device->set_name(*buffers.clut, "clut");
 
 	info.misc = 0;
-	info.size = vram_size + sizeof(uint32_t);
+	// - One atomic counter
+	// - VRAM (one u32 atomic variable per u32 dword of VRAM memory)
+	// - One bit per u32 dword of VRAM memory.
+	info.size = PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET + vram_size + vram_size / 32;
 	buffers.vram_copy_atomics = device->create_buffer(info);
 	device->set_name(*buffers.vram_copy_atomics, "vram-copy-atomics");
-	info.size = (MaxPendingCopyThreads + 2048 * 2048) * sizeof(LinkedVRAMCopyWrite);
+	info.size = MaxPendingCopyThreads * sizeof(LinkedVRAMCopyWrite);
 	buffers.vram_copy_payloads = device->create_buffer(info);
 	device->set_name(*buffers.vram_copy_payloads, "vram-copy-payloads");
 
@@ -471,6 +475,7 @@ void GSRenderer::check_flush_stats()
 	    stats.allocated_scratch_memory >= MaximumAllocatedScratchMemory ||
 	    stats.num_palette_updates >= MaxPendingPaletteUploads ||
 	    stats.num_copies >= MaxPendingCopies ||
+		pending_copies.size() >= MaxPendingCopiesWithoutFlush ||
 		stats.num_copy_threads >= MaxPendingCopyThreads)
 	{
 #ifdef PARALLEL_GS_DEBUG
@@ -1810,6 +1815,10 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd, const CopyDescriptor
 void GSRenderer::copy_vram(const CopyDescriptor &desc)
 {
 	Vulkan::BufferBlockAllocation alloc = {};
+	stats.num_copy_threads += desc.trxreg.desc.RRW * desc.trxreg.desc.RRH;
+	if (stats.num_copy_threads > MaxPendingCopyThreads)
+		flush_transfer();
+
 	if (desc.trxdir.desc.XDIR == HOST_TO_LOCAL)
 	{
 		ensure_command_buffer(direct_cmd, Vulkan::CommandBuffer::Type::Generic);
@@ -1820,7 +1829,6 @@ void GSRenderer::copy_vram(const CopyDescriptor &desc)
 	pending_copies.push_back({ desc, std::move(alloc) });
 
 	stats.num_copies++;
-	stats.num_copy_threads += desc.trxreg.desc.RRW * desc.trxreg.desc.RRH;
 	check_flush_stats();
 }
 
@@ -2396,12 +2404,14 @@ void GSRenderer::flush_transfer()
 		RangeMerger merger;
 		const auto flush_range = [&](VkDeviceSize offset, VkDeviceSize range)
 		{
-			cmd.fill_buffer(*buffers.vram_copy_atomics, UINT32_MAX, offset + sizeof(uint32_t), range);
+			cmd.fill_buffer(*buffers.vram_copy_atomics, UINT32_MAX, offset + PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET, range);
 		};
 
 		cmd.begin_region("reset-vram-copy-state");
 		// Reset atomic counter.
-		cmd.fill_buffer(*buffers.vram_copy_atomics, 0, 0, sizeof(uint32_t));
+		cmd.fill_buffer(*buffers.vram_copy_atomics, 0, 0, PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET);
+		// Reset hazard exist bitfield.
+		cmd.fill_buffer(*buffers.vram_copy_atomics, 0, PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET + vram_size, vram_size / 32);
 
 		for (size_t i = 0, n = vram_copy_write_pages.size(); i < n; i++)
 		{
