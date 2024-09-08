@@ -24,6 +24,19 @@
 
 namespace ParallelGS
 {
+// If we've seen a normal render pass, just flush right away.
+// Normal 3D games seem to be between 4k and 40k primitives per frame.
+static constexpr uint32_t MinimumPrimitivesForFlush = 4096;
+// If there is a lot of back to back (small render passes). This should only trigger first for insane feedback loops.
+static constexpr uint32_t MinimumRenderPassForFlush = 1024;
+// If someone spams the scratch allocators too hard, we have to yield eventually.
+static constexpr VkDeviceSize MaximumAllocatedImageMemory = 100 * 1000 * 1000;
+static constexpr VkDeviceSize MaximumAllocatedScratchMemory = 100 * 1000 * 1000;
+static constexpr uint32_t MaxPendingPaletteUploads = 4096;
+static constexpr uint32_t MaxPendingCopies = 4096;
+static constexpr uint32_t MaxPendingCopyThreads = 4 * 1024 * 1024; // 22 bits.
+static constexpr uint32_t MaxPendingCopiesWithoutFlush = 1023; // 10 bits. Reserve highest value for unlinked node.
+
 // Pink-ish. Intended to look good in RenderDoc's default light theme.
 static constexpr float LabelColor[] = { 1.0f, 0.8f, 0.8f, 1.0f };
 
@@ -133,6 +146,20 @@ void GSRenderer::init_vram(const GSOptions &options)
 	info.size = CLUTInstances * CLUTSize;
 	buffers.clut = device->create_buffer(info);
 	device->set_name(*buffers.clut, "clut");
+
+	info.misc = 0;
+	// - One atomic counter
+	// - VRAM (one u32 atomic variable per u32 dword of VRAM memory)
+	// - One bit per u32 dword of VRAM memory.
+	info.size = PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET + vram_size + vram_size / 32;
+	buffers.vram_copy_atomics = device->create_buffer(info);
+	device->set_name(*buffers.vram_copy_atomics, "vram-copy-atomics");
+	info.size = MaxPendingCopyThreads * sizeof(LinkedVRAMCopyWrite);
+	buffers.vram_copy_payloads = device->create_buffer(info);
+	device->set_name(*buffers.vram_copy_payloads, "vram-copy-payloads");
+
+	sync_vram_shadow_pages.resize(vram_size / PageSize);
+	vram_copy_write_pages.resize(vram_size / PageSize);
 }
 
 void GSRenderer::drain_compilation_tasks()
@@ -281,7 +308,7 @@ void GSRenderer::kick_compilation_tasks()
 			{ 64, PSMT4 },
 		};
 
-		cmd->set_specialization_constant_mask(0x3f);
+		cmd->set_specialization_constant_mask(0x7f);
 		cmd->set_specialization_constant(3, vram_size - 1);
 		cmd->set_specialization_constant(4, HOST_TO_LOCAL);
 		cmd->set_specialization_constant(5, uint32_t(buffers.gpu->get_create_info().size > vram_size * 2));
@@ -291,8 +318,13 @@ void GSRenderer::kick_compilation_tasks()
 			cmd->set_specialization_constant(0, format.wg_size);
 			cmd->set_specialization_constant(1, format.psm);
 			cmd->set_specialization_constant(2, format.psm);
-			cmd->extract_pipeline_state(deferred);
-			tasks.push_back(deferred);
+
+			for (unsigned prepare_only = 0; prepare_only < 2; prepare_only++)
+			{
+				cmd->set_specialization_constant(6, prepare_only);
+				cmd->extract_pipeline_state(deferred);
+				tasks.push_back(deferred);
+			}
 		}
 
 		device->submit_discard(cmd);
@@ -387,6 +419,7 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 	const auto &ext = device_->get_device_features();
 	if (!ext.vk12_features.descriptorIndexing ||
 	    !ext.vk12_features.timelineSemaphore ||
+		!ext.vk12_features.bufferDeviceAddress ||
 	    !ext.vk12_features.storageBuffer8BitAccess ||
 	    !ext.vk11_features.storageBuffer16BitAccess ||
 	    !ext.enabled_features.shaderInt16 ||
@@ -396,6 +429,7 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 		LOGE("Minimum requirements for parallel-gs are not met.\n");
 		LOGE("  - descriptorIndexing\n");
 		LOGE("  - timelineSemaphore\n");
+		LOGE("  - bufferDeviceAddress\n");
 		LOGE("  - storageBuffer8BitAccess\n");
 		LOGE("  - storageBuffer16BitAccess\n");
 		LOGE("  - shaderInt16\n");
@@ -437,23 +471,14 @@ void GSRenderer::check_flush_stats()
 	// Make sure that we flush as soon as there is a reasonable amount of work in flight.
 	// We also want to keep memory usage under control. We have to garbage collect memory.
 
-	// If we've seen a normal render pass, just flush right away.
-	// Normal 3D games seem to be between 4k and 40k primitives per frame.
-	constexpr uint32_t MinimumPrimitivesForFlush = 4096;
-	// If there is a lot of back to back (small render passes). This should only trigger first for insane feedback loops.
-	constexpr uint32_t MinimumRenderPassForFlush = 1024;
-	// If someone spams the scratch allocators too hard, we have to yield eventually.
-	constexpr VkDeviceSize MaximumAllocatedImageMemory = 100 * 1000 * 1000;
-	constexpr VkDeviceSize MaximumAllocatedScratchMemory = 100 * 1000 * 1000;
-	constexpr uint32_t MaxPendingPaletteUploads = 4096;
-	constexpr uint32_t MaxPendingCopies = 4096;
-
 	if (stats.num_primitives >= MinimumPrimitivesForFlush ||
 	    stats.num_render_passes >= MinimumRenderPassForFlush ||
 	    stats.allocated_image_memory >= MaximumAllocatedImageMemory ||
 	    stats.allocated_scratch_memory >= MaximumAllocatedScratchMemory ||
 	    stats.num_palette_updates >= MaxPendingPaletteUploads ||
-	    stats.num_copies >= MaxPendingCopies)
+	    stats.num_copies >= MaxPendingCopies ||
+		pending_copies.size() >= MaxPendingCopiesWithoutFlush ||
+		stats.num_copy_threads >= MaxPendingCopyThreads)
 	{
 #ifdef PARALLEL_GS_DEBUG
 		LOGI("Too much pending work, flushing:\n");
@@ -463,6 +488,8 @@ void GSRenderer::check_flush_stats()
 		LOGI("  %u MiB allocated scratch memory\n", unsigned(stats.allocated_scratch_memory / (1024 * 1024)));
 		LOGI("  %u palette updates\n", stats.num_palette_updates);
 		LOGI("  %u copies\n", stats.num_copies);
+		LOGI("  %u copy threads\n", stats.num_copy_threads);
+		LOGI("  %u copy barriers\n", stats.num_copy_barriers);
 #endif
 		// Flush the work that is considered pending right now.
 		// Render passes always commit their work to a command buffer right away.
@@ -557,6 +584,7 @@ void GSRenderer::flush_submit(uint64_t value)
 	total_stats.num_palette_updates += stats.num_palette_updates;
 	total_stats.num_render_passes += stats.num_render_passes;
 	total_stats.num_copy_barriers += stats.num_copy_barriers;
+	total_stats.num_copy_threads += stats.num_copy_threads;
 	stats = {};
 
 	if (direct_cmd)
@@ -1323,32 +1351,6 @@ void GSRenderer::dispatch_invalidate_super_sampling(Vulkan::CommandBuffer &cmd, 
 	cmd.end_region();
 }
 
-void GSRenderer::flush_shadow_page_sync(const uint32_t *page_indices, uint32_t num_indices)
-{
-	ensure_command_buffer(direct_cmd, Vulkan::CommandBuffer::Type::Generic);
-	auto &cmd = *direct_cmd;
-
-	// Upper half of VRAM is reserved for read-only caching.
-	VkDeviceSize read_only_offset = buffers.gpu->get_create_info().size / 2;
-
-	cmd.begin_region("shadow-vram-cache");
-	cmd.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-	            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-	{
-		RangeMerger merger;
-		const auto flush_range = [&](VkDeviceSize offset, VkDeviceSize range) {
-			cmd.copy_buffer(*buffers.gpu, offset + read_only_offset, *buffers.gpu, offset, range);
-		};
-
-		for (uint32_t i = 0; i < num_indices; i++)
-			merger.push(page_indices[i] * PageSize, PageSize, flush_range);
-		merger.flush(flush_range);
-	}
-	cmd.barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-	            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-	cmd.end_region();
-}
-
 void GSRenderer::dispatch_cache_read_only_depth(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t depth_psm)
 {
 	auto z_rect = compute_page_rect(rp.fb.z.desc.ZBP * PGS_BLOCKS_PER_PAGE,
@@ -1718,11 +1720,8 @@ void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const Render
 	}
 }
 
-void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd, const CopyDescriptorPayload &payload)
+static bool copy_is_fused_nibble(const CopyDescriptor &desc)
 {
-	cmd.set_program(shaders.vram_copy);
-	auto &desc = payload.copy;
-
 	// One thread will write two values in PSMT4 mode.
 	bool is_fused_nibble = desc.bitbltbuf.desc.DPSM == PSMT4;
 
@@ -1733,82 +1732,131 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd, const CopyDescriptor
 	                         desc.trxreg.desc.RRW | desc.trxreg.desc.RRH) & 7) != 0)
 		is_fused_nibble = false;
 
+	return is_fused_nibble;
+}
+
+static uint32_t copy_pipeline_key(const CopyDescriptor &desc)
+{
+	// One thread will write two values in PSMT4 mode.
+	bool is_fused_nibble = copy_is_fused_nibble(desc);
+
+	uint32_t key = 0;
+	key |= desc.bitbltbuf.desc.SPSM << 0;
+	key |= desc.bitbltbuf.desc.DPSM << 8;
+	key |= desc.trxdir.desc.XDIR << 16;
+	key |= int(is_fused_nibble) << 24;
+
+	return key;
+}
+
+void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd,
+								const uint32_t *dispatch_order, uint32_t num_dispatches, bool prepare_only)
+{
+	cmd.set_program(shaders.vram_copy);
+	auto &base_desc = pending_copies[dispatch_order[0]].copy;
+
+	// One thread will write two values in PSMT4 fused mode.
+	bool is_fused_nibble = copy_is_fused_nibble(base_desc);
 	const uint32_t workgroup_size = is_fused_nibble ? 32 : 64;
 
-	cmd.set_specialization_constant_mask(0x3f);
+	cmd.set_specialization_constant_mask(0x7f);
 	cmd.set_specialization_constant(0, workgroup_size);
-	cmd.set_specialization_constant(1, desc.bitbltbuf.desc.SPSM);
-	cmd.set_specialization_constant(2, desc.bitbltbuf.desc.DPSM);
+	cmd.set_specialization_constant(1, base_desc.bitbltbuf.desc.SPSM);
+	cmd.set_specialization_constant(2, base_desc.bitbltbuf.desc.DPSM);
 	cmd.set_specialization_constant(3, vram_size - 1);
-	cmd.set_specialization_constant(4, desc.trxdir.desc.XDIR);
+	cmd.set_specialization_constant(4, base_desc.trxdir.desc.XDIR);
 	cmd.set_specialization_constant(5, uint32_t(buffers.gpu->get_create_info().size > vram_size * 2));
+	cmd.set_specialization_constant(6, uint32_t(prepare_only));
 
 	cmd.set_storage_buffer(0, 0, *buffers.gpu);
-	if (desc.trxdir.desc.XDIR == HOST_TO_LOCAL)
+	cmd.set_storage_buffer(0, 1, *buffers.vram_copy_atomics);
+	cmd.set_storage_buffer(0, 2, *buffers.vram_copy_payloads);
+
+	uint32_t max_wgs = 0;
+	for (uint32_t i = 0; i < num_dispatches; i++)
 	{
-		cmd.set_storage_buffer(0, 1, *payload.alloc.buffer, payload.alloc.offset, desc.host_data_size);
-	}
-	else
-	{
-		VkDeviceSize offset = payload.copy.needs_shadow_vram ? buffers.gpu->get_create_info().size / 2 : 0;
-		cmd.set_storage_buffer(0, 1, *buffers.gpu, offset, vram_size);
+		auto &desc = pending_copies[dispatch_order[i]].copy;
+		max_wgs += ((desc.trxreg.desc.RRW + 7) / 8) * ((desc.trxreg.desc.RRH + 7) / 8);
 	}
 
-	TransferDescriptor ubo = {};
-	ubo.width = desc.trxreg.desc.RRW;
-	ubo.height = desc.trxreg.desc.RRH;
-	ubo.dest_x = desc.trxpos.desc.DSAX;
-	ubo.dest_y = desc.trxpos.desc.DSAY;
-	ubo.source_x = desc.trxpos.desc.SSAX;
-	ubo.source_y = desc.trxpos.desc.SSAY;
-	ubo.source_addr = desc.bitbltbuf.desc.SBP;
-	ubo.dest_addr = desc.bitbltbuf.desc.DBP;
-	ubo.source_stride = desc.bitbltbuf.desc.SBW;
-	ubo.dest_stride = desc.bitbltbuf.desc.DBW;
-	ubo.host_offset_qwords = desc.host_data_size_offset / sizeof(uint64_t);
+	constexpr uint32_t MaxWorkgroups = 4096;
 
-	if (device->consumes_debug_markers())
-	{
-		if (desc.trxdir.desc.XDIR == HOST_TO_LOCAL)
+	auto *work_items = cmd.allocate_typed_constant_data<uvec4>(1, 0, std::min<uint32_t>(MaxWorkgroups, max_wgs));
+	uint32_t num_wgs = 0;
+
+	const auto push_work = [&](uint32_t group_x, uint32_t group_y, uint32_t transfer_id) {
+		if (num_wgs == MaxWorkgroups)
 		{
-			insert_label(cmd, "VRAMUpload - 0x%x - %s - %u x %u (stride %u) + (%u, %u)",
-			             desc.bitbltbuf.desc.DBP * PGS_BLOCK_ALIGNMENT_BYTES,
-			             psm_to_str(desc.bitbltbuf.desc.DPSM),
-			             desc.trxreg.desc.RRW, desc.trxreg.desc.RRH,
-			             desc.bitbltbuf.desc.DBW * PGS_BUFFER_WIDTH_SCALE,
-			             desc.trxpos.desc.DSAX, desc.trxpos.desc.DSAY);
+			cmd.dispatch(num_wgs, 1, 1);
+			max_wgs -= num_wgs;
+			work_items = cmd.allocate_typed_constant_data<uvec4>(1, 0, std::min<uint32_t>(MaxWorkgroups, max_wgs));
+			num_wgs = 0;
+		}
 
-			if (desc.host_data_size < desc.host_data_size_required || desc.host_data_size_offset)
+		work_items[num_wgs++] = uvec4(group_x, group_y, transfer_id, 0);
+	};
+
+	for (uint32_t i = 0; i < num_dispatches; i++)
+	{
+		auto &desc = pending_copies[dispatch_order[i]].copy;
+		assert(copy_pipeline_key(desc) == copy_pipeline_key(base_desc));
+
+		if (device->consumes_debug_markers())
+		{
+			if (base_desc.trxdir.desc.XDIR == HOST_TO_LOCAL)
 			{
-				insert_label(cmd, "  Partial %zu / %zu + %zu",
-				             desc.host_data_size, desc.host_data_size_required, desc.host_data_size_offset);
+				insert_label(cmd, "VRAMUpload #%u - 0x%x - %s - %u x %u (stride %u) + (%u, %u)",
+				             dispatch_order[i],
+				             base_desc.bitbltbuf.desc.DBP * PGS_BLOCK_ALIGNMENT_BYTES,
+				             psm_to_str(desc.bitbltbuf.desc.DPSM),
+				             desc.trxreg.desc.RRW, desc.trxreg.desc.RRH,
+				             desc.bitbltbuf.desc.DBW * PGS_BUFFER_WIDTH_SCALE,
+				             desc.trxpos.desc.DSAX, desc.trxpos.desc.DSAY);
+
+				if (desc.host_data_size < desc.host_data_size_required || desc.host_data_size_offset)
+				{
+					insert_label(cmd, "  Partial %zu / %zu + %zu",
+					             desc.host_data_size, desc.host_data_size_required, desc.host_data_size_offset);
+				}
+			}
+			else if (desc.trxdir.desc.XDIR == LOCAL_TO_LOCAL)
+			{
+				insert_label(cmd, "LocalCopyDst #%u - 0x%x - %s - %u x %u (stride %u) + (%u, %u)",
+							 dispatch_order[i],
+				             desc.bitbltbuf.desc.DBP * PGS_BLOCK_ALIGNMENT_BYTES,
+				             psm_to_str(desc.bitbltbuf.desc.DPSM),
+				             desc.trxreg.desc.RRW, desc.trxreg.desc.RRH,
+				             desc.bitbltbuf.desc.DBW * PGS_BUFFER_WIDTH_SCALE,
+				             desc.trxpos.desc.DSAX, desc.trxpos.desc.DSAY);
+
+				insert_label(cmd, "LocalCopySrc #%u - 0x%x - %s - %u x %u (stride %u) + (%u, %u)",
+				             dispatch_order[i],
+				             desc.bitbltbuf.desc.SBP * PGS_BLOCK_ALIGNMENT_BYTES,
+				             psm_to_str(desc.bitbltbuf.desc.SPSM),
+				             desc.trxreg.desc.RRW, desc.trxreg.desc.RRH,
+				             desc.bitbltbuf.desc.SBW * PGS_BUFFER_WIDTH_SCALE,
+				             desc.trxpos.desc.SSAX, desc.trxpos.desc.SSAY);
 			}
 		}
-		else if (desc.trxdir.desc.XDIR == LOCAL_TO_LOCAL)
-		{
-			insert_label(cmd, "LocalCopyDst - 0x%x - %s - %u x %u (stride %u) + (%u, %u)",
-			             desc.bitbltbuf.desc.DBP * PGS_BLOCK_ALIGNMENT_BYTES,
-			             psm_to_str(desc.bitbltbuf.desc.DPSM),
-			             desc.trxreg.desc.RRW, desc.trxreg.desc.RRH,
-			             desc.bitbltbuf.desc.DBW * PGS_BUFFER_WIDTH_SCALE,
-			             desc.trxpos.desc.DSAX, desc.trxpos.desc.DSAY);
 
-			insert_label(cmd, "LocalCopySrc - 0x%x - %s - %u x %u (stride %u) + (%u, %u)",
-			             desc.bitbltbuf.desc.SBP * PGS_BLOCK_ALIGNMENT_BYTES,
-			             psm_to_str(desc.bitbltbuf.desc.SPSM),
-			             desc.trxreg.desc.RRW, desc.trxreg.desc.RRH,
-			             desc.bitbltbuf.desc.SBW * PGS_BUFFER_WIDTH_SCALE,
-			             desc.trxpos.desc.SSAX, desc.trxpos.desc.SSAY);
-		}
+		uint32_t wgs_x = (desc.trxreg.desc.RRW + 7) / 8;
+		uint32_t wgs_y = (desc.trxreg.desc.RRH + 7) / 8;
+		for (uint32_t y = 0; y < wgs_y; y++)
+			for (uint32_t x = 0; x < wgs_x; x++)
+				push_work(x, y, dispatch_order[i]);
 	}
 
-	*cmd.allocate_typed_constant_data<TransferDescriptor>(0, 2, 1) = ubo;
-	cmd.dispatch((ubo.width + 7) / 8, (ubo.height + 7) / 8, 1);
+	if (num_wgs)
+		cmd.dispatch(num_wgs, 1, 1);
 }
 
 void GSRenderer::copy_vram(const CopyDescriptor &desc)
 {
 	Vulkan::BufferBlockAllocation alloc = {};
+	stats.num_copy_threads += desc.trxreg.desc.RRW * desc.trxreg.desc.RRH;
+	if (stats.num_copy_threads > MaxPendingCopyThreads)
+		flush_transfer();
+
 	if (desc.trxdir.desc.XDIR == HOST_TO_LOCAL)
 	{
 		ensure_command_buffer(direct_cmd, Vulkan::CommandBuffer::Type::Generic);
@@ -2361,6 +2409,16 @@ void GSRenderer::flush_cache_upload()
 	post_image_barriers.clear();
 }
 
+void GSRenderer::mark_copy_write_page(uint32_t page_index)
+{
+	vram_copy_write_pages[page_index / 32u] |= 1u << (page_index & 31u);
+}
+
+void GSRenderer::mark_shadow_page_sync(uint32_t page_index)
+{
+	sync_vram_shadow_pages[page_index / 32u] |= 1u << (page_index & 31u);
+}
+
 void GSRenderer::flush_transfer()
 {
 	if (pending_copies.empty())
@@ -2375,8 +2433,147 @@ void GSRenderer::flush_transfer()
 	if (enable_timestamps)
 		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
+	cmd.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+	            VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
+				VK_ACCESS_TRANSFER_WRITE_BIT);
+
+	// Prepare atomic buffer for a new linked list setup.
+	{
+		RangeMerger merger;
+		const auto flush_range = [&](VkDeviceSize offset, VkDeviceSize range)
+		{
+			cmd.fill_buffer(*buffers.vram_copy_atomics, UINT32_MAX, offset + PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET, range);
+		};
+
+		cmd.begin_region("reset-vram-copy-state");
+		// Reset atomic counter.
+		cmd.fill_buffer(*buffers.vram_copy_atomics, 0, 0, PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET);
+		// Reset hazard exist bitfield.
+		cmd.fill_buffer(*buffers.vram_copy_atomics, 0, PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET + vram_size, vram_size / 32);
+
+		for (size_t i = 0, n = vram_copy_write_pages.size(); i < n; i++)
+		{
+			Util::for_each_bit(vram_copy_write_pages[i], [&](uint32_t bit) {
+				merger.push((i * 32 + bit) * PageSize, PageSize, flush_range);
+			});
+			vram_copy_write_pages[i] = 0;
+		}
+
+		merger.flush(flush_range);
+		cmd.end_region();
+	}
+
+	// Upper half of VRAM is reserved for read-only caching.
+	{
+		VkDeviceSize read_only_offset = buffers.gpu->get_create_info().size / 2;
+		RangeMerger merger;
+
+		const auto flush_range = [&](VkDeviceSize offset, VkDeviceSize range)
+		{
+			cmd.copy_buffer(*buffers.gpu, offset + read_only_offset, *buffers.gpu, offset, range);
+		};
+
+		cmd.begin_region("shadow-vram-cache");
+		for (size_t i = 0, n = sync_vram_shadow_pages.size(); i < n; i++)
+		{
+			Util::for_each_bit(sync_vram_shadow_pages[i], [i, &merger, &flush_range](uint32_t bit) {
+				merger.push((i * 32 + bit) * PageSize, PageSize, flush_range);
+			});
+			sync_vram_shadow_pages[i] = 0;
+		}
+
+		merger.flush(flush_range);
+		cmd.end_region();
+	}
+
+	cmd.barrier(VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+	            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+
+	auto *ubo = cmd.allocate_typed_constant_data<TransferDescriptor>(0, 3, pending_copies.size());
+	uint32_t copy_index = 0;
 	for (auto &copy : pending_copies)
-		emit_copy_vram(cmd, copy);
+	{
+		auto &desc = copy.copy;
+		ubo->width = desc.trxreg.desc.RRW;
+		ubo->height = desc.trxreg.desc.RRH;
+		ubo->dest_x = desc.trxpos.desc.DSAX;
+		ubo->dest_y = desc.trxpos.desc.DSAY;
+		ubo->source_x = desc.trxpos.desc.SSAX;
+		ubo->source_y = desc.trxpos.desc.SSAY;
+		ubo->source_addr = desc.bitbltbuf.desc.SBP;
+		ubo->dest_addr = desc.bitbltbuf.desc.DBP;
+		ubo->source_stride = desc.bitbltbuf.desc.SBW;
+		ubo->dest_stride = desc.bitbltbuf.desc.DBW;
+		ubo->host_offset_qwords = desc.host_data_size_offset / sizeof(uint64_t);
+		ubo->dispatch_order = copy_index++;
+
+		// Use BDA to get bindless buffers.
+		// We handle robustness anyway, so this is fine.
+		if (desc.trxdir.desc.XDIR == HOST_TO_LOCAL)
+		{
+			ubo->source_bda = copy.alloc.buffer->get_device_address() + copy.alloc.offset;
+			ubo->source_size = desc.host_data_size;
+		}
+		else
+		{
+			VkDeviceSize offset = copy.copy.needs_shadow_vram ? buffers.gpu->get_create_info().size / 2 : 0;
+			ubo->source_bda = buffers.gpu->get_device_address() + offset;
+			ubo->source_size = UINT32_MAX;
+		}
+
+		ubo->padding = 0;
+		ubo++;
+	}
+
+	// Sort and batch copy work that uses same shader.
+	uint32_t dispatch_order[MaxPendingCopiesWithoutFlush];
+	struct
+	{
+		uint32_t offset;
+		uint32_t range;
+	} dispatches[MaxPendingCopiesWithoutFlush];
+	uint32_t num_dispatches = 1;
+
+	for (size_t i = 0, n = pending_copies.size(); i < n; i++)
+		dispatch_order[i] = i;
+
+	std::sort(dispatch_order, dispatch_order + pending_copies.size(), [&](uint32_t a, uint32_t b) {
+		return copy_pipeline_key(pending_copies[a].copy) < copy_pipeline_key(pending_copies[b].copy);
+	});
+
+	uint32_t current_key = copy_pipeline_key(pending_copies[dispatch_order[0]].copy);
+	dispatches[0] = { 0, 1 };
+
+	for (size_t i = 1, n = pending_copies.size(); i < n; i++)
+	{
+		uint32_t next_key = copy_pipeline_key(pending_copies[dispatch_order[i]].copy);
+		if (next_key == current_key)
+		{
+			dispatches[num_dispatches - 1].range++;
+		}
+		else
+		{
+			dispatches[num_dispatches].offset = i;
+			dispatches[num_dispatches].range = 1;
+			num_dispatches++;
+			current_key = next_key;
+		}
+	}
+
+	// Sort copies by pipeline key.
+
+	cmd.begin_region("prepare-copy");
+	for (uint32_t i = 0; i < num_dispatches; i++)
+		emit_copy_vram(cmd, dispatch_order + dispatches[i].offset, dispatches[i].range, true);
+	cmd.end_region();
+
+	cmd.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+	            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+
+	cmd.begin_region("actual-copy");
+	for (uint32_t i = 0; i < num_dispatches; i++)
+		emit_copy_vram(cmd, dispatch_order + dispatches[i].offset, dispatches[i].range, false);
+	cmd.end_region();
 
 	if (enable_timestamps)
 	{
@@ -2398,13 +2595,6 @@ void GSRenderer::transfer_overlap_barrier()
 {
 	flush_transfer();
 	stats.num_copy_barriers++;
-
-	if (direct_cmd)
-	{
-		direct_cmd->barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-		                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-		                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-	}
 }
 
 void GSRenderer::sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::Image &img, const DISPFBBits &dispfb,

@@ -14,6 +14,7 @@ using namespace muglm;
 namespace ParallelGS {
 #else
 #define CONSTEXPR const
+#define VkDeviceAddress uvec2
 #endif
 
 CONSTEXPR int PGS_SUBPIXEL_BITS = 4;
@@ -153,7 +154,6 @@ struct TransferDescriptor
 	uint source_stride;
 	uint dest_addr;
 	uint dest_stride;
-	uint transfer_dir;
 	uint source_x;
 	uint source_y;
 	uint dest_x;
@@ -161,6 +161,19 @@ struct TransferDescriptor
 	uint width;
 	uint height;
 	uint host_offset_qwords;
+	uint dispatch_order;
+	VkDeviceAddress source_bda;
+	uint source_size;
+	uint padding;
+};
+
+#define PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET 4096
+CONSTEXPR int LINKED_VRAM_COPY_DISPATCH_ORDER_OFFSET = 22;
+CONSTEXPR int LINKED_VRAM_COPY_DISPATCH_ORDER_BITS = 10;
+struct LinkedVRAMCopyWrite
+{
+	uint write_mask;
+	uint next;
 };
 
 struct SingleSampleHeuristic
