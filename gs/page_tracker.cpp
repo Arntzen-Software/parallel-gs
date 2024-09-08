@@ -446,9 +446,9 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 				accessed_readback_pages.push_back(page);
 			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT |
 			               PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
-			state.copy_write_block_mask |= rect.block_mask;
 			if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
 				accessed_copy_pages.push_back(page);
+			state.copy_write_block_mask |= rect.block_mask;
 			if (state.texture_cache_needs_invalidate_block_mask == 0)
 				potential_invalidated_indices.push_back(page);
 			state.texture_cache_needs_invalidate_block_mask |= rect.block_mask;
