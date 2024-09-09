@@ -134,7 +134,7 @@ void GSInterface::flush_render_pass(FlushReason reason)
 		if (sampling_rate_y_log2 != 0 && rp.coarse_tile_size_log2 > 3)
 			rp.coarse_tile_size_log2 -= 1;
 
-		assert(render_pass.bb.z < rp.fb.frame.desc.FBW * PGS_BUFFER_WIDTH_SCALE);
+		assert(render_pass.bb.z < std::max<int>(1, rp.fb.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE);
 
 		rp.base_x = render_pass.bb.x;
 		rp.base_y = render_pass.bb.y;
@@ -1875,8 +1875,8 @@ void GSInterface::drawing_kick_append()
 	// re-triggering state checks.
 	check_frame_buffer_state();
 
-	assert(bb.z < int(render_pass.frame.desc.FBW * PGS_BUFFER_WIDTH_SCALE));
-	assert(bb.z < int(ctx.frame.desc.FBW * PGS_BUFFER_WIDTH_SCALE));
+	assert(bb.z < int(std::max<int>(1, render_pass.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE));
+	assert(bb.z < int(std::max<int>(1, ctx.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE));
 
 	// Have to make sure it's still safe to read the texture we're using.
 	// Only do this when dirty flag is not set. Otherwise, we'll check it when resolving texture index anyway.
