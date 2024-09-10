@@ -2887,8 +2887,8 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 		insert_label(cmd,
 		             "EXTBUF: 0x%x - stride %u - EMODA %u - EMODC %u - FBIN %u - WDX/Y %u, %u - WFFMD %u",
-		             priv.extbuf.EXBP * PGS_PAGE_ALIGNMENT_BYTES,
-		             priv.extbuf.EXBW,
+		             priv.extbuf.EXBP * PGS_BLOCK_ALIGNMENT_BYTES,
+		             priv.extbuf.EXBW * PGS_BUFFER_WIDTH_SCALE,
 		             priv.extbuf.EMODA,
 		             priv.extbuf.EMODC,
 		             priv.extbuf.FBIN,
