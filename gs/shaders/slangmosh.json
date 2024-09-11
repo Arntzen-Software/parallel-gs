@@ -77,6 +77,11 @@
 		{
 			"name": "blit",
 			"path": "../../Granite/assets/shaders/blit.frag"
+		},
+		{
+			"name": "extwrite",
+			"path": "extwrite.comp",
+			"compute": true
 		}
 	]
 }

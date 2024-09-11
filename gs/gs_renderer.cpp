@@ -3256,13 +3256,97 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 	cmd.end_render_pass();
 
+	const bool need_intermediate_pass = priv.extwrite.WRITE || is_interlaced || force_deinterlace;
+	VkPipelineStageFlags2 dst_stage =
+			need_intermediate_pass ? VkPipelineStageFlags2(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) : info.dst_stage;
+	if (priv.extwrite.WRITE)
+		dst_stage |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+
+	cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+	                  need_intermediate_pass ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : info.dst_layout,
+	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+					  dst_stage, need_intermediate_pass ? VkAccessFlags2(VK_ACCESS_2_SHADER_SAMPLED_READ_BIT) : info.dst_access);
+
+	if (priv.extwrite.WRITE)
+	{
+		cmd.set_program(shaders.extwrite);
+		cmd.set_specialization_constant_mask(3);
+		cmd.set_specialization_constant(0, vram_size - 1);
+		cmd.set_specialization_constant(1, uint32_t(buffers.gpu->get_create_info().size > vram_size * 2));
+
+		struct Registers
+		{
+			uvec2 resolution;
+			uint wdx;
+			uint wdy;
+			vec2 uv_base;
+			vec2 uv_scale;
+			uint exbp;
+			uint exbw;
+			uint wffmd;
+			uint emoda;
+			uint emodc;
+		} push = {};
+
+		push.resolution.x = (priv.extdata.WW + 1) / clock_divider;
+		push.resolution.y = priv.extdata.WH + 1;
+		push.wdx = priv.extbuf.WDX;
+		push.wdy = priv.extbuf.WDY;
+		push.exbp = priv.extbuf.EXBP;
+		push.exbw = priv.extbuf.EXBW;
+		push.wffmd = priv.extbuf.WFFMD;
+		push.emoda = priv.extbuf.EMODA;
+		push.emodc = priv.extbuf.EMODC;
+
+		// TODO: Handle WFFMD == 0 somehow?
+		if (priv.extbuf.WFFMD)
+			push.resolution.y = (push.resolution.y + 1) / 2;
+
+		cmd.set_storage_buffer(0, 0, *buffers.gpu);
+		const Vulkan::ImageView *view = nullptr;
+
+		if (priv.extbuf.FBIN == 0)
+			view = &merged->get_view();
+		else if (circuit2)
+			view = &circuit2->get_view();
+		else
+			view = &circuit1->get_view();
+
+		// Not sure what should happen if we haven't enabled the output circuit.
+		if (view)
+		{
+			auto write_rect = compute_page_rect(priv.extbuf.EXBP, priv.extbuf.WDX, priv.extbuf.WDY,
+			                                    push.resolution.x, push.resolution.y,
+			                                    priv.extbuf.EXBW, PSMCT32);
+			tracker.mark_external_write(write_rect);
+
+			// TODO: Consider SX, SY.
+			push.uv_base = vec2(0.5f) / vec2(push.resolution);
+			push.uv_scale.x = float(priv.extdata.SMPH + 1) / float(view->get_view_width() * clock_divider);
+			push.uv_scale.y = float(priv.extdata.SMPV + 1) / float(view->get_view_height());
+			cmd.push_constants(&push, 0, sizeof(push));
+
+			// Is the write-back filtered at all? Probably not, but whatever.
+			cmd.set_texture(0, 1, *view, Vulkan::StockSampler::NearestClamp);
+			cmd.dispatch((push.resolution.x + 7) / 8, (push.resolution.y + 7) / 8, 1);
+			cmd.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+			            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+		}
+
+		if (!is_interlaced && !force_deinterlace &&
+		    (info.dst_stage != VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ||
+		     info.dst_access != VK_ACCESS_2_SHADER_SAMPLED_READ_BIT ||
+		     info.dst_layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+		{
+			cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, info.dst_layout,
+			                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+			                  info.dst_stage, info.dst_access);
+		}
+	}
+
 	if (is_interlaced || force_deinterlace)
 	{
-		cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-		                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-
 		for (int i = 3; i >= 1; i--)
 			vsync_last_fields[i] = std::move(vsync_last_fields[i - 1]);
 		vsync_last_fields[0] = std::move(merged);
@@ -3282,9 +3366,6 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	{
 		vsync_last_fields[0].reset();
 		vsync_last_fields[1].reset();
-		cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, info.dst_layout,
-		                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-		                  info.dst_stage, info.dst_access);
 	}
 
 	cmd.end_region();
@@ -3294,8 +3375,6 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT);
 		timestamps.push_back({ TimestampType::VSync, std::move(start_ts), std::move(end_ts) });
 	}
-
-	// TODO: EXTWRITE
 
 	result.image = std::move(merged);
 	flush_submit(0);

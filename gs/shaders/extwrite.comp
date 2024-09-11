@@ -1,0 +1,99 @@
+// SPDX-FileCopyrightText: 2024 Arntzen Software AS
+// SPDX-FileContributor: Hans-Kristian Arntzen
+// SPDX-License-Identifier: LGPL-3.0+
+
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#extension GL_EXT_shader_16bit_storage : require
+#include "data_structures.h"
+#include "swizzle_utils.h"
+#include "utils.h"
+
+layout(push_constant) uniform Registers
+{
+    uvec2 resolution;
+    uint wdx;
+    uint wdy;
+    vec2 uv_base;
+    vec2 uv_scale;
+    uint exbp;
+    uint exbw;
+    uint wffmd;
+    uint emoda;
+    uint emodc;
+} registers;
+
+layout(set = 0, binding = 0) writeonly buffer VRAM32
+{
+    uint data[];
+} vram32;
+
+layout(set = 0, binding = 1) uniform sampler2D uCircuit;
+
+layout(constant_id = 0) const uint VRAM_MASK = 4 * 1024 * 1024 - 1;
+layout(constant_id = 1) const bool INVALIDATE_SUPER_SAMPLE = false;
+
+void main()
+{
+    if (any(greaterThanEqual(gl_GlobalInvocationID.xy, registers.resolution)))
+        return;
+
+    // TODO: WFFMD == 0?
+    uvec2 coord = gl_GlobalInvocationID.xy + uvec2(registers.wdx, registers.wdy);
+    uint addr = swizzle_PS2(coord.x, coord.y, registers.exbp, registers.exbw, PSMCT32, VRAM_MASK);
+    vec2 uv = registers.uv_base + vec2(gl_GlobalInvocationID.xy) * registers.uv_scale;
+    vec4 input_color = textureLod(uCircuit, uv, 0.0);
+
+    float Ey = 0.587 * input_color.g + 0.114 * input_color.b + 0.299 * input_color.r;
+    float Ecb = -0.311 * input_color.g + 0.500 * input_color.b - 0.169 * input_color.r;
+    float Ecr = -0.419 * input_color.g - 0.081 * input_color.b + 0.500 * input_color.r;
+
+    float Y = (219.0 * Ey + 16.0) / 255.0;
+    float Cb = (224.0 * Ecb + 128.0) / 255.0;
+    float Cr = (224.0 * Ecr + 128.0) / 255.0;
+
+    vec4 color;
+
+    switch (registers.emodc)
+    {
+    case 0:
+        color.rgb = input_color.rgb;
+        break;
+
+    case 1:
+        color.rgb = vec3(Y);
+        break;
+
+    case 2:
+        color.rgb = vec3(Y, Cb, Cr);
+        break;
+
+    default:
+        color.rgb = input_color.aaa;
+        break;
+    }
+
+    switch (registers.emoda)
+    {
+    case 0:
+        color.a = input_color.a;
+        break;
+
+    case 1:
+        color.a = Y;
+        break;
+
+    case 2:
+        color.a = 0.5 * Y;
+        break;
+
+    default:
+        color.a = 0.0;
+        break;
+    }
+
+    vram32.data[addr] = packUnorm4x8(color);
+    if (INVALIDATE_SUPER_SAMPLE)
+        vram32.data[addr + (VRAM_MASK + 1) / 4] = 0;
+}

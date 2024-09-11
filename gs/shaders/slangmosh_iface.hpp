@@ -29,6 +29,7 @@ struct Shaders
 	Shader upscale_vert = {};
 	Shader upscale_frag = {};
 	Shader blit = {};
+	Program extwrite = {};
 	Shaders() = default;
 
 	template <typename Device, typename Layout, typename Resolver>
