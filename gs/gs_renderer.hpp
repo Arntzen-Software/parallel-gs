@@ -195,10 +195,12 @@ enum class SuperSampling
 };
 
 struct GSOptions;
+class PageTracker;
 
 class GSRenderer
 {
 public:
+	explicit GSRenderer(PageTracker &tracker);
 	bool init(Vulkan::Device *device, const GSOptions &options);
 	~GSRenderer();
 
@@ -255,6 +257,7 @@ public:
 	void invalidate_super_sampling_state();
 
 private:
+	PageTracker &tracker;
 	Vulkan::Device *device = nullptr;
 	Vulkan::CommandBufferHandle direct_cmd;
 	Vulkan::CommandBufferHandle async_transfer_cmd;

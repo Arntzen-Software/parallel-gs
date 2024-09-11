@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: LGPL-3.0+
 
 #include "page_tracker.hpp"
+#include "gs_interface.hpp"
 #include "unstable_remove_if.hpp"
 #include <algorithm>
 
@@ -15,7 +16,7 @@
 
 namespace ParallelGS
 {
-PageTracker::PageTracker(PageTrackerCallback &cb_)
+PageTracker::PageTracker(GSInterface &cb_)
 	: cb(cb_)
 {
 }
@@ -63,6 +64,33 @@ bool PageTracker::page_has_flag_with_fb_access_mask(
 	}
 
 	return false;
+}
+
+void PageTracker::mark_external_write(const PageRect &rect)
+{
+	for (unsigned y = 0; y < rect.page_height; y++)
+	{
+		for (unsigned x = 0; x < rect.page_width; x++)
+		{
+			unsigned page = rect.base_page + y * rect.page_stride + x;
+
+			page &= page_state_mask;
+			auto &state = page_state[page];
+
+			if ((state.flags & (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
+				accessed_readback_pages.push_back(page);
+
+			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT;
+			if (state.texture_cache_needs_invalidate_block_mask == 0)
+				potential_invalidated_indices.push_back(page);
+			state.texture_cache_needs_invalidate_block_mask |= UINT32_MAX;
+			state.texture_cache_needs_invalidate_write_mask |= UINT32_MAX;
+			state.pending_fb_access_mask |= rect.write_mask;
+			TRACE("TRACKER || PAGE 0x%x, EXT write\n", page);
+		}
+	}
+
+	invalidate_texture_cache(UINT32_MAX);
 }
 
 void PageTracker::mark_fb_write(const PageRect &rect)

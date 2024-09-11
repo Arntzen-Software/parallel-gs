@@ -126,24 +126,15 @@ enum class FlushReason
 	SubmissionFlush
 };
 
-struct PageTrackerCallback
-{
-	virtual ~PageTrackerCallback() = default;
-	virtual void flush(PageTrackerFlushFlags flags, FlushReason reason) = 0;
-	virtual void sync_host_vram_page(uint32_t page_index) = 0;
-	virtual void sync_vram_host_page(uint32_t page_index) = 0;
-	virtual void sync_shadow_page(uint32_t page_index) = 0;
-	virtual void mark_copy_write_page(uint32_t page_index) = 0;
-	virtual void invalidate_texture_hash(Util::Hash hash, bool clut) = 0;
-	virtual void forget_in_render_pass_memoization() = 0;
-	virtual void recycle_image_handle(Vulkan::ImageHandle image) = 0;
-};
+class GSInterface;
 
 class PageTracker
 {
 public:
-	explicit PageTracker(PageTrackerCallback &cb);
+	explicit PageTracker(GSInterface &cb);
 	void set_num_pages(unsigned num_pages);
+
+	void mark_external_write(const PageRect &rect);
 
 	void mark_fb_write(const PageRect &rect);
 	// For read-only depth.
@@ -187,7 +178,7 @@ public:
 	uint64_t mark_submission_timeline();
 
 private:
-	PageTrackerCallback &cb;
+	GSInterface &cb;
 	Util::ObjectPool<CachedTexture> cached_texture_pool;
 	Util::IntrusiveHashMapHolder<CachedTexture> cached_textures;
 	std::vector<PageState> page_state;

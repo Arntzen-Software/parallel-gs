@@ -181,7 +181,7 @@ struct GSOptions
 	bool dynamic_super_sampling = false; // If super sampling rate can be toggled in-flight.
 };
 
-class GSInterface final : private PageTrackerCallback
+class GSInterface final
 {
 public:
 	GSInterface();
@@ -232,20 +232,21 @@ public:
 	void read_transfer_fifo(void *data, uint32_t num_128b_words);
 
 private:
-	void flush(PageTrackerFlushFlags flags, FlushReason reason) override;
-	void sync_host_vram_page(uint32_t page_index) override;
-	void sync_vram_host_page(uint32_t page_index) override;
-	void sync_shadow_page(uint32_t page_index) override;
-	void mark_copy_write_page(uint32_t page_index) override;
-	void invalidate_texture_hash(Util::Hash hash, bool clut) override;
-	void forget_in_render_pass_memoization() override;
-	void recycle_image_handle(Vulkan::ImageHandle image) override;
+	friend class PageTracker;
+	void flush(PageTrackerFlushFlags flags, FlushReason reason);
+	void sync_host_vram_page(uint32_t page_index);
+	void sync_vram_host_page(uint32_t page_index);
+	void sync_shadow_page(uint32_t page_index);
+	void mark_copy_write_page(uint32_t page_index);
+	void invalidate_texture_hash(Util::Hash hash, bool clut);
+	void forget_in_render_pass_memoization();
+	void recycle_image_handle(Vulkan::ImageHandle image);
 	void flush_render_pass(FlushReason reason);
 
 	void mark_texture_state_dirty();
 
-	GSRenderer renderer;
 	PageTracker tracker;
+	GSRenderer renderer;
 	uint32_t vram_size = 0;
 	DebugMode debug_mode;
 

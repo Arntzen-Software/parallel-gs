@@ -13,7 +13,7 @@
 namespace ParallelGS
 {
 GSInterface::GSInterface()
-	: tracker(*this)
+	: tracker(*this), renderer(tracker)
 {
 	setup_handlers();
 	reset_context_state();

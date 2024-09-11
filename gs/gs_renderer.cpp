@@ -396,6 +396,11 @@ void GSRenderer::kick_compilation_tasks()
 	}
 }
 
+GSRenderer::GSRenderer(PageTracker &tracker_)
+	: tracker(tracker_), compilation_tasks_active(false)
+{
+}
+
 bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 {
 	drain_compilation_tasks();
