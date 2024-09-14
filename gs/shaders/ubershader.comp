@@ -454,6 +454,40 @@ void begin_tile()
 #endif
 }
 
+bool ballot_reduce_single(bool value)
+{
+	uvec4 b = subgroupBallot(value);
+
+	// No need to mask, we only care about valid ballot for the first sample we write-back.
+	if (NUM_SAMPLES >= 16)
+		b |= b >> 8u;
+	if (NUM_SAMPLES >= 8)
+		b |= b >> 4u;
+	if (NUM_SAMPLES >= 4)
+		b |= b >> 2u;
+
+	b |= b >> 1u;
+
+	return subgroupInverseBallot(b);
+}
+
+bool ballot_reduce_broadcast(bool value)
+{
+	uvec4 b = subgroupBallot(value);
+
+	// No need to mask, we only care about valid ballot for the first sample we write-back.
+	if (NUM_SAMPLES >= 16)
+		b |= b >> 8u;
+	if (NUM_SAMPLES >= 8)
+		b |= b >> 4u;
+	if (NUM_SAMPLES >= 4)
+		b |= b >> 2u;
+
+	b |= b >> 1u;
+
+	return subgroupBallotBitExtract(b, gl_SubgroupInvocationID & ~(NUM_SAMPLES - 1));
+}
+
 void end_tile()
 {
 #if (defined(FEEDBACK_COLOR) && FEEDBACK_COLOR) || (defined(FEEDBACK_DEPTH) && FEEDBACK_DEPTH)
@@ -491,25 +525,61 @@ void end_tile()
 #endif
 
 	uint sample_index = gl_SubgroupInvocationID & (NUM_SAMPLES - 1);
+	bool super_sample_required_color = false;
+	bool super_sample_required_depth = false;
 
 	if (SUPER_SAMPLE)
 	{
-		if (fb_color_dirty)
-		{
-			// Write back high-res samples. This is in case of incremental rendering.
-			if (is_fb_16bit)
-			{
-				uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
-				vram16.data[tile.fb_index + vram_offset] = uint16_t(rgba32_to_rgba16(fb_color));
-			}
-			else
-			{
-				uint vram_offset = (sample_index + 2u) * VRAM_SIZE_32;
-				vram32.data[tile.fb_index + vram_offset] = fb_color;
-			}
-		}
+		// Demote common single-sampled patterns back to single-sampled. This saves bandwidth as well as
+		// potential to run less work later.
+		// If all primitives for a tile are single-sampled, and there are no valid super-sampled pixels,
+		// we can demote super-sampling to single-sampling.
+
+		// This kind of shuffle should be easy to optimize on AMD, even on wave64.
+		super_sample_required_color = subgroupShuffle(fb_color, gl_SubgroupInvocationID & ~(NUM_SAMPLES - 1)) != fb_color;
+		super_sample_required_color = ballot_reduce_broadcast(super_sample_required_color);
 
 		if (Z_SENSITIVE)
+		{
+			// This kind of shuffle should be easy to optimize on AMD.
+			super_sample_required_depth = subgroupShuffle(fb_depth, gl_SubgroupInvocationID & ~(NUM_SAMPLES - 1)) != fb_depth;
+			super_sample_required_depth = ballot_reduce_broadcast(super_sample_required_depth);
+		}
+
+		// If we know that all samples are the same, doing SSAA reduction won't cause the pixel to change value,
+		// i.e., we don't have to consider updating dirty flags.
+		if (super_sample_required_color)
+		{
+			if (fb_color_dirty)
+			{
+				// Write back high-res samples. This is in case of incremental rendering.
+				if (is_fb_16bit)
+				{
+					uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
+					vram16.data[tile.fb_index + vram_offset] = uint16_t(rgba32_to_rgba16(fb_color));
+				}
+				else
+				{
+					uint vram_offset = (sample_index + 2u) * VRAM_SIZE_32;
+					vram32.data[tile.fb_index + vram_offset] = fb_color;
+				}
+			}
+
+			fb_color_dirty = ballot_reduce_single(fb_color_dirty);
+
+			vec4 fb_color_float = unpackUnorm4x8(fb_color);
+			if (NUM_SAMPLES >= 16)
+				fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 8);
+			if (NUM_SAMPLES >= 8)
+				fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 4);
+			if (NUM_SAMPLES >= 4)
+				fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 2);
+			fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 1);
+			fb_color_float /= float(NUM_SAMPLES);
+			fb_color = packUnorm4x8(fb_color_float);
+		}
+
+		if (Z_SENSITIVE && super_sample_required_depth)
 		{
 			if (fb_depth_dirty)
 			{
@@ -526,45 +596,6 @@ void end_tile()
 				}
 			}
 		}
-
-		uvec4 ballot_color = subgroupBallot(fb_color_dirty);
-		uvec4 ballot_depth = subgroupBallot(fb_depth_dirty);
-
-		// No need to mask, we only care about valid ballot for the first sample we write-back.
-		if (NUM_SAMPLES >= 16)
-		{
-			ballot_color |= ballot_color >> 8u;
-			ballot_depth |= ballot_depth >> 8u;
-		}
-
-		if (NUM_SAMPLES >= 8)
-		{
-			ballot_color |= ballot_color >> 4u;
-			ballot_depth |= ballot_depth >> 4u;
-		}
-
-		if (NUM_SAMPLES >= 4)
-		{
-			ballot_color |= ballot_color >> 2u;
-			ballot_depth |= ballot_depth >> 2u;
-		}
-
-		ballot_color |= ballot_color >> 1u;
-		ballot_depth |= ballot_depth >> 1u;
-
-		vec4 fb_color_float = unpackUnorm4x8(fb_color);
-		if (NUM_SAMPLES >= 16)
-			fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 8);
-		if (NUM_SAMPLES >= 8)
-			fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 4);
-		if (NUM_SAMPLES >= 4)
-			fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 2);
-		fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 1);
-		fb_color_float /= float(NUM_SAMPLES);
-		fb_color = packUnorm4x8(fb_color_float);
-
-		fb_color_dirty = subgroupInverseBallot(ballot_color);
-		fb_depth_dirty = subgroupInverseBallot(ballot_depth);
 	}
 
 	bool is_first_sample = !SUPER_SAMPLE || sample_index == 0;
@@ -584,14 +615,14 @@ void end_tile()
 		{
 			// Store reference, so we can detect per-pixel when data changed in single-sampled domain.
 			if (SUPER_SAMPLE)
-				vram16.data[tile.fb_index + VRAM_SIZE_16] = 0xffffus;
+				vram16.data[tile.fb_index + VRAM_SIZE_16] = super_sample_required_color ? 0xffffus : 0us;
 			vram16.data[tile.fb_index] = uint16_t(rgba32_to_rgba16(fb_color));
 		}
 		else
 		{
 			// Even for 24-bpp, we preserve the 8-bit alpha in registers.
 			if (SUPER_SAMPLE)
-				vram32.data[tile.fb_index + VRAM_SIZE_32] = ~0u;
+				vram32.data[tile.fb_index + VRAM_SIZE_32] = super_sample_required_color ? ~0u : 0u;
 			vram32.data[tile.fb_index] = fb_color;
 		}
 	}
@@ -603,7 +634,7 @@ void end_tile()
 			if (is_zb_16bit)
 			{
 				if (SUPER_SAMPLE)
-					vram16.data[tile.fb_index_depth + VRAM_SIZE_16] = 0xffffus;
+					vram16.data[tile.fb_index_depth + VRAM_SIZE_16] = super_sample_required_depth ? 0xffffus : 0us;
 				vram16.data[tile.fb_index_depth] = uint16_t(fb_depth);
 			}
 			else
@@ -612,7 +643,7 @@ void end_tile()
 				{
 					// Alpha channel is no longer valid in Z24. Hopefully no-one is insane enough to alias COLOR32 and Z24 :')
 					const uint ref = is_zb_24bit ? 0xffffffu : ~0u;
-					vram32.data[tile.fb_index_depth + VRAM_SIZE_32] = ref;
+					vram32.data[tile.fb_index_depth + VRAM_SIZE_32] = super_sample_required_depth ? ref : 0;
 				}
 
 				// Masked write is important if color and depth alias and color attempts to write information in alpha.
