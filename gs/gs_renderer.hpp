@@ -263,6 +263,7 @@ private:
 	Vulkan::CommandBufferHandle async_transfer_cmd;
 	Vulkan::CommandBufferHandle triangle_setup_cmd;
 	Vulkan::CommandBufferHandle clear_cmd;
+	Vulkan::CommandBufferHandle heuristic_cmd;
 	Vulkan::CommandBufferHandle binning_cmd;
 	uint32_t vram_size = 0;
 	uint32_t next_clut_instance = 0;
@@ -306,6 +307,7 @@ private:
 
 	Scratch indirect_single_sample_heuristic;
 	Scratch work_list_single_sample;
+	Scratch work_list_super_sample;
 
 	VkDeviceSize allocate_device_scratch(VkDeviceSize size, Scratch &scratch, const void *data);
 

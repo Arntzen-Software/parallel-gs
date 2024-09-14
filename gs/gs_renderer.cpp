@@ -273,7 +273,10 @@ void GSRenderer::kick_compilation_tasks()
 						cmd->set_specialization_constant(2, format.color_psm);
 						cmd->set_specialization_constant(3, format.depth_psm);
 						cmd->set_specialization_constant(4, vram_size - 1);
-						cmd->set_specialization_constant(5, flags);
+						const uint32_t invalidate_super_sample_flags =
+								buffers.gpu->get_create_info().size > vram_size * 2 ?
+								VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT : 0;
+						cmd->set_specialization_constant(5, flags | invalidate_super_sample_flags);
 						cmd->set_specialization_constant(6, feedback.feedback_psm);
 						cmd->set_specialization_constant(7, feedback.feedback_cpsm);
 						cmd->extract_pipeline_state(deferred);
@@ -623,6 +626,13 @@ void GSRenderer::flush_submit(uint64_t value)
 		                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
 		                            VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
 		device->submit(triangle_setup_cmd);
+	}
+
+	if (heuristic_cmd)
+	{
+		heuristic_cmd->barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+		device->submit(heuristic_cmd);
 	}
 
 	if (binning_cmd)
@@ -1034,8 +1044,11 @@ void GSRenderer::bind_frame_resources(const RenderPass &rp)
 			buffers.rebar_scratch, rp.positions);
 	triangle_setup_cmd->set_storage_buffer(0, BINDING_VERTEX_POSITION, *buffers.rebar_scratch.buffer,
 	                                       pos_offset, rp.num_primitives * 3 * sizeof(rp.positions[0]));
-	binning_cmd->set_storage_buffer(0, BINDING_VERTEX_POSITION, *buffers.rebar_scratch.buffer,
-	                                pos_offset, rp.num_primitives * 3 * sizeof(rp.positions[0]));
+	if (heuristic_cmd)
+	{
+		heuristic_cmd->set_storage_buffer(0, BINDING_VERTEX_POSITION, *buffers.rebar_scratch.buffer,
+		                                  pos_offset, rp.num_primitives * 3 * sizeof(rp.positions[0]));
+	}
 
 	auto attr_offset = allocate_device_scratch(
 			rp.num_primitives * 3 * sizeof(rp.attributes[0]),
@@ -1050,6 +1063,12 @@ void GSRenderer::bind_frame_resources(const RenderPass &rp)
 	                       prim_offset, rp.num_primitives * sizeof(rp.prims[0]));
 	triangle_setup_cmd->set_storage_buffer(0, BINDING_PRIMITIVE_ATTRIBUTES, *buffers.rebar_scratch.buffer,
 	                                       prim_offset, rp.num_primitives * sizeof(rp.prims[0]));
+
+	if (heuristic_cmd)
+	{
+		heuristic_cmd->set_storage_buffer(0, BINDING_PRIMITIVE_ATTRIBUTES, *buffers.rebar_scratch.buffer,
+		                                  prim_offset, rp.num_primitives * sizeof(rp.prims[0]));
+	}
 	binning_cmd->set_storage_buffer(0, BINDING_PRIMITIVE_ATTRIBUTES, *buffers.rebar_scratch.buffer,
 	                                prim_offset, rp.num_primitives * sizeof(rp.prims[0]));
 
@@ -1107,12 +1126,13 @@ void GSRenderer::allocate_scratch_buffers(Vulkan::CommandBuffer &cmd, const Rend
 	triangle_setup_cmd->set_storage_buffer(0, BINDING_SINGLE_SAMPLE_HEURISTIC,
 	                                       *buffers.device_scratch.buffer,
 	                                       single_sampled_heuristic_offset, sizeof(SingleSampleHeuristic));
-	binning_cmd->set_storage_buffer(0, BINDING_SINGLE_SAMPLE_HEURISTIC,
-	                                *buffers.device_scratch.buffer,
-	                                single_sampled_heuristic_offset, sizeof(SingleSampleHeuristic));
 
 	if (rp.sampling_rate_y_log2 != 0)
 	{
+		heuristic_cmd->set_storage_buffer(0, BINDING_SINGLE_SAMPLE_HEURISTIC,
+		                                  *buffers.device_scratch.buffer,
+		                                  single_sampled_heuristic_offset, sizeof(SingleSampleHeuristic));
+
 		clear_cmd->fill_buffer(*buffers.device_scratch.buffer, 0, single_sampled_heuristic_offset,
 		                       sizeof(SingleSampleHeuristic));
 
@@ -1122,13 +1142,25 @@ void GSRenderer::allocate_scratch_buffers(Vulkan::CommandBuffer &cmd, const Rend
 	}
 
 	VkDeviceSize work_list_size = 256 + rp.coarse_tiles_width * rp.coarse_tiles_height * sizeof(uvec2);
+
 	auto work_list_scratch = allocate_device_scratch(work_list_size, buffers.device_scratch, nullptr);
 	clear_cmd->fill_buffer(*buffers.device_scratch.buffer, 0, work_list_scratch, 16);
 	binning_cmd->set_storage_buffer(1, 0, *buffers.device_scratch.buffer, work_list_scratch, work_list_size);
-	direct_cmd->set_storage_buffer(0, BINDING_WORKGROUP_LIST, *buffers.device_scratch.buffer, work_list_scratch, work_list_size);
 	work_list_single_sample = buffers.device_scratch;
 	work_list_single_sample.offset = work_list_scratch;
 	work_list_single_sample.size = work_list_size;
+
+	if (rp.sampling_rate_y_log2 != 0)
+	{
+		work_list_scratch = allocate_device_scratch(work_list_size, buffers.device_scratch, nullptr);
+		clear_cmd->fill_buffer(*buffers.device_scratch.buffer, 0, work_list_scratch, 16);
+		binning_cmd->set_storage_buffer(1, 1, *buffers.device_scratch.buffer, work_list_scratch, work_list_size);
+		work_list_super_sample = buffers.device_scratch;
+		work_list_super_sample.offset = work_list_scratch;
+		work_list_super_sample.size = work_list_size;
+	}
+	else
+		binning_cmd->set_storage_buffer(1, 1, *buffers.device_scratch.buffer, work_list_scratch, work_list_size);
 }
 
 void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
@@ -1233,8 +1265,9 @@ void GSRenderer::dispatch_single_sample_heuristic(Vulkan::CommandBuffer &cmd, co
 void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
 {
 	cmd.enable_subgroup_size_control(true);
-	cmd.set_specialization_constant_mask(3);
+	cmd.set_specialization_constant_mask(0x7);
 	cmd.set_specialization_constant(1, uint32_t(rp.feedback_color || rp.feedback_depth));
+	cmd.set_specialization_constant(2, uint32_t(rp.sampling_rate_y_log2 != 0));
 
 	// Prefer large waves if possible. Also, prefer to have just one subgroup per workgroup,
 	// since the algorithms kind of rely on that.
@@ -1502,9 +1535,6 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 
 	cmd.enable_subgroup_size_control(true);
 
-	cmd.set_specialization_constant(0, rp.sampling_rate_x_log2);
-	cmd.set_specialization_constant(1, rp.sampling_rate_y_log2);
-
 	// Prefer Wave64 if we can get away with it.
 	if (device->supports_subgroup_size_log2(true, 6, 6))
 		cmd.set_subgroup_size_log2(true, 6, 6);
@@ -1577,6 +1607,9 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 		cmd.set_specialization_constant(7, 0);
 	}
 
+	if (buffers.gpu->get_create_info().size > vram_size * 2)
+		variant_flags |= VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT;
+
 	cmd.set_specialization_constant(5, variant_flags);
 
 	Vulkan::QueryPoolHandle start_ts, end_ts;
@@ -1622,7 +1655,22 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 			push.lo_primitive_index = i;
 			push.hi_primitive_index = i;
 			cmd.push_constants(&push, 0, sizeof(push));
+
+			if (rp.sampling_rate_y_log2 != 0)
+			{
+				cmd.set_specialization_constant(0, rp.sampling_rate_x_log2);
+				cmd.set_specialization_constant(1, rp.sampling_rate_y_log2);
+				cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
+				                       *work_list_super_sample.buffer, work_list_super_sample.offset + 256, VK_WHOLE_SIZE);
+				cmd.dispatch_indirect(*work_list_super_sample.buffer, work_list_super_sample.offset);
+			}
+
+			cmd.set_specialization_constant(0, 0);
+			cmd.set_specialization_constant(1, 0);
+			cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
+			                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256, VK_WHOLE_SIZE);
 			cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
+
 			cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 			            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
 			            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
@@ -1652,12 +1700,40 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 			push.lo_primitive_index = last_primitive_index_single_step + 1;
 			push.hi_primitive_index = UINT32_MAX;
 			cmd.push_constants(&push, 0, sizeof(push));
+
+			if (rp.sampling_rate_y_log2 != 0)
+			{
+				cmd.set_specialization_constant(0, rp.sampling_rate_x_log2);
+				cmd.set_specialization_constant(1, rp.sampling_rate_y_log2);
+				cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
+				                       *work_list_super_sample.buffer, work_list_super_sample.offset + 256, VK_WHOLE_SIZE);
+				cmd.dispatch_indirect(*work_list_super_sample.buffer, work_list_super_sample.offset);
+			}
+
+			cmd.set_specialization_constant(0, 0);
+			cmd.set_specialization_constant(1, 0);
+			cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
+			                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256, VK_WHOLE_SIZE);
 			cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
 		}
 	}
 	else
 	{
 		cmd.push_constants(&push, 0, sizeof(push));
+
+		if (rp.sampling_rate_y_log2 != 0)
+		{
+			cmd.set_specialization_constant(0, rp.sampling_rate_x_log2);
+			cmd.set_specialization_constant(1, rp.sampling_rate_y_log2);
+			cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
+			                       *work_list_super_sample.buffer, work_list_super_sample.offset + 256, VK_WHOLE_SIZE);
+			cmd.dispatch_indirect(*work_list_super_sample.buffer, work_list_super_sample.offset);
+		}
+
+		cmd.set_specialization_constant(0, 0);
+		cmd.set_specialization_constant(1, 0);
+		cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
+		                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256, VK_WHOLE_SIZE);
 		cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
 	}
 
@@ -1723,7 +1799,23 @@ void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const Render
 			cmd.end_region();
 		}
 
+		if (rp.sampling_rate_y_log2 != 0)
+		{
+			cmd.set_specialization_constant(0, rp.sampling_rate_x_log2);
+			cmd.set_specialization_constant(1, rp.sampling_rate_y_log2);
+			cmd.insert_label("super-sample");
+			cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
+			                       *work_list_super_sample.buffer, work_list_super_sample.offset + 256, VK_WHOLE_SIZE);
+			cmd.dispatch_indirect(*work_list_super_sample.buffer, work_list_super_sample.offset);
+		}
+
+		cmd.set_specialization_constant(0, 0);
+		cmd.set_specialization_constant(1, 0);
+		cmd.insert_label("single-sample");
+		cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
+		                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256, VK_WHOLE_SIZE);
 		cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
+
 		cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 		            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
 		            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
@@ -1941,6 +2033,8 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 	// Attempted async compute here for binning, etc, but it's not very useful in practice.
 	ensure_command_buffer(clear_cmd, Vulkan::CommandBuffer::Type::Generic);
 	ensure_command_buffer(triangle_setup_cmd, Vulkan::CommandBuffer::Type::Generic);
+	if (rp.sampling_rate_y_log2 != 0)
+		ensure_command_buffer(heuristic_cmd, Vulkan::CommandBuffer::Type::Generic);
 	ensure_command_buffer(binning_cmd, Vulkan::CommandBuffer::Type::Generic);
 	ensure_command_buffer(direct_cmd, Vulkan::CommandBuffer::Type::Generic);
 
@@ -2003,18 +2097,25 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 	if (device->consumes_debug_markers())
 		triangle_setup_cmd->end_region();
 
+	if (rp.sampling_rate_y_log2 != 0)
+	{
+		if (device->consumes_debug_markers())
+			begin_region(*heuristic_cmd, "Heuristic %u", rp.label_key);
+		dispatch_single_sample_heuristic(*heuristic_cmd, rp);
+		if (device->consumes_debug_markers())
+			heuristic_cmd->end_region();
+	}
+	indirect_single_sample_heuristic = {};
+
 	if (device->consumes_debug_markers())
 		begin_region(*binning_cmd, "Binning %u", rp.label_key);
-	if (rp.sampling_rate_y_log2 != 0)
-		dispatch_single_sample_heuristic(*binning_cmd, rp);
-	indirect_single_sample_heuristic = {};
 	dispatch_binning(*binning_cmd, rp);
-
 	if (device->consumes_debug_markers())
 		binning_cmd->end_region();
 
 	dispatch_shading(cmd, rp);
 	work_list_single_sample = {};
+	work_list_super_sample = {};
 
 	cmd.end_region();
 	cmd.set_specialization_constant_mask(0);

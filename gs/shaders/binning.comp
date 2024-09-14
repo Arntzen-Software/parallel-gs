@@ -7,6 +7,7 @@
 
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_vote : require
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
 layout(local_size_x_id = 0) in;
@@ -18,9 +19,11 @@ layout(local_size_x_id = 0) in;
 #define NEED_PRIMITIVE_SETUP
 #define NEED_PRIMITIVE_LIST
 #define NEED_PRIMITIVE_COUNTS
+#define NEED_PRIMITIVE_ATTRIBUTE
 #include "data_structures.h"
 #include "data_buffers.h"
 #include "intersect.h"
+#include "swizzle_utils.h"
 
 layout(push_constant) uniform Registers
 {
@@ -29,13 +32,20 @@ layout(push_constant) uniform Registers
     uint num_samples;
 } registers;
 
-layout(std430, set = 1, binding = 0) buffer SuperSampledWork
+layout(std430, set = 1, binding = 0) buffer SingleSampledWork
+{
+    uint dispatch[3];
+    layout(offset = 256) uvec2 work_items[];
+} single_sampled;
+
+layout(std430, set = 1, binding = 1) buffer SuperSampledWork
 {
     uint dispatch[3];
     layout(offset = 256) uvec2 work_items[];
 } super_sampled;
 
 layout(constant_id = 1) const bool FEEDBACK_FORCE_WORK = false;
+layout(constant_id = 2) const bool SUPER_SAMPLED = false;
 
 void main()
 {
@@ -53,6 +63,8 @@ void main()
     ivec2 tile_hi = tile_lo + ((1 << constants.coarse_tile_size_log2) - 1);
     int write_offset = 0;
 
+    bool requires_super_sample = false;
+
     for (int i = 0; i < registers.num_primitives; i += int(gl_SubgroupSize))
     {
         int primitive_index = i + int(gl_SubgroupInvocationID);
@@ -67,6 +79,23 @@ void main()
             ivec4 bb = ivec4(primitive_setup.data[primitive_index].bb);
             bb = clip_bounding_box(bb, ivec4(tile_lo, tile_hi));
             binned = triangle_setup_intersects_tile(a, b, c, bb);
+
+            if (SUPER_SAMPLED && binned)
+            {
+                uint s = primitive_attr.data[primitive_index].state;
+
+                const uint FULLY_OPAQUE_MASK =
+                    (1u << STATE_BIT_SNAP_RASTER) |
+                    (1u << STATE_BIT_Z_TEST) |
+                    (1u << STATE_BIT_OPAQUE);
+
+                const uint FULLY_OPAQUE =
+                    (1u << STATE_BIT_SNAP_RASTER) |
+                    (1u << STATE_BIT_OPAQUE);
+
+                if ((s & FULLY_OPAQUE_MASK) != FULLY_OPAQUE)
+                    requires_super_sample = true;
+            }
         }
 
         uvec4 bin_mask = subgroupBallot(binned);
@@ -76,20 +105,36 @@ void main()
         write_offset += int(subgroupBallotBitCount(bin_mask));
     }
 
+    requires_super_sample = subgroupAny(requires_super_sample);
+
     if (subgroupElect())
     {
         coarse_primitive_counts.data[coarse_tile_linear] = write_offset;
 
         if (all(equal(gl_WorkGroupID.xy, uvec2(0))))
         {
-            super_sampled.dispatch[0] = registers.num_samples;
-            super_sampled.dispatch[1] = 1u << (2 * (constants.coarse_tile_size_log2 - 3));
+            single_sampled.dispatch[0] = 1u;
+            single_sampled.dispatch[1] = 1u << (2 * (constants.coarse_tile_size_log2 - 3));
+
+            if (SUPER_SAMPLED)
+            {
+                super_sampled.dispatch[0] = registers.num_samples;
+                super_sampled.dispatch[1] = 1u << (2 * (constants.coarse_tile_size_log2 - 3));
+            }
         }
 
         if (write_offset != 0 || FEEDBACK_FORCE_WORK)
         {
-            uint offset = atomicAdd(super_sampled.dispatch[2], 1u);
-            super_sampled.work_items[offset] = uvec2((tile_lo.x & 0xffff) | (tile_lo.y << 16), coarse_tile_linear);
+            if (SUPER_SAMPLED && requires_super_sample)
+            {
+                uint offset = atomicAdd(super_sampled.dispatch[2], 1u);
+                super_sampled.work_items[offset] = uvec2((tile_lo.x & 0xffff) | (tile_lo.y << 16), coarse_tile_linear);
+            }
+            else
+            {
+                uint offset = atomicAdd(single_sampled.dispatch[2], 1u);
+                single_sampled.work_items[offset] = uvec2((tile_lo.x & 0xffff) | (tile_lo.y << 16), coarse_tile_linear);
+            }
         }
     }
 }

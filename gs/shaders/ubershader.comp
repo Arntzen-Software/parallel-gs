@@ -45,7 +45,6 @@ const bool SUPER_SAMPLE = NUM_SAMPLES > 1;
 #define PRIMITIVE_LIST_QUALIFIER readonly
 #define PRIMITIVE_SETUP_QUALIFIER readonly
 #define BINDLESS
-#define USE_RCP_FLOAT
 #define NEED_CONSTANTS
 #define NEED_PRIMITIVE_SETUP
 #define NEED_PRIMITIVE_LIST
@@ -68,15 +67,16 @@ const bool FEEDBACK = (VARIANT_FLAGS & VARIANT_FLAG_FEEDBACK_BIT) != 0;
 const bool HAS_AA1 = (VARIANT_FLAGS & VARIANT_FLAG_HAS_AA1_BIT) != 0;
 const bool HAS_SCANMSK = (VARIANT_FLAGS & VARIANT_FLAG_HAS_SCANMSK_BIT) != 0;
 const bool HAS_PRIMITIVE_RANGE = (VARIANT_FLAGS & VARIANT_FLAG_HAS_PRIMITIVE_RANGE_BIT) != 0;
+const bool HAS_SUPER_SAMPLE_REFERENCE = (VARIANT_FLAGS & VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT) != 0;
 
 layout(std430, set = 0, binding = BINDING_CLUT) readonly buffer CLUT16
 {
 	uint16_t data[];
 } clut16;
 
-layout(std430, set = 0, binding = BINDING_WORKGROUP_LIST) readonly buffer WorkgroupList
+layout(std430, set = DESCRIPTOR_SET_WORKGROUP_LIST, binding = 0) readonly buffer WorkgroupList
 {
-	layout(offset = 256) uvec2 work_items[];
+	uvec2 work_items[];
 };
 
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
@@ -619,14 +619,14 @@ void end_tile()
 		if (is_fb_16bit)
 		{
 			// Store reference, so we can detect per-pixel when data changed in single-sampled domain.
-			if (SUPER_SAMPLE)
+			if (HAS_SUPER_SAMPLE_REFERENCE)
 				vram16.data[tile.fb_index + VRAM_SIZE_16] = super_sample_required_color ? 0xffffus : 0us;
 			vram16.data[tile.fb_index] = uint16_t(rgba32_to_rgba16(fb_color));
 		}
 		else
 		{
 			// Even for 24-bpp, we preserve the 8-bit alpha in registers.
-			if (SUPER_SAMPLE)
+			if (HAS_SUPER_SAMPLE_REFERENCE)
 				vram32.data[tile.fb_index + VRAM_SIZE_32] = super_sample_required_color ? ~0u : 0u;
 			vram32.data[tile.fb_index] = fb_color;
 		}
@@ -638,13 +638,13 @@ void end_tile()
 		{
 			if (is_zb_16bit)
 			{
-				if (SUPER_SAMPLE)
+				if (HAS_SUPER_SAMPLE_REFERENCE)
 					vram16.data[tile.fb_index_depth + VRAM_SIZE_16] = super_sample_required_depth ? 0xffffus : 0us;
 				vram16.data[tile.fb_index_depth] = uint16_t(fb_depth);
 			}
 			else
 			{
-				if (SUPER_SAMPLE)
+				if (HAS_SUPER_SAMPLE_REFERENCE)
 				{
 					// Alpha channel is no longer valid in Z24. Hopefully no-one is insane enough to alias COLOR32 and Z24 :')
 					const uint ref = is_zb_24bit ? 0xffffffu : ~0u;
