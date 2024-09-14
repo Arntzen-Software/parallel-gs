@@ -26,7 +26,16 @@ layout(push_constant) uniform Registers
 {
     ivec2 pixel_offset;
     uint num_primitives;
+    uint num_samples;
 } registers;
+
+layout(std430, set = 1, binding = 0) buffer SuperSampledWork
+{
+    uint dispatch[3];
+    layout(offset = 256) uvec2 work_items[];
+} super_sampled;
+
+layout(constant_id = 1) const bool FEEDBACK_FORCE_WORK = false;
 
 void main()
 {
@@ -42,7 +51,6 @@ void main()
 
     ivec2 tile_lo = coarse_tile_base + registers.pixel_offset;
     ivec2 tile_hi = tile_lo + ((1 << constants.coarse_tile_size_log2) - 1);
-
     int write_offset = 0;
 
     for (int i = 0; i < registers.num_primitives; i += int(gl_SubgroupSize))
@@ -69,5 +77,19 @@ void main()
     }
 
     if (subgroupElect())
+    {
         coarse_primitive_counts.data[coarse_tile_linear] = write_offset;
+
+        if (all(equal(gl_WorkGroupID.xy, uvec2(0))))
+        {
+            super_sampled.dispatch[0] = registers.num_samples;
+            super_sampled.dispatch[1] = 1u << (2 * (constants.coarse_tile_size_log2 - 3));
+        }
+
+        if (write_offset != 0 || FEEDBACK_FORCE_WORK)
+        {
+            uint offset = atomicAdd(super_sampled.dispatch[2], 1u);
+            super_sampled.work_items[offset] = uvec2((tile_lo.x & 0xffff) | (tile_lo.y << 16), coarse_tile_linear);
+        }
+    }
 }

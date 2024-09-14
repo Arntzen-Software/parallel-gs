@@ -628,7 +628,8 @@ void GSRenderer::flush_submit(uint64_t value)
 	if (binning_cmd)
 	{
 		binning_cmd->barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-		                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+		                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+		                     VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
 		device->submit(binning_cmd);
 	}
 
@@ -1119,6 +1120,15 @@ void GSRenderer::allocate_scratch_buffers(Vulkan::CommandBuffer &cmd, const Rend
 		indirect_single_sample_heuristic.offset = single_sampled_heuristic_offset;
 		indirect_single_sample_heuristic.size = sizeof(SingleSampleHeuristic);
 	}
+
+	VkDeviceSize work_list_size = 256 + rp.coarse_tiles_width * rp.coarse_tiles_height * sizeof(uvec2);
+	auto work_list_scratch = allocate_device_scratch(work_list_size, buffers.device_scratch, nullptr);
+	clear_cmd->fill_buffer(*buffers.device_scratch.buffer, 0, work_list_scratch, 16);
+	binning_cmd->set_storage_buffer(1, 0, *buffers.device_scratch.buffer, work_list_scratch, work_list_size);
+	direct_cmd->set_storage_buffer(0, BINDING_WORKGROUP_LIST, *buffers.device_scratch.buffer, work_list_scratch, work_list_size);
+	work_list_single_sample = buffers.device_scratch;
+	work_list_single_sample.offset = work_list_scratch;
+	work_list_single_sample.size = work_list_size;
 }
 
 void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
@@ -1223,7 +1233,8 @@ void GSRenderer::dispatch_single_sample_heuristic(Vulkan::CommandBuffer &cmd, co
 void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
 {
 	cmd.enable_subgroup_size_control(true);
-	cmd.set_specialization_constant_mask(1);
+	cmd.set_specialization_constant_mask(3);
+	cmd.set_specialization_constant(1, uint32_t(rp.feedback_color || rp.feedback_depth));
 
 	// Prefer large waves if possible. Also, prefer to have just one subgroup per workgroup,
 	// since the algorithms kind of rely on that.
@@ -1252,8 +1263,12 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 
 	struct Push
 	{
-		uint32_t base_x, base_y, num_primitives;
-	} push = { rp.base_x, rp.base_y, rp.num_primitives };
+		uint32_t base_x, base_y, num_primitives, num_samples;
+	} push = {
+		rp.base_x, rp.base_y,
+		rp.num_primitives,
+		1u << (rp.sampling_rate_x_log2 + rp.sampling_rate_y_log2),
+	};
 
 	cmd.push_constants(&push, 0, sizeof(push));
 	cmd.set_program(shaders.binning);
@@ -1564,9 +1579,6 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 
 	cmd.set_specialization_constant(5, variant_flags);
 
-	uint32_t width = rp.coarse_tiles_width << rp.coarse_tile_size_log2;
-	uint32_t height = rp.coarse_tiles_height << rp.coarse_tile_size_log2;
-
 	Vulkan::QueryPoolHandle start_ts, end_ts;
 	if (enable_timestamps)
 		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -1595,7 +1607,7 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 
 	if (rp.feedback_color)
 	{
-		dispatch_shading_debug(cmd, rp, width, height, push);
+		dispatch_shading_debug(cmd, rp, push);
 	}
 	else if (single_primitive_step)
 	{
@@ -1605,14 +1617,12 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 		// and then do barrier() after every primitive and exchange color and depth values as needed.
 		// That however, is complete insanity, but if we end up seeing content that really hammers
 		// this hard, we might not have a choice ...
-		uint32_t wg_x = (width + 7) / 8;
-		uint32_t wg_y = (height + 7) / 8;
 		for (uint32_t i = 0; i <= last_primitive_index_single_step; i++)
 		{
 			push.lo_primitive_index = i;
 			push.hi_primitive_index = i;
 			cmd.push_constants(&push, 0, sizeof(push));
-			cmd.dispatch(1u << (rp.sampling_rate_x_log2 + rp.sampling_rate_y_log2), wg_x, wg_y);
+			cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
 			cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 			            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
 			            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
@@ -1642,15 +1652,13 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 			push.lo_primitive_index = last_primitive_index_single_step + 1;
 			push.hi_primitive_index = UINT32_MAX;
 			cmd.push_constants(&push, 0, sizeof(push));
-			cmd.dispatch(1u << (rp.sampling_rate_x_log2 + rp.sampling_rate_y_log2), wg_x, wg_y);
+			cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
 		}
 	}
 	else
 	{
 		cmd.push_constants(&push, 0, sizeof(push));
-		uint32_t wg_x = (width + 7) / 8;
-		uint32_t wg_y = (height + 7) / 8;
-		cmd.dispatch(1u << (rp.sampling_rate_x_log2 + rp.sampling_rate_y_log2), wg_x, wg_y);
+		cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
 	}
 
 	if (enable_timestamps)
@@ -1667,8 +1675,7 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	cmd.end_region();
 }
 
-void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const RenderPass &rp,
-                                        uint32_t width, uint32_t height, ShadingDescriptor push)
+void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const RenderPass &rp, ShadingDescriptor push)
 {
 	uint32_t stride = rp.debug_capture_stride ? rp.debug_capture_stride : rp.num_primitives;
 	for (uint32_t i = 0; i < rp.num_primitives; i += stride)
@@ -1716,9 +1723,7 @@ void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const Render
 			cmd.end_region();
 		}
 
-		uint32_t wg_x = (width + 7) / 8;
-		uint32_t wg_y = (height + 7) / 8;
-		cmd.dispatch(1u << (rp.sampling_rate_x_log2 + rp.sampling_rate_y_log2), wg_x, wg_y);
+		cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
 		cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 		            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
 		            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
@@ -1934,8 +1939,7 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 #endif
 
 	// Attempted async compute here for binning, etc, but it's not very useful in practice.
-	if (rp.sampling_rate_y_log2 != 0)
-		ensure_command_buffer(clear_cmd, Vulkan::CommandBuffer::Type::Generic);
+	ensure_command_buffer(clear_cmd, Vulkan::CommandBuffer::Type::Generic);
 	ensure_command_buffer(triangle_setup_cmd, Vulkan::CommandBuffer::Type::Generic);
 	ensure_command_buffer(binning_cmd, Vulkan::CommandBuffer::Type::Generic);
 	ensure_command_buffer(direct_cmd, Vulkan::CommandBuffer::Type::Generic);
@@ -2010,6 +2014,7 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 		binning_cmd->end_region();
 
 	dispatch_shading(cmd, rp);
+	work_list_single_sample = {};
 
 	cmd.end_region();
 	cmd.set_specialization_constant_mask(0);

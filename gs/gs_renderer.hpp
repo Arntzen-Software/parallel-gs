@@ -305,6 +305,7 @@ private:
 	} buffers;
 
 	Scratch indirect_single_sample_heuristic;
+	Scratch work_list_single_sample;
 
 	VkDeviceSize allocate_device_scratch(VkDeviceSize size, Scratch &scratch, const void *data);
 
@@ -331,9 +332,7 @@ private:
 	void dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
 	void dispatch_single_sample_heuristic(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
 	void dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
-	void dispatch_shading_debug(
-			Vulkan::CommandBuffer &cmd, const RenderPass &rp,
-			uint32_t width, uint32_t height, ShadingDescriptor push);
+	void dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const RenderPass &rp, ShadingDescriptor push);
 	void flush_palette_upload();
 
 	void dispatch_cache_read_only_depth(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t depth_psm);
