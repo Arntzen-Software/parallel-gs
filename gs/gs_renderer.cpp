@@ -273,14 +273,24 @@ void GSRenderer::kick_compilation_tasks()
 						cmd->set_specialization_constant(2, format.color_psm);
 						cmd->set_specialization_constant(3, format.depth_psm);
 						cmd->set_specialization_constant(4, vram_size - 1);
-						const uint32_t invalidate_super_sample_flags =
-								buffers.gpu->get_create_info().size > vram_size * 2 ?
-								VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT : 0;
-						cmd->set_specialization_constant(5, flags | invalidate_super_sample_flags);
+						cmd->set_specialization_constant(
+								5, flags | (rates.sample_y ? VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT : 0));
 						cmd->set_specialization_constant(6, feedback.feedback_psm);
 						cmd->set_specialization_constant(7, feedback.feedback_cpsm);
 						cmd->extract_pipeline_state(deferred);
 						tasks.push_back(deferred);
+
+						if (rates.sample_x == 0 && rates.sample_y == 0)
+						{
+							bool can_super_sample = buffers.gpu->get_create_info().size > vram_size * 2;
+							if (can_super_sample)
+							{
+								cmd->set_specialization_constant(
+										5, flags | VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT);
+								cmd->extract_pipeline_state(deferred);
+								tasks.push_back(deferred);
+							}
+						}
 					}
 				}
 			}
@@ -1607,7 +1617,7 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 		cmd.set_specialization_constant(7, 0);
 	}
 
-	if (buffers.gpu->get_create_info().size > vram_size * 2)
+	if (rp.sampling_rate_y_log2 != 0)
 		variant_flags |= VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT;
 
 	cmd.set_specialization_constant(5, variant_flags);
