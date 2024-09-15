@@ -1300,6 +1300,13 @@ void GSInterface::drawing_kick_update_state(ColorFeedbackMode feedback_mode, con
 			// Always flag fixed LOD so we can do early perspective divide.
 			p.tex2 = 1u << TEX2_FIXED_LOD_OFFSET;
 		}
+
+		if ((p.tex & (1u << (TEX_TEXTURE_INDEX_BITS - 1))) != 0)
+		{
+			p.tex2 |= registers.texa.desc.AEM << TEX2_FEEDBACK_AEM_OFFSET;
+			p.tex2 |= registers.texa.desc.TA0 << TEX2_FEEDBACK_TA0_OFFSET;
+			p.tex2 |= registers.texa.desc.TA1 << TEX2_FEEDBACK_TA1_OFFSET;
+		}
 	}
 
 	// Update state after updating texture state, since reading a texture may cause a flush,

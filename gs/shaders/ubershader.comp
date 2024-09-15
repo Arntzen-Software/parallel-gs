@@ -813,7 +813,7 @@ float texture_clamp(float coord, vec2 region, float LOD)
 	return clamp(coord, clamp_coords.x, clamp_coords.y);
 }
 
-vec4 feedback_texture(uint tex_index)
+vec4 feedback_texture(uint tex_index, uint tex2)
 {
 	ivec4 color;
 	if (is_palette_format(FEEDBACK_PSM))
@@ -864,15 +864,35 @@ vec4 feedback_texture(uint tex_index)
 		}
 		else
 		{
+			uint aem = bitfieldExtract(tex2, TEX2_FEEDBACK_AEM_OFFSET, 1);
+			uint ta0 = bitfieldExtract(tex2, TEX2_FEEDBACK_TA0_OFFSET, 8);
+			uint ta1 = bitfieldExtract(tex2, TEX2_FEEDBACK_TA1_OFFSET, 8);
+
 			uint lo = uint(clut16.data[color_index]);
 			color = unpack_color16(lo);
+			bool zero_alpha = aem != 0 && lo == 0;
+			color.w = zero_alpha ? 0 : (color.w == 0 ? int(ta0) : int(ta1));
 		}
 	}
 	else
 	{
-		// TODO: 24-bit. Pack AEM and stuff into clut_offset?
-		// 16-bit color is kept as quantized 32-bit in registers.
 		color = unpack_color(fb_color);
+
+		uint aem = bitfieldExtract(tex2, TEX2_FEEDBACK_AEM_OFFSET, 1);
+		uint ta0 = bitfieldExtract(tex2, TEX2_FEEDBACK_TA0_OFFSET, 8);
+		uint ta1 = bitfieldExtract(tex2, TEX2_FEEDBACK_TA1_OFFSET, 8);
+		bool zero_alpha = aem != 0 && (color.x | color.y | color.z) == 0;
+
+		if (FEEDBACK_PSM == PSMCT24 || FEEDBACK_PSM == PSMZ24)
+		{
+			color.w = zero_alpha ? 0 : int(ta0);
+		}
+		else if (FEEDBACK_PSM == PSMCT16 || FEEDBACK_PSM == PSMCT16S ||
+		         FEEDBACK_PSM == PSMZ16 || FEEDBACK_PSM == PSMZ16S)
+		{
+			// 16-bit color is kept as quantized 32-bit in registers.
+			color.w = zero_alpha ? 0 : (color.w == 0 ? int(ta0) : int(ta1));
+		}
 	}
 
 	return vec4(color);
@@ -884,7 +904,7 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 
 	if (FEEDBACK)
 		if ((tex_index & (1u << (TEX_TEXTURE_INDEX_BITS - 1))) != 0)
-			return feedback_texture(tex_index);
+			return feedback_texture(tex_index, filtering);
 
 	bool sampler_clamp_s = (tex_word & TEX_SAMPLER_CLAMP_S_BIT) != 0;
 	bool sampler_clamp_t = (tex_word & TEX_SAMPLER_CLAMP_T_BIT) != 0;
