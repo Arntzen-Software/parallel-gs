@@ -185,7 +185,14 @@ void main()
 	// Deal with the case where transfer width is larger than the stride.
 	// This will be a race condition with the page below, which should be written after this thread.
 	// Just skip these writes unless we're writing to the last page.
-	if (coord.x >= transfer.dest_stride * 64)
+	uint effective_dest_stride = transfer.dest_stride;
+
+	// Unclear what hardware behavior is. Either stride is rounded down, or up.
+	// Going with rounding down for now ...
+	if (STORAGE_FMT == PSMT4 || STORAGE_FMT == PSMT8)
+		effective_dest_stride &= ~1u;
+
+	if (coord.x >= effective_dest_stride * 64)
 	{
 		LocalDataStructure data_structure = get_data_structure(STORAGE_FMT);
 		// This might not be technically correct if we have 2048 pixel wrapping, but ... eh.
