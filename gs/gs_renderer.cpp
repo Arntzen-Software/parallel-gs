@@ -1919,7 +1919,7 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd,
 			{
 				insert_label(cmd, "VRAMUpload #%u - 0x%x - %s - %u x %u (stride %u) + (%u, %u)",
 				             dispatch_order[i],
-				             base_desc.bitbltbuf.desc.DBP * PGS_BLOCK_ALIGNMENT_BYTES,
+				             desc.bitbltbuf.desc.DBP * PGS_BLOCK_ALIGNMENT_BYTES,
 				             psm_to_str(desc.bitbltbuf.desc.DPSM),
 				             desc.trxreg.desc.RRW, desc.trxreg.desc.RRH,
 				             desc.bitbltbuf.desc.DBW * PGS_BUFFER_WIDTH_SCALE,
