@@ -316,19 +316,24 @@ static inline Stream &operator<<(Stream &stream, const StateVector &state)
 template <typename Stream>
 static inline Stream &operator<<(Stream &stream, const RenderPass &rp)
 {
-	stream << "LABEL: " << rp.label_key
-	       << ", X: " << rp.base_x
-	       << ", Y: " << rp.base_y
-	       << ", NumPrims: " << rp.num_primitives
-	       << ", W: " << (rp.coarse_tiles_width << rp.coarse_tile_size_log2)
-	       << ", H: " << (rp.coarse_tiles_height << rp.coarse_tile_size_log2)
-	       << ", NumTex: " << rp.num_textures
-	       << ", NumState: " << rp.num_states
-	       << ", Z: " << (rp.z_sensitive ? "ON" : "OFF");
+	for (uint32_t i = 0; i < rp.num_instances; i++)
+	{
+		auto &inst = rp.instances[i];
+		stream << "LABEL: " << rp.label_key
+		       << ", instance: " << i
+		       << ", X: " << inst.base_x
+		       << ", Y: " << inst.base_y
+		       << ", NumPrims: " << rp.num_primitives
+		       << ", W: " << (inst.coarse_tiles_width << rp.coarse_tile_size_log2)
+		       << ", H: " << (inst.coarse_tiles_height << rp.coarse_tile_size_log2)
+		       << ", NumTex: " << rp.num_textures
+		       << ", NumState: " << rp.num_states
+		       << ", Z: " << (inst.z_sensitive ? "ON" : "OFF");
 
-	stream << " || FRAME - " << rp.fb.frame;
-	if (rp.z_sensitive)
-		stream << " || ZBUF - " << rp.fb.z;
+		stream << " || FRAME - " << inst.fb.frame;
+		if (inst.z_sensitive)
+			stream << " || ZBUF - " << inst.fb.z;
+	}
 
 	return stream;
 }

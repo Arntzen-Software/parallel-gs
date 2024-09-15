@@ -28,7 +28,9 @@ layout(local_size_x_id = 0) in;
 layout(push_constant) uniform Registers
 {
     ivec2 pixel_offset;
-    uint num_primitives;
+    int base_primitive;
+    uint instance;
+    int end_primitives;
     uint num_samples;
 } registers;
 
@@ -65,36 +67,40 @@ void main()
 
     bool requires_super_sample = false;
 
-    for (int i = 0; i < registers.num_primitives; i += int(gl_SubgroupSize))
+    for (int i = registers.base_primitive; i < registers.end_primitives; i += int(gl_SubgroupSize))
     {
         int primitive_index = i + int(gl_SubgroupInvocationID);
         bool binned = false;
 
-        if (primitive_index < registers.num_primitives)
+        if (primitive_index < registers.end_primitives)
         {
-            ivec3 a = primitive_setup.data[primitive_index].a;
-            ivec3 b = primitive_setup.data[primitive_index].b;
-            ivec3 c = primitive_setup.data[primitive_index].c;
-
-            ivec4 bb = ivec4(primitive_setup.data[primitive_index].bb);
-            bb = clip_bounding_box(bb, ivec4(tile_lo, tile_hi));
-            binned = triangle_setup_intersects_tile(a, b, c, bb);
-
-            if (SUPER_SAMPLED && binned)
+            uint s = primitive_attr.data[primitive_index].state;
+            if (bitfieldExtract(s,
+                    STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET,
+                    STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) == registers.instance)
             {
-                uint s = primitive_attr.data[primitive_index].state;
+                ivec3 a = primitive_setup.data[primitive_index].a;
+                ivec3 b = primitive_setup.data[primitive_index].b;
+                ivec3 c = primitive_setup.data[primitive_index].c;
 
-                const uint FULLY_OPAQUE_MASK =
-                    (1u << STATE_BIT_SNAP_RASTER) |
-                    (1u << STATE_BIT_Z_TEST) |
-                    (1u << STATE_BIT_OPAQUE);
+                ivec4 bb = ivec4(primitive_setup.data[primitive_index].bb);
+                bb = clip_bounding_box(bb, ivec4(tile_lo, tile_hi));
+                binned = triangle_setup_intersects_tile(a, b, c, bb);
 
-                const uint FULLY_OPAQUE =
-                    (1u << STATE_BIT_SNAP_RASTER) |
-                    (1u << STATE_BIT_OPAQUE);
+                if (SUPER_SAMPLED && binned)
+                {
+                    const uint FULLY_OPAQUE_MASK =
+                        (1u << STATE_BIT_SNAP_RASTER) |
+                        (1u << STATE_BIT_Z_TEST) |
+                        (1u << STATE_BIT_OPAQUE);
 
-                if ((s & FULLY_OPAQUE_MASK) != FULLY_OPAQUE)
-                    requires_super_sample = true;
+                    const uint FULLY_OPAQUE =
+                        (1u << STATE_BIT_SNAP_RASTER) |
+                        (1u << STATE_BIT_OPAQUE);
+
+                    if ((s & FULLY_OPAQUE_MASK) != FULLY_OPAQUE)
+                        requires_super_sample = true;
+                }
             }
         }
 

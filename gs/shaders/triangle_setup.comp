@@ -34,7 +34,7 @@ layout(constant_id = 0) const int SAMPLING_RATE_LOG2 = 0;
 layout(push_constant) uniform Registers
 {
     uint num_primitives;
-    uint z_shift; // Shifts depth into 32-bit buckets.
+    uint packed_z_shift; // Shifts depth into 32-bit buckets.
 } registers;
 
 layout(set = 0, binding = BINDING_SINGLE_SAMPLE_HEURISTIC, std430) buffer SingleSampleHeuristicSSBO
@@ -508,6 +508,12 @@ void main_inner(uint index)
 
         if (!should_interpolate_per_sample)
         {
+            uint rp_instance = bitfieldExtract(primitive_attr.data[index].state,
+                                               STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET,
+                                               STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT);
+
+            uint z_shift = bitfieldExtract(registers.packed_z_shift, 4 * int(rp_instance), 4) * 8;
+
             // Don't demote lines unless we demote the entire render pass to single sampled.
             if (!line)
                 primitive_attr.data[index].state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
@@ -539,7 +545,7 @@ void main_inner(uint index)
             transformed_attr.data[index].st_bb = vec4(lo_st, hi_st);
 
             // Need to clamp in case primitive Z overflows. In that case, we get saturation.
-            uint single_sampled_bucket_index = min(255u, za >> registers.z_shift);
+            uint single_sampled_bucket_index = min(255u, za >> z_shift);
             uint bucket_index_hi = single_sampled_bucket_index / 32u;
             uint bucket_index_lo = single_sampled_bucket_index % 32u;
 

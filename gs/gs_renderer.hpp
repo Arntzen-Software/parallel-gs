@@ -128,6 +128,7 @@ static constexpr uint32_t MaxTextures = std::min<uint32_t>(
 static constexpr uint32_t CLUTInstances = 1024;
 static constexpr uint32_t PageSize = 8 * 1024;
 static constexpr uint32_t CLUTSize = 1024; // This cannot be larger unless we also increase texture index bits.
+static constexpr uint32_t MaxRenderPassInstances = 8;
 
 // While 64x MSAA is theoretically possible,
 // it can only work on AMD since we'd need wave size of 64.
@@ -142,11 +143,22 @@ struct TextureInfo
 
 struct RenderPass
 {
-	FBDescriptor fb;
+	struct Instance
+	{
+		FBDescriptor fb;
+		uint32_t base_x, base_y;
+		uint32_t coarse_tiles_width;
+		uint32_t coarse_tiles_height;
 
-	uint32_t base_x, base_y;
-	uint32_t coarse_tiles_width;
-	uint32_t coarse_tiles_height;
+		// 0, 1 or 2.
+		uint32_t sampling_rate_x_log2;
+		uint32_t sampling_rate_y_log2;
+		bool z_sensitive;
+		bool z_write;
+	};
+	Instance instances[MaxRenderPassInstances];
+	uint32_t num_instances;
+
 	uint32_t coarse_tile_size_log2;
 
 	const VertexPosition *positions;
@@ -163,10 +175,8 @@ struct RenderPass
 	uint32_t label_key;
 	uint32_t debug_capture_stride;
 
-	bool z_sensitive;
 	bool has_aa1;
 	bool has_scanmsk;
-	bool invalidate_super_sampling;
 
 	// For debugging. Aids capture tools.
 	bool feedback_color;
@@ -176,10 +186,6 @@ struct RenderPass
 	uint32_t feedback_texture_psm;
 	uint32_t feedback_texture_cpsm;
 	FlushReason flush_reason;
-
-	// 0, 1 or 2.
-	uint32_t sampling_rate_x_log2;
-	uint32_t sampling_rate_y_log2;
 };
 
 struct PrivRegisterState;
@@ -329,17 +335,24 @@ private:
 	void upload_texture(const TextureDescriptor &desc, const Vulkan::Image &img);
 	void bind_textures(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
 	void bind_frame_resources(const RenderPass &rp);
+	void bind_frame_resources_instanced(const RenderPass &rp, uint32_t instance, uint32_t num_primitives);
 	void allocate_scratch_buffers(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
+	void allocate_scratch_buffers_instanced(Vulkan::CommandBuffer &cmd, const RenderPass &rp,
+	                                        uint32_t instance, uint32_t num_primitives);
 	void dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
-	void dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
+	void dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t instance,
+	                      uint32_t base_primitive, uint32_t num_primitives);
 	void dispatch_single_sample_heuristic(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
-	void dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
-	void dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const RenderPass &rp, ShadingDescriptor push);
+	void dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t instance,
+	                      uint32_t base_primitive, uint32_t num_primitives);
+	void dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const RenderPass &rp,
+	                            ShadingDescriptor push, uint32_t instance,
+	                            uint32_t base_primitive, uint32_t num_primitives);
 	void flush_palette_upload();
 
-	void dispatch_cache_read_only_depth(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t depth_psm);
-	void dispatch_invalidate_super_sampling(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
-	void dispatch_invalidate_super_sampling(Vulkan::CommandBuffer &cmd, const PageRect &rect);
+	void dispatch_cache_read_only_depth(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t depth_psm, uint32_t instance);
+
+	void flush_rendering(const RenderPass &rp, uint32_t instance, uint32_t base_primitive, uint32_t num_primitives);
 
 	struct SamplingRect
 	{
@@ -411,5 +424,7 @@ private:
 
 	std::vector<uint32_t> vram_copy_write_pages;
 	std::vector<uint32_t> sync_vram_shadow_pages;
+
+	bool can_potentially_super_sample() const;
 };
 }

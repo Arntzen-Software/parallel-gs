@@ -19,8 +19,8 @@ GSInterface::GSInterface()
 	reset_context_state();
 
 	// Ensure that default states will trigger a dirty flag.
-	render_pass.frame.desc.PSM = 0x3f;
-	render_pass.zbuf.desc.PSM = 0x7;
+	render_pass.instances[0].frame.desc.PSM = 0x3f;
+	render_pass.instances[0].zbuf.desc.PSM = 0x7;
 }
 
 void GSInterface::reset_context_state()
@@ -108,19 +108,23 @@ void GSInterface::flush_render_pass(FlushReason reason)
 		rp.prims = render_pass.prim.data();
 		rp.num_primitives = render_pass.primitive_count;
 
-		rp.fb.frame = render_pass.frame;
-		rp.fb.z = render_pass.zbuf;
-
 		rp.states = render_pass.state_vectors.data();
 		rp.num_states = render_pass.state_vectors.size();
 
 		rp.textures = render_pass.tex_infos.data();
 		rp.num_textures = render_pass.tex_infos.size();
 
+		uint32_t binning_cost = 0;
+
+		for (uint32_t i = 0; i < render_pass.num_instances; i++)
+		{
+			auto &inst = render_pass.instances[i];
+			uint32_t tile_width = ((inst.bb.z - inst.bb.x) >> PGS_FB_SWIZZLE_WIDTH_LOG2) + 1;
+			uint32_t tile_height = ((inst.bb.w - inst.bb.y) >> PGS_FB_SWIZZLE_HEIGHT_LOG2) + 1;
+			binning_cost += tile_width * tile_height * rp.num_primitives;
+		}
+
 		// Somewhat arbitrary. Try to balance binning load.
-		uint32_t tile_width = ((render_pass.bb.z - render_pass.bb.x) >> PGS_FB_SWIZZLE_WIDTH_LOG2) + 1;
-		uint32_t tile_height = ((render_pass.bb.w - render_pass.bb.y) >> PGS_FB_SWIZZLE_HEIGHT_LOG2) + 1;
-		uint32_t binning_cost = tile_width * tile_height * rp.num_primitives;
 		if (binning_cost < 10 * 1000)
 			rp.coarse_tile_size_log2 = 3;
 		else if (binning_cost < 10 * 1000 * 1000)
@@ -133,44 +137,68 @@ void GSInterface::flush_render_pass(FlushReason reason)
 		if (sampling_rate_y_log2 != 0 && rp.coarse_tile_size_log2 > 3)
 			rp.coarse_tile_size_log2 -= 1;
 
-		assert(render_pass.bb.z < std::max<int>(1, rp.fb.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE);
+		rp.num_instances = render_pass.num_instances;
 
-		rp.base_x = render_pass.bb.x;
-		rp.base_y = render_pass.bb.y;
-		rp.coarse_tiles_width = ((render_pass.bb.z - render_pass.bb.x) >> rp.coarse_tile_size_log2) + 1;
-		rp.coarse_tiles_height = ((render_pass.bb.w - render_pass.bb.y) >> rp.coarse_tile_size_log2) + 1;
+		// It's possible the last RP instance was added, but there are no primitives yet, since
+		// we ended up flushing before we could expand the BB.
+		if (render_pass.instances[rp.num_instances - 1].bb.z < 0)
+			rp.num_instances--;
+		assert(rp.num_instances);
+
+		for (uint32_t i = 0; i < rp.num_instances; i++)
+		{
+			auto &inst = render_pass.instances[i];
+			auto &pass = rp.instances[i];
+
+			assert(inst.bb.x <= inst.bb.z && inst.bb.y <= inst.bb.w);
+			assert(inst.bb.x >= 0 && inst.bb.y >= 0);
+			assert(inst.bb.z < 2048 && inst.bb.w < 2048);
+
+			pass.fb.frame = inst.frame;
+			pass.fb.z = inst.zbuf;
+			assert(inst.bb.z < std::max<int>(1, pass.fb.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE);
+
+			pass.base_x = inst.bb.x;
+			pass.base_y = inst.bb.y;
+			pass.coarse_tiles_width = ((inst.bb.z - inst.bb.x) >> rp.coarse_tile_size_log2) + 1;
+			pass.coarse_tiles_height = ((inst.bb.w - inst.bb.y) >> rp.coarse_tile_size_log2) + 1;
+
+			// This should be possible to vary based on dynamic usage.
+			// If there are only trivial UI passes, we should make it single-sampled.
+			pass.sampling_rate_x_log2 = sampling_rate_x_log2;
+			pass.sampling_rate_y_log2 = sampling_rate_y_log2;
+
+			// This case is to handle certain channel shuffling effects which render with 16-bit over a 32-bit FB
+			// using 0x3fff FBMSK. This ends up slicing the green channel and trying to resolve super-sampling in 16-bit
+			// domain leads to bogus results.
+			// If a channel is considered "odd" w.r.t. masking, force single-sampled rendering.
+			// Don't apply this fixup for 24/32-bit bpp, since there are no reasonable shuffle effects
+			// that operate on those bit-depths. Try to avoid false positives.
+			if ((sampling_rate_x_log2 || sampling_rate_y_log2) &&
+			    write_mask_is_channel_slice(inst.frame.desc.PSM, inst.color_write_mask))
+			{
+				pass.sampling_rate_x_log2 = 0;
+				pass.sampling_rate_y_log2 = 0;
+			}
+
+			pass.z_sensitive = inst.z_sensitive;
+			pass.z_write = inst.z_write;
+		}
 
 		rp.feedback_texture = render_pass.has_color_feedback;
 		rp.feedback_texture_psm = render_pass.feedback_psm;
 		rp.feedback_texture_cpsm = render_pass.feedback_cpsm;
 
 		// Affects shader variants.
-		rp.z_sensitive = render_pass.z_sensitive;
 		rp.has_aa1 = render_pass.has_aa1;
 		rp.has_scanmsk = render_pass.has_scanmsk;
 
 		// Debug stuff
 		rp.feedback_color = debug_mode.feedback_render_target;
-		rp.feedback_depth = debug_mode.feedback_render_target && rp.z_sensitive;
 
-		// This should be possible to vary based on dynamic usage.
-		// If there are only trivial UI passes, we should make it single-sampled.
-		rp.sampling_rate_x_log2 = sampling_rate_x_log2;
-		rp.sampling_rate_y_log2 = sampling_rate_y_log2;
-
-		// This case is to handle certain channel shuffling effects which render with 16-bit over a 32-bit FB
-		// using 0x3fff FBMSK. This ends up slicing the green channel and trying to resolve super-sampling in 16-bit
-		// domain leads to bogus results.
-		// If a channel is considered "odd" w.r.t. masking, force single-sampled rendering.
-		// Don't apply this fixup for 24/32-bit bpp, since there are no reasonable shuffle effects
-		// that operate on those bit-depths. Try to avoid false positives.
-		if ((rp.sampling_rate_x_log2 || rp.sampling_rate_y_log2) &&
-		    write_mask_is_channel_slice(render_pass.frame.desc.PSM, render_pass.color_write_mask))
-		{
-			rp.invalidate_super_sampling = true;
-			rp.sampling_rate_x_log2 = 0;
-			rp.sampling_rate_y_log2 = 0;
-		}
+		if (debug_mode.feedback_render_target)
+			for (uint32_t i = 0; i < render_pass.num_instances && !rp.feedback_depth; i++)
+				rp.feedback_depth = render_pass.instances[i].z_sensitive;
 
 		switch (debug_mode.draw_mode)
 		{
@@ -204,14 +232,25 @@ void GSInterface::flush_render_pass(FlushReason reason)
 	render_pass.state_vectors.clear();
 	render_pass.primitive_count = 0;
 	render_pass.pending_palette_updates = 0;
-	render_pass.bb = ivec4(INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN);
-	render_pass.color_write_mask = 0;
-	render_pass.z_sensitive = false;
-	render_pass.z_write = false;
+
+	RenderPassState::Instance instance = render_pass.instances[render_pass.current_instance];
+
+	render_pass.instances[0] = {};
+	render_pass.num_instances = 1;
+	render_pass.current_instance = 0;
+	auto &inst = render_pass.instances[0];
+	inst.frame = instance.frame;
+	inst.zbuf = instance.zbuf;
+	inst.fb_page_width_log2 = instance.fb_page_width_log2;
+	inst.fb_page_height_log2 = instance.fb_page_height_log2;
+	inst.z_page_width_log2 = instance.z_page_width_log2;
+	inst.z_page_height_log2 = instance.z_page_height_log2;
+
 	render_pass.last_triangle_is_parallelogram_candidate = false;
 	render_pass.has_color_feedback = false;
 	render_pass.has_aa1 = false;
 	render_pass.has_scanmsk = false;
+	render_pass.has_uncached_textures = false;
 	state_tracker.dirty_flags = STATE_DIRTY_ALL_BITS;
 }
 
@@ -624,43 +663,81 @@ void GSInterface::check_frame_buffer_state()
 
 	if (!get_and_clear_dirty_flag(STATE_DIRTY_FB_BIT))
 	{
-		assert(render_pass.frame.words[0] == ctx.frame.words[0]);
-		assert(render_pass.zbuf.desc.PSM == ctx.zbuf.desc.PSM);
-		assert(render_pass.zbuf.desc.ZBP == ctx.zbuf.desc.ZBP);
+		assert(render_pass.instances[render_pass.current_instance].frame.desc.compat(ctx.frame.desc));
+		assert(render_pass.instances[render_pass.current_instance].zbuf.desc.compat(ctx.zbuf.desc));
 		return;
 	}
 
-	bool fb_delta = render_pass.frame.words[0] != ctx.frame.words[0];
-	bool z_delta = render_pass.zbuf.desc.PSM != ctx.zbuf.desc.PSM ||
-	               render_pass.zbuf.desc.ZBP != ctx.zbuf.desc.ZBP;
+	auto *inst = &render_pass.instances[render_pass.current_instance];
+	bool fb_delta = !inst->frame.desc.compat(ctx.frame.desc);
+	bool z_delta = !inst->zbuf.desc.compat(ctx.zbuf.desc);
 
-	// If FRAME / ZBUF changes in meaningful ways, restart the render pass.
-	// If no draw needs to read or write Z, we can change Z buffer without a flush.
-	if (render_pass.primitive_count && (fb_delta || (render_pass.z_sensitive && z_delta)))
+	if (render_pass.primitive_count && (fb_delta || (z_delta && inst->z_sensitive)))
 	{
-		flush_pending_transfer(true);
-		tracker.flush_render_pass(FlushReason::FBPointer);
+		render_pass.current_instance = render_pass.num_instances;
+
+		bool can_fuse_render_pass = !render_pass.has_uncached_textures;
+
+		// If we have uncached textures, any framebuffer change will need to invalidate uncached textures,
+		// and therefore end the render pass.
+		// Uncached textures are effectively defer-invalidated until next framebuffer change.
+		if (can_fuse_render_pass)
+		{
+			for (uint32_t instance = 0; instance < render_pass.num_instances; instance++)
+			{
+				auto &test_inst = render_pass.instances[instance];
+				if (test_inst.frame.desc.compat(ctx.frame.desc) &&
+				    (!test_inst.z_sensitive || test_inst.zbuf.desc.compat(ctx.zbuf.desc)))
+				{
+					render_pass.current_instance = instance;
+					break;
+				}
+			}
+		}
+
+		if (render_pass.current_instance == render_pass.num_instances)
+		{
+			// Allocate new offset instance if we can, otherwise, we're forced to flush early.
+			if (render_pass.num_instances < MaxRenderPassInstances && can_fuse_render_pass)
+			{
+				render_pass.instances[render_pass.current_instance] = {};
+				render_pass.num_instances++;
+
+				if (tracker.invalidate_texture_cache(render_pass.clut_instance))
+					mark_texture_state_dirty();
+			}
+			else
+			{
+				flush_pending_transfer(true);
+				tracker.flush_render_pass(FlushReason::FBPointer);
+			}
+		}
+
+		// Force data structures to be updated in the new context.
+		fb_delta = true;
+		z_delta = true;
+		render_pass.last_triangle_is_parallelogram_candidate = false;
+		inst = &render_pass.instances[render_pass.current_instance];
 	}
 
 	if (fb_delta)
 	{
 		auto fb_layout = get_data_structure(ctx.frame.desc.PSM);
-		render_pass.fb_page_width_log2 = fb_layout.page_width_log2;
-		render_pass.fb_page_height_log2 = fb_layout.page_height_log2;
-		render_pass.frame = ctx.frame;
+		inst->fb_page_width_log2 = fb_layout.page_width_log2;
+		inst->fb_page_height_log2 = fb_layout.page_height_log2;
+		inst->frame = ctx.frame;
 	}
 
 	if (z_delta)
 	{
 		auto z_layout = get_data_structure(ctx.zbuf.desc.PSM);
-		render_pass.z_page_width_log2 = z_layout.page_width_log2;
-		render_pass.z_page_height_log2 = z_layout.page_height_log2;
-		render_pass.zbuf = ctx.zbuf;
+		inst->z_page_width_log2 = z_layout.page_width_log2;
+		inst->z_page_height_log2 = z_layout.page_height_log2;
+		inst->zbuf = ctx.zbuf;
 	}
 
-	assert(render_pass.frame.words[0] == ctx.frame.words[0]);
-	assert(render_pass.zbuf.desc.PSM == ctx.zbuf.desc.PSM);
-	assert(render_pass.zbuf.desc.ZBP == ctx.zbuf.desc.ZBP);
+	assert(inst->frame.desc.compat(ctx.frame.desc));
+	assert(inst->zbuf.desc.compat(ctx.zbuf.desc));
 }
 
 uint32_t GSInterface::find_or_place_unique_state_vector(const StateVector &state)
@@ -1026,6 +1103,9 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 		cache_texture = false;
 	}
 
+	if (!cache_texture)
+		render_pass.has_uncached_textures = true;
+
 	auto TW = uint32_t(desc.tex0.desc.TW);
 	auto TH = uint32_t(desc.tex0.desc.TH);
 	uint32_t width = 1u << TW;
@@ -1382,38 +1462,44 @@ void GSInterface::drawing_kick_update_state(ColorFeedbackMode feedback_mode, con
 		p.state |= 1u << STATE_BIT_FIX;
 }
 
-PageRect GSInterface::compute_fb_rect(const ivec4 &bb) const
+PageRect GSInterface::compute_fb_rect() const
 {
-	auto bb_page = bb >> ivec2(render_pass.fb_page_width_log2, render_pass.fb_page_height_log2).xyxy();
+	auto &inst = render_pass.instances[render_pass.current_instance];
 	// We know this BB is not degenerate already.
+	assert(inst.bb.x <= inst.bb.z);
+	assert(inst.bb.y <= inst.bb.w);
+	auto bb_page = inst.bb >> ivec2(inst.fb_page_width_log2, inst.fb_page_height_log2).xyxy();
 
 	PageRect page = {};
 
-	page.base_page = render_pass.frame.desc.FBP;
+	page.base_page = inst.frame.desc.FBP;
 	page.page_width = bb_page.z - bb_page.x + 1;
 	page.page_height = bb_page.w - bb_page.y + 1;
-	page.page_stride = render_pass.frame.desc.FBW;
+	page.page_stride = inst.frame.desc.FBW;
 	page.base_page += bb_page.x + bb_page.y * page.page_stride;
 	page.block_mask = UINT32_MAX;
-	page.write_mask = psm_word_write_mask(render_pass.frame.desc.PSM);
+	page.write_mask = psm_word_write_mask(inst.frame.desc.PSM);
 
 	return page;
 }
 
-PageRect GSInterface::compute_z_rect(const ivec4 &bb) const
+PageRect GSInterface::compute_z_rect() const
 {
-	auto bb_page = bb >> ivec2(render_pass.z_page_width_log2, render_pass.z_page_height_log2).xyxy();
+	auto &inst = render_pass.instances[render_pass.current_instance];
 	// We know this BB is not degenerate already.
+	assert(inst.bb.x <= inst.bb.z);
+	assert(inst.bb.y <= inst.bb.w);
+	auto bb_page = inst.bb >> ivec2(inst.z_page_width_log2, inst.z_page_height_log2).xyxy();
 
 	PageRect page = {};
 
-	page.base_page = render_pass.zbuf.desc.ZBP;
+	page.base_page = inst.zbuf.desc.ZBP;
 	page.page_width = bb_page.z - bb_page.x + 1;
 	page.page_height = bb_page.w - bb_page.y + 1;
-	page.page_stride = render_pass.frame.desc.FBW;
+	page.page_stride = inst.frame.desc.FBW;
 	page.base_page += bb_page.x + bb_page.y * page.page_stride;
 	page.block_mask = UINT32_MAX;
-	page.write_mask = psm_word_write_mask(render_pass.zbuf.desc.PSM);
+	page.write_mask = psm_word_write_mask(inst.zbuf.desc.PSM);
 
 	return page;
 }
@@ -1556,22 +1642,23 @@ void GSInterface::update_color_feedback_state()
 		                               render_pass.is_potential_color_feedback,
 		                               render_pass.is_potential_depth_feedback);
 
-		bool existing_z_write = render_pass.z_write;
+		auto &inst = render_pass.instances[render_pass.current_instance];
+
+		bool existing_z_write = inst.z_write;
 		if (existing_z_write)
 		{
 			// Only accept existing Z writes in the render pass if we keep appending to it,
 			// i.e. there are no FB pointer changes. Otherwise, we may falsely consider it a feedback.
-			existing_z_write = render_pass.frame.words[0] == ctx.frame.words[0] &&
-			                   render_pass.zbuf.desc.PSM == ctx.zbuf.desc.PSM &&
-			                   render_pass.zbuf.desc.ZBP == ctx.zbuf.desc.ZBP;
+			existing_z_write = inst.frame.desc.compat(ctx.frame.desc) &&
+			                   inst.zbuf.desc.compat(ctx.zbuf.desc);
 		}
 
 		// Cannot rely on existing_z_write fully since this is called before we commit Z-state.
 		bool has_z_write = existing_z_write || (state_is_z_sensitive() && ctx.zbuf.desc.ZMSK == 0);
 
 		uint32_t tex_write_mask = psm_word_write_mask(tex_psm);
-		uint32_t fb_write_mask = psm_word_write_mask(render_pass.frame.desc.PSM);
-		uint32_t z_write_mask = psm_word_write_mask(render_pass.zbuf.desc.PSM);
+		uint32_t fb_write_mask = psm_word_write_mask(inst.frame.desc.PSM);
+		uint32_t z_write_mask = psm_word_write_mask(inst.zbuf.desc.PSM);
 
 		// If aliasing with 8H and 24, that is fine.
 		if ((tex_write_mask & fb_write_mask) == 0)
@@ -1874,15 +1961,17 @@ void GSInterface::drawing_kick_append()
 	// re-triggering state checks.
 	check_frame_buffer_state();
 
-	assert(bb.z < int(std::max<int>(1, render_pass.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE));
-	assert(bb.z < int(std::max<int>(1, ctx.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE));
-
 	// Have to make sure it's still safe to read the texture we're using.
 	// Only do this when dirty flag is not set. Otherwise, we'll check it when resolving texture index anyway.
 	if (prim.desc.TME && (state_tracker.dirty_flags & STATE_DIRTY_TEX_BIT) == 0)
 		texture_page_rects_read();
 
 	drawing_kick_update_state(feedback_mode, uv_bb, bb);
+
+	auto &fb_instance = render_pass.instances[render_pass.current_instance];
+	assert(bb.z < int(std::max<int>(1, fb_instance.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE));
+	assert(bb.z < int(std::max<int>(1, ctx.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE));
+
 	const auto &prim_state = state_tracker.prim_template;
 
 	PrimitiveAttribute prim_attr;
@@ -1918,22 +2007,24 @@ void GSInterface::drawing_kick_append()
 		prim_attr.state |= 1u << STATE_BIT_SNAP_RASTER;
 	}
 
+	prim_attr.state |= render_pass.current_instance << STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET;
+
 	// If our damage region expands, then mark hazards.
 	// This avoids spam where we have to remark pages as dirty every single draw.
 	bool rp_expands = false;
 	bool is_z_sensitive = state_is_z_sensitive();
 
 	// We go from no Z pages to at least read-only Z.
-	if (!render_pass.z_sensitive && is_z_sensitive)
+	if (!fb_instance.z_sensitive && is_z_sensitive)
 	{
-		render_pass.z_sensitive = true;
+		fb_instance.z_sensitive = true;
 		rp_expands = true;
 	}
 
 	// We go from read-only Z to read-write Z.
-	if (is_z_sensitive && ctx.zbuf.desc.ZMSK == 0 && !render_pass.z_write)
+	if (is_z_sensitive && ctx.zbuf.desc.ZMSK == 0 && !fb_instance.z_write)
 	{
-		render_pass.z_write = true;
+		fb_instance.z_write = true;
 		// With Z writes existing, we might have a feedback we didn't have before.
 		state_tracker.dirty_flags |= STATE_DIRTY_FEEDBACK_BIT;
 		rp_expands = true;
@@ -1941,34 +2032,36 @@ void GSInterface::drawing_kick_append()
 
 	// Color write mask increases, redamage all pages.
 	uint32_t write_mask = ~ctx.frame.desc.FBMSK;
-	if ((write_mask & render_pass.color_write_mask) != write_mask)
+	if ((write_mask & fb_instance.color_write_mask) != write_mask)
 	{
-		render_pass.color_write_mask |= write_mask;
+		fb_instance.color_write_mask |= write_mask;
 		rp_expands = true;
 	}
+
+	auto &current_bb = fb_instance.bb;
 
 	// Expand render pass BB.
 	// If we expand, damage pages.
 	// Writing fine-grained FB results is too costly on CPU,
 	// but it is an option if we have to in certain scenarios.
-	if (bb.x < render_pass.bb.x) { rp_expands = true; render_pass.bb.x = bb.x; }
-	if (bb.y < render_pass.bb.y) { rp_expands = true; render_pass.bb.y = bb.y; }
-	if (bb.z > render_pass.bb.z) { rp_expands = true; render_pass.bb.z = bb.z; }
-	if (bb.w > render_pass.bb.w) { rp_expands = true; render_pass.bb.w = bb.w; }
+	if (bb.x < current_bb.x) { rp_expands = true; current_bb.x = bb.x; }
+	if (bb.y < current_bb.y) { rp_expands = true; current_bb.y = bb.y; }
+	if (bb.z > current_bb.z) { rp_expands = true; current_bb.z = bb.z; }
+	if (bb.w > current_bb.w) { rp_expands = true; current_bb.w = bb.w; }
 
 	if (rp_expands)
 	{
 		// Damage pages.
 		// This is very conservative, and potentially can trigger hazards which should not exist,
 		// but this seems unlikely without solid proof that games care.
-		auto fb_rect = compute_fb_rect(render_pass.bb);
-		fb_rect.write_mask &= render_pass.color_write_mask;
+		auto fb_rect = compute_fb_rect();
+		fb_rect.write_mask &= fb_instance.color_write_mask;
 		tracker.mark_fb_write(fb_rect);
 
-		if (render_pass.z_sensitive)
+		if (fb_instance.z_sensitive)
 		{
-			auto z_rect = compute_z_rect(render_pass.bb);
-			if (render_pass.z_write)
+			auto z_rect = compute_z_rect();
+			if (fb_instance.z_write)
 				tracker.mark_fb_write(z_rect);
 			else
 				tracker.mark_fb_read(z_rect);
@@ -2893,7 +2986,8 @@ void GSInterface::a_d_FRAME_1(uint64_t payload)
 {
 	update_internal_register(registers.ctx[0].frame.bits, payload,
 	                         STATE_DIRTY_DEGENERATE_BIT | STATE_DIRTY_FEEDBACK_BIT |
-	                         STATE_DIRTY_FB_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_SCISSOR_BIT);
+	                         STATE_DIRTY_TEX_BIT | STATE_DIRTY_FB_BIT |
+	                         STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_SCISSOR_BIT);
 	TRACE("FRAME_1", registers.ctx[0].frame);
 }
 
@@ -2901,7 +2995,8 @@ void GSInterface::a_d_FRAME_2(uint64_t payload)
 {
 	update_internal_register(registers.ctx[1].frame.bits, payload,
 	                         STATE_DIRTY_DEGENERATE_BIT | STATE_DIRTY_FEEDBACK_BIT |
-	                         STATE_DIRTY_FB_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_SCISSOR_BIT);
+	                         STATE_DIRTY_TEX_BIT | STATE_DIRTY_FB_BIT |
+	                         STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_SCISSOR_BIT);
 	TRACE("FRAME_2", registers.ctx[1].frame);
 }
 
@@ -2909,7 +3004,7 @@ void GSInterface::a_d_ZBUF_1(uint64_t payload)
 {
 	update_internal_register(registers.ctx[0].zbuf.bits, payload,
 	                         STATE_DIRTY_FEEDBACK_BIT | STATE_DIRTY_DEGENERATE_BIT |
-	                         STATE_DIRTY_FB_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT);
+	                         STATE_DIRTY_TEX_BIT | STATE_DIRTY_FB_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT);
 	TRACE("ZBUF_1", registers.ctx[0].zbuf);
 }
 
@@ -2917,7 +3012,7 @@ void GSInterface::a_d_ZBUF_2(uint64_t payload)
 {
 	update_internal_register(registers.ctx[1].zbuf.bits, payload,
 	                         STATE_DIRTY_FEEDBACK_BIT | STATE_DIRTY_DEGENERATE_BIT |
-	                         STATE_DIRTY_FB_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT);
+	                         STATE_DIRTY_TEX_BIT | STATE_DIRTY_FB_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT);
 	TRACE("ZBUF_2", registers.ctx[1].zbuf);
 }
 

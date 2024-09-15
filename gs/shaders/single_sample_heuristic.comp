@@ -14,6 +14,7 @@ layout(push_constant) uniform Registers
     uint z_shift_bucket;
     uint z_shift;
     uint z_max;
+    uint instance;
 } registers;
 
 #define NEED_PRIMITIVE_ATTRIBUTE
@@ -77,16 +78,21 @@ void main()
     for (uint i = gl_LocalInvocationIndex; i < registers.num_primitives; i += gl_WorkGroupSize.x)
     {
         uint state = primitive_attr.data[i].state;
-        const uint NO_FULL_3D_MASK = (1u << STATE_BIT_SPRITE) | (1u << STATE_BIT_LINE) | (1u << STATE_BIT_SNAP_ATTRIBUTE);
-        bool is_full_3d = (state & NO_FULL_3D_MASK) == 0;
-        if (is_full_3d)
+        if (bitfieldExtract(state,
+                STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET,
+                STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) == registers.instance)
         {
-            uint za = min(registers.z_max, vertex_position.data[3 * i + 0].z) >> registers.z_shift;
-            uint zb = min(registers.z_max, vertex_position.data[3 * i + 1].z) >> registers.z_shift;
-            uint zc = min(registers.z_max, vertex_position.data[3 * i + 2].z) >> registers.z_shift;
-            mark_full_3d(za, zlo, zhi);
-            mark_full_3d(zb, zlo, zhi);
-            mark_full_3d(zc, zlo, zhi);
+            const uint NO_FULL_3D_MASK = (1u << STATE_BIT_SPRITE) | (1u << STATE_BIT_LINE) | (1u << STATE_BIT_SNAP_ATTRIBUTE);
+            bool is_full_3d = (state & NO_FULL_3D_MASK) == 0;
+            if (is_full_3d)
+            {
+                uint za = min(registers.z_max, vertex_position.data[3 * i + 0].z) >> registers.z_shift;
+                uint zb = min(registers.z_max, vertex_position.data[3 * i + 1].z) >> registers.z_shift;
+                uint zc = min(registers.z_max, vertex_position.data[3 * i + 2].z) >> registers.z_shift;
+                mark_full_3d(za, zlo, zhi);
+                mark_full_3d(zb, zlo, zhi);
+                mark_full_3d(zc, zlo, zhi);
+            }
         }
     }
 
@@ -99,17 +105,22 @@ void main()
         // If there is nothing in the render pass that needs 3D, we should just single sample everything.
         // Only apply this to lines for now. Lines can be used in UI rendering contexts in very unusual scenarios.
         uint state = primitive_attr.data[i].state;
-        bool is_candidate = (state & (1u << STATE_BIT_SNAP_ATTRIBUTE)) != 0 ||
-            (force_single_sample && (state & (1u << STATE_BIT_LINE)) != 0);
-
-        if (is_candidate)
+        if (bitfieldExtract(state,
+                STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET,
+                STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) == registers.instance)
         {
-            uint z = min(registers.z_max, vertex_position.data[3 * i + 0].z) >> registers.z_shift;
-            if (z_can_single_sample(z, zlo, zhi))
+            bool is_candidate = (state & (1u << STATE_BIT_SNAP_ATTRIBUTE)) != 0 ||
+                (force_single_sample && (state & (1u << STATE_BIT_LINE)) != 0);
+
+            if (is_candidate)
             {
-                // Only one thread will enter this path, so it's safe.
-                state |= 1u << STATE_BIT_SNAP_RASTER;
-                primitive_attr.data[i].state = state;
+                uint z = min(registers.z_max, vertex_position.data[3 * i + 0].z) >> registers.z_shift;
+                if (z_can_single_sample(z, zlo, zhi))
+                {
+                    // Only one thread will enter this path, so it's safe.
+                    state |= 1u << STATE_BIT_SNAP_RASTER;
+                    primitive_attr.data[i].state = state;
+                }
             }
         }
     }

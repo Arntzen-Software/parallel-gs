@@ -134,6 +134,8 @@ struct FRAMEBits
 	FIELD32(PSM, 6);
 	PAD32(2);
 	FIELD32(FBMSK, 32);
+
+	inline bool compat(const FRAMEBits &other) const { return FBP == other.FBP && FBW == other.FBW && PSM == other.PSM; }
 };
 
 struct ZBUFBits
@@ -145,6 +147,8 @@ struct ZBUFBits
 	FIELD32(ZMSK, 1);
 	PAD32(31);
 	enum { PSM_MSB = 3 << 4 };
+
+	inline bool compat(const ZBUFBits &other) const { return ZBP == other.ZBP && PSM == other.PSM; }
 };
 
 struct BITBLTBUFBits

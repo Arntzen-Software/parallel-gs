@@ -299,8 +299,6 @@ private:
 		Util::IntrusiveHashMap<Util::IntrusivePODWrapper<uint32_t>> state_vector_map;
 		Util::IntrusiveHashMap<TextureStateToLocalIndex> texture_map;
 
-		Reg64<FRAMEBits> frame = {};
-		Reg64<ZBUFBits> zbuf = {};
 		uint32_t pending_palette_updates = 0;
 
 		struct MemoizedPaletteState
@@ -312,14 +310,26 @@ private:
 		MemoizedPaletteState memoized_palettes[NumMemoizedPalettes];
 		uint32_t num_memoized_palettes = 0;
 
-		ivec4 bb = ivec4(INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN);
-		uint32_t fb_page_width_log2 = 0;
-		uint32_t fb_page_height_log2 = 0;
-		uint32_t z_page_width_log2 = 0;
-		uint32_t z_page_height_log2 = 0;
-		uint32_t color_write_mask = 0;
-		bool z_sensitive = false;
-		bool z_write = false;
+		// Modifying FRAME register can still be batched as long as we can express it
+		// in terms of simple coordinate offsets.
+		// Important optimization for some games which use FRAME register to do viewport shifts.
+		struct Instance
+		{
+			ivec4 bb = ivec4(INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN);
+			Reg64<FRAMEBits> frame = {};
+			Reg64<ZBUFBits> zbuf = {};
+			uint32_t color_write_mask = 0;
+			bool z_sensitive = false;
+			bool z_write = false;
+			uint32_t fb_page_width_log2 = 0;
+			uint32_t fb_page_height_log2 = 0;
+			uint32_t z_page_width_log2 = 0;
+			uint32_t z_page_height_log2 = 0;
+		};
+		Instance instances[MaxRenderPassInstances];
+		uint32_t num_instances = 1;
+		uint32_t current_instance = 0;
+
 		bool last_triangle_is_parallelogram_candidate = false;
 		bool is_color_feedback = false;
 		bool is_awkward_color_feedback = false;
@@ -328,6 +338,8 @@ private:
 		bool has_color_feedback = false;
 		bool has_aa1 = false;
 		bool has_scanmsk = false;
+		bool has_uncached_textures = false;
+
 		ivec3 last_triangle_parallelogram_order;
 
 		uint32_t feedback_psm = 0;
@@ -478,8 +490,8 @@ private:
 	void handle_clut_upload(uint32_t ctx);
 	void handle_miptbl_gen(uint32_t ctx);
 
-	PageRect compute_fb_rect(const ivec4 &bb) const;
-	PageRect compute_z_rect(const ivec4 &bb) const;
+	PageRect compute_fb_rect() const;
+	PageRect compute_z_rect() const;
 
 	GIFPath paths[4] = {};
 	void a_d_HWREG_multi(const uint64_t *payload, size_t count);
