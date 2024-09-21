@@ -29,7 +29,7 @@ static void print_help()
 static bool compare_reference_image(const u8vec4 *new_pixels, const unsigned char *ref_pixels,
                                     int w, int h, int c)
 {
-	int64_t peak_total = 255 * 255 * w * h;
+	int64_t peak_total = 255ll * 255ll * w * h;
 	int64_t sqr_err_r = 0;
 	int64_t sqr_err_g = 0;
 	int64_t sqr_err_b = 0;
