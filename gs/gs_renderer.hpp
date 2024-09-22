@@ -279,6 +279,7 @@ private:
 	std::vector<VkImageMemoryBarrier2> pre_image_barriers;
 	std::vector<VkImageMemoryBarrier2> post_image_barriers;
 	std::vector<PaletteUploadDescriptor> palette_uploads;
+	std::vector<VkDeviceAddress> qword_clears;
 
 	struct TextureUpload
 	{

@@ -467,7 +467,7 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 	base_clut_instance = 0;
 
 	buffers.ssbo_alignment =
-			std::max<VkDeviceSize>(64, device->get_gpu_properties().limits.minStorageBufferOffsetAlignment);
+			std::max<VkDeviceSize>(16, device->get_gpu_properties().limits.minStorageBufferOffsetAlignment);
 
 	init_vram(options);
 	timeline = device->request_semaphore(VK_SEMAPHORE_TYPE_TIMELINE);
@@ -615,6 +615,30 @@ void GSRenderer::flush_submit(uint64_t value)
 		flush_transfer();
 	}
 
+	// This must come before async transfer cmd since we risk allocating a transfer.
+	if (clear_cmd && !qword_clears.empty())
+	{
+		uint32_t count = qword_clears.size();
+		auto offset = allocate_device_scratch(count * sizeof(qword_clears.front()), buffers.rebar_scratch, qword_clears.data());
+		clear_cmd->set_program(shaders.qword_clear);
+		clear_cmd->set_storage_buffer(0, 0, *buffers.rebar_scratch.buffer, offset, count * sizeof(qword_clears.front()));
+		clear_cmd->push_constants(&count, 0, sizeof(count));
+
+		uint32_t wgx = (count + 63) / 64;
+
+		if (wgx <= device->get_gpu_properties().limits.maxComputeWorkGroupCount[0])
+		{
+			clear_cmd->dispatch(wgx, 1, 1);
+		}
+		else
+		{
+			// Shouldn't really happen, but if it does, just eat the extra dummy threads.
+			clear_cmd->dispatch(0xffff, (wgx + 0xfffe) / 0xffff, 1);
+		}
+
+		qword_clears.clear();
+	}
+
 	if (async_transfer_cmd)
 	{
 		Vulkan::Semaphore sem;
@@ -626,9 +650,11 @@ void GSRenderer::flush_submit(uint64_t value)
 
 	if (clear_cmd)
 	{
-		clear_cmd->barrier(VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+		clear_cmd->barrier(VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+		                   VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+
 		clear_cmd->end_region();
 		device->submit(clear_cmd);
 	}
@@ -1141,8 +1167,8 @@ void GSRenderer::allocate_scratch_buffers(Vulkan::CommandBuffer &cmd, const Rend
 			                                  *buffers.device_scratch.buffer,
 			                                  single_sampled_heuristic_offset, sizeof(SingleSampleHeuristic));
 
-			clear_cmd->fill_buffer(*buffers.device_scratch.buffer, 0, single_sampled_heuristic_offset,
-			                       sizeof(SingleSampleHeuristic));
+			for (VkDeviceSize bda_offset = 0; bda_offset < sizeof(SingleSampleHeuristic); bda_offset += 16)
+				qword_clears.push_back(buffers.device_scratch.buffer->get_device_address() + single_sampled_heuristic_offset + bda_offset);
 
 			indirect_single_sample_heuristic = buffers.device_scratch;
 			indirect_single_sample_heuristic.offset = single_sampled_heuristic_offset;
@@ -1176,7 +1202,8 @@ void GSRenderer::allocate_scratch_buffers_instanced(Vulkan::CommandBuffer &cmd, 
 	VkDeviceSize work_list_size = 256 + inst.coarse_tiles_width * inst.coarse_tiles_height * sizeof(uvec2);
 
 	auto work_list_scratch = allocate_device_scratch(work_list_size, buffers.device_scratch, nullptr);
-	clear_cmd->fill_buffer(*buffers.device_scratch.buffer, 0, work_list_scratch, 16);
+	qword_clears.push_back(buffers.device_scratch.buffer->get_device_address() + work_list_scratch);
+
 	binning_cmd->set_storage_buffer(1, 0, *buffers.device_scratch.buffer, work_list_scratch, work_list_size);
 	work_list_single_sample = buffers.device_scratch;
 	work_list_single_sample.offset = work_list_scratch;
@@ -1185,7 +1212,7 @@ void GSRenderer::allocate_scratch_buffers_instanced(Vulkan::CommandBuffer &cmd, 
 	if (inst.sampling_rate_y_log2 != 0)
 	{
 		work_list_scratch = allocate_device_scratch(work_list_size, buffers.device_scratch, nullptr);
-		clear_cmd->fill_buffer(*buffers.device_scratch.buffer, 0, work_list_scratch, 16);
+		qword_clears.push_back(buffers.device_scratch.buffer->get_device_address() + work_list_scratch);
 		binning_cmd->set_storage_buffer(1, 1, *buffers.device_scratch.buffer, work_list_scratch, work_list_size);
 		work_list_super_sample = buffers.device_scratch;
 		work_list_super_sample.offset = work_list_scratch;
@@ -1743,6 +1770,7 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	}
 
 	cmd.end_region();
+	cmd.enable_subgroup_size_control(false);
 }
 
 void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const RenderPass &rp,

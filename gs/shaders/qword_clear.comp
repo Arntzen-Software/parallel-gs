@@ -1,0 +1,26 @@
+#version 450
+
+#extension GL_EXT_buffer_reference : require
+layout(local_size_x = 64) in;
+
+layout(std430, buffer_reference_align = 16, buffer_reference) buffer QWORD
+{
+    uvec4 data;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer ClearPointers
+{
+    QWORD qwords[];
+};
+
+layout(push_constant) uniform Registers
+{
+    uint num_clears;
+};
+
+void main()
+{
+    uint idx = (gl_WorkGroupID.y * 0xffffu + gl_WorkGroupID.x) * gl_WorkGroupSize.x + gl_LocalInvocationIndex;
+    if (idx < num_clears)
+        qwords[idx].data = uvec4(0);
+}

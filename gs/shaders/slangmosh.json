@@ -82,6 +82,11 @@
 			"name": "extwrite",
 			"path": "extwrite.comp",
 			"compute": true
+		},
+		{
+			"name": "qword_clear",
+			"path": "qword_clear.comp",
+			"compute": true
 		}
 	]
 }

@@ -30,6 +30,7 @@ struct Shaders
 	Shader upscale_frag = {};
 	Shader blit = {};
 	Program extwrite = {};
+	Program qword_clear = {};
 	Shaders() = default;
 
 	template <typename Device, typename Layout, typename Resolver>
