@@ -360,14 +360,17 @@ void PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t l
 	}
 }
 
-void PageTracker::flush_render_pass(FlushReason reason)
+void PageTracker::notify_pressure_flush()
 {
-	cb.flush(PAGE_TRACKER_FLUSH_FB_ALL, reason);
-
 	clear_cache_pages();
 	clear_copy_pages();
 	clear_fb_pages();
+}
 
+void PageTracker::flush_render_pass(FlushReason reason)
+{
+	cb.flush(PAGE_TRACKER_FLUSH_FB_ALL, reason);
+	notify_pressure_flush();
 	// While TEXFLUSH is necessary, plenty of content do not do this properly.
 	invalidate_texture_cache(UINT32_MAX);
 

@@ -519,6 +519,9 @@ void GSRenderer::check_flush_stats()
 		flush_cache_upload();
 		// Calls next_frame_context and does garbage collection.
 		flush_submit(0);
+
+		// Notify that we have flushed without being triggered to do so by page tracker.
+		tracker.notify_pressure_flush();
 	}
 }
 

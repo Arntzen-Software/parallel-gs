@@ -136,6 +136,8 @@ public:
 
 	void mark_external_write(const PageRect &rect);
 
+	void notify_pressure_flush();
+
 	void mark_fb_write(const PageRect &rect);
 	// For read-only depth.
 	void mark_fb_read(const PageRect &rect);
