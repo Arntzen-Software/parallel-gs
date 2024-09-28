@@ -10,12 +10,7 @@ pkgrel=1
 pkgdesc='A Sony PlayStation 2 emulator with experimental paraLLEl-GS support'
 arch=(x86_64)
 url=https://github.com/PCSX2/pcsx2
-license=(
-    GPL2
-    GPL3
-    LGPL2.1
-    LGPL3
-)
+license=(GPLV3)
 
 depends=(
     libaio
