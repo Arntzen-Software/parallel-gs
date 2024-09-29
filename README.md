@@ -31,7 +31,6 @@ To upscale the anti-aliased content to screen, AMD FSR1 + RCAS can be used, and 
 
 ### Known missing features
 
-- EXTWRITE feedback in CRTC. I have not found any games using this, but should not be hard in theory.
 - AA1 implementation is questionable. There are many details which are unknown to me how it's supposed to work exactly.
 
 ## Implementation details
