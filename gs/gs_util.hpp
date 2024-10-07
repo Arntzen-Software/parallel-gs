@@ -33,7 +33,7 @@ bool triangles_form_parallelogram(const VertexPosition *pos, const VertexAttribu
                                   const muglm::ivec3 &last_order, const PRIMBits &prim);
 
 void compute_has_potential_feedback(const TEX0Bits &tex0,
-                                    uint32_t fb_base_page, uint32_t z_base_page,
+                                    const FRAMEBits &frame, const ZBUFBits &z,
                                     uint32_t pages_in_vram, bool &color_feedback, bool &depth_feedback);
 
 template <uint32_t PSM>
