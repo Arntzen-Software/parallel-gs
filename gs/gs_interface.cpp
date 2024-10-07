@@ -1737,7 +1737,7 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 		uv_min -= ivec2(1 << (PGS_SUBPIXEL_BITS - 1));
 		uv_max += ivec2((1 << (PGS_SUBPIXEL_BITS - 1)) - 1);
 	}
-	else
+	else if (!prim.FST)
 	{
 		// Consider FP rounding errors.
 		uv_min -= ivec2(1);
