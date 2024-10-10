@@ -446,7 +446,7 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 	    !ext.vk11_features.storageBuffer16BitAccess ||
 	    !ext.enabled_features.shaderInt16 ||
 	    (ext.vk11_props.subgroupSupportedOperations & required_subgroup_flags) != required_subgroup_flags ||
-	    !device_->supports_subgroup_size_log2(true, 4, 6))
+	    !device_->supports_subgroup_size_log2(true, 2, 6))
 	{
 		LOGE("Minimum requirements for parallel-gs are not met.\n");
 		LOGE("  - descriptorIndexing\n");
@@ -456,7 +456,7 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 		LOGE("  - storageBuffer16BitAccess\n");
 		LOGE("  - shaderInt16\n");
 		LOGE("  - Arithmetic / Shuffle / Vote / Ballot / Basic subgroup operations\n");
-		LOGE("  - SubgroupSize control for [16, 64] invocations per subgroup\n");
+		LOGE("  - SubgroupSize control for [4, 64] invocations per subgroup\n");
 		return false;
 	}
 
@@ -1356,25 +1356,27 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 	// since the algorithms kind of rely on that.
 	// Using larger workgroups it's feasible to do two-phase binning, but given the content and current perf-metrics,
 	// it doesn't seem meaningful perf-wise.
-	if (device->supports_subgroup_size_log2(true, 6, 6))
+	const struct
 	{
-		cmd.set_subgroup_size_log2(true, 6, 6);
-		cmd.set_specialization_constant(0, 64);
-	}
-	else if (device->supports_subgroup_size_log2(true, 5, 5))
+		uint32_t lo;
+		uint32_t hi;
+		uint32_t wg_size;
+	} attempts[] = {
+		{ 6, 6, 64 },
+		{ 5, 5, 32 },
+		{ 4, 4, 16 },
+		{ 3, 3, 8 },
+		{ 2, 2, 4 },
+		{ 2, 6, std::min<uint32_t>(64, device->get_device_features().vk11_props.subgroupSize) },
+	};
+
+	for (auto &attempt : attempts)
 	{
-		cmd.set_subgroup_size_log2(true, 5, 5);
-		cmd.set_specialization_constant(0, 32);
-	}
-	else if (device->supports_subgroup_size_log2(true, 4, 4))
-	{
-		cmd.set_specialization_constant(0, 16);
-		cmd.set_subgroup_size_log2(true, 4, 4);
-	}
-	else if (device->supports_subgroup_size_log2(true, 4, 6))
-	{
-		cmd.set_specialization_constant(0, 64);
-		cmd.set_subgroup_size_log2(true, 4, 6);
+		if (device->supports_subgroup_size_log2(true, attempt.lo, attempt.hi))
+		{
+			cmd.set_subgroup_size_log2(true, attempt.lo, attempt.hi);
+			cmd.set_specialization_constant(0, attempt.wg_size);
+		}
 	}
 
 	struct Push
@@ -1581,7 +1583,7 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	if (device->supports_subgroup_size_log2(true, 6, 6))
 		cmd.set_subgroup_size_log2(true, 6, 6);
 	else
-		cmd.set_subgroup_size_log2(true, 4, 6);
+		cmd.set_subgroup_size_log2(true, 2, 6);
 
 	uint32_t color_psm = inst.fb.frame.desc.PSM;
 	uint32_t depth_psm = inst.fb.z.desc.PSM | ZBUFBits::PSM_MSB;
