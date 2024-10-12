@@ -223,6 +223,11 @@ void main_inner(uint index)
     {
         // Degenerate, no pixels are rasterized.
         primitive_setup.data[index].bb = ivec4(0, 0, -1, -1);
+
+        // Make sure that degenerate primitives don't contribute to breaking heuristic.
+        if (SAMPLING_RATE_LOG2 != 0)
+            primitive_attr.data[index].state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
+
         return;
     }
 

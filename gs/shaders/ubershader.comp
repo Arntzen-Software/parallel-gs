@@ -618,8 +618,6 @@ void end_tile()
 				}
 			}
 
-			fb_color_dirty = ballot_reduce_single(fb_color_dirty);
-
 			vec4 fb_color_float = unpackUnorm4x8(fb_color);
 			if (NUM_SAMPLES >= 16)
 				fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 8);
@@ -631,6 +629,8 @@ void end_tile()
 			fb_color_float /= float(NUM_SAMPLES);
 			fb_color = packUnorm4x8(fb_color_float);
 		}
+
+		fb_color_dirty = ballot_reduce_single(fb_color_dirty);
 
 		if (Z_SENSITIVE && super_sample_required_depth)
 		{
@@ -649,6 +649,9 @@ void end_tile()
 				}
 			}
 		}
+
+		if (Z_SENSITIVE)
+			fb_depth_dirty = ballot_reduce_single(fb_depth_dirty);
 	}
 
 	bool is_first_sample = !SUPER_SAMPLE || sample_index == 0;
