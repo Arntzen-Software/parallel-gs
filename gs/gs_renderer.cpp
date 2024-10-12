@@ -112,6 +112,17 @@ void GSRenderer::invalidate_super_sampling_state()
 	device->submit(cmd);
 }
 
+SuperSampling GSRenderer::get_max_supported_super_sampling() const
+{
+	SuperSampling max_ssaa = SuperSampling::X4;
+	if (device->supports_subgroup_size_log2(true, 3, 6))
+		max_ssaa = SuperSampling::X8;
+	if (device->supports_subgroup_size_log2(true, 4, 6))
+		max_ssaa = SuperSampling::X16;
+
+	return max_ssaa;
+}
+
 void GSRenderer::init_vram(const GSOptions &options)
 {
 	Vulkan::BufferCreateInfo info = {};
@@ -120,7 +131,7 @@ void GSRenderer::init_vram(const GSOptions &options)
 	// One copy of VRAM for single-rate, one reference copy of VRAM, and up to 16 sample references.
 	// About 78 MB. This isn't too bad.
 	if (options.dynamic_super_sampling)
-		info.size = vram_size * (1 + 1 + int(SuperSampling::X16));
+		info.size = vram_size * (1 + 1 + int(get_max_supported_super_sampling()));
 	else if (options.super_sampling != SuperSampling::X1)
 		info.size = vram_size * (1 + 1 + int(options.super_sampling));
 	else
@@ -254,8 +265,12 @@ void GSRenderer::kick_compilation_tasks()
 		// Prefer Wave64 if we can get away with it.
 		if (device->supports_subgroup_size_log2(true, 6, 6))
 			cmd->set_subgroup_size_log2(true, 6, 6);
-		else
+		else if (device->supports_subgroup_size_log2(true, 4, 6))
 			cmd->set_subgroup_size_log2(true, 4, 6);
+		else if (device->supports_subgroup_size_log2(true, 3, 6))
+			cmd->set_subgroup_size_log2(true, 3, 6);
+		else
+			cmd->set_subgroup_size_log2(true, 2, 6);
 
 		for (auto &format : formats)
 		{
@@ -1582,6 +1597,10 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	// Prefer Wave64 if we can get away with it.
 	if (device->supports_subgroup_size_log2(true, 6, 6))
 		cmd.set_subgroup_size_log2(true, 6, 6);
+	else if (device->supports_subgroup_size_log2(true, 4, 6))
+		cmd.set_subgroup_size_log2(true, 4, 6);
+	else if (device->supports_subgroup_size_log2(true, 3, 6))
+		cmd.set_subgroup_size_log2(true, 3, 6);
 	else
 		cmd.set_subgroup_size_log2(true, 2, 6);
 

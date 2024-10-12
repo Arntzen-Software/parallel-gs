@@ -262,6 +262,8 @@ public:
 
 	void invalidate_super_sampling_state();
 
+	SuperSampling get_max_supported_super_sampling() const;
+
 private:
 	PageTracker &tracker;
 	Vulkan::Device *device = nullptr;
