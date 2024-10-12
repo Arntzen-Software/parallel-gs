@@ -648,6 +648,18 @@ void end_tile()
 					vram32.data[tile.fb_index_depth + vram_offset] = fb_depth;
 				}
 			}
+
+			// Minimum resolve for Z. Helps certain effects when sampling depth as a texture via alpha effects.
+			// Problem scenarios arise when attempting to do depth testing while using the texture
+			// as an alpha cut-out. Only taking sample 0 could lead to bad artifacts on a specific Z slice.
+			// PS2 only uses greater-than depth testing, so picking minimum resolve always should be somewhat safe?
+			if (NUM_SAMPLES >= 16)
+				fb_depth = min(fb_depth, subgroupShuffleXor(fb_depth, 8));
+			if (NUM_SAMPLES >= 8)
+				fb_depth = min(fb_depth, subgroupShuffleXor(fb_depth, 4));
+			if (NUM_SAMPLES >= 4)
+				fb_depth = min(fb_depth, subgroupShuffleXor(fb_depth, 2));
+			fb_depth = min(fb_depth, subgroupShuffleXor(fb_depth, 1));
 		}
 
 		if (Z_SENSITIVE)
