@@ -731,62 +731,6 @@ void GSRenderer::log_timestamps()
 	timestamps.erase(timestamps.begin(), itr);
 }
 
-struct Extent1D
-{
-	uint32_t base;
-	uint32_t extent;
-};
-
-static Extent1D compute_effective_texture_extent(uint32_t extent, uint32_t wrap_mode, uint32_t lo, uint32_t hi, uint32_t levels)
-{
-	uint32_t base = 0;
-
-	// Try to make an optimized region texture.
-	if (wrap_mode == CLAMPBits::REGION_CLAMP)
-	{
-		lo = std::min<uint32_t>(lo, hi);
-		extent = std::max<uint32_t>(hi, lo) - lo + 1;
-
-		if (levels > 1)
-		{
-			uint32_t max_level = levels - 1;
-			uint32_t mask = (1u << max_level) - 1u;
-
-			// Snap extent and lo such that any mip level we use, we won't cause any issues with non-even mip size.
-			extent += lo & mask;
-			lo &= ~mask;
-			extent = (extent + mask) & ~mask;
-		}
-
-		base = lo;
-	}
-	else if (wrap_mode == CLAMPBits::REGION_REPEAT)
-	{
-		auto msk = lo;
-		auto fix = hi;
-
-		if (msk == 0)
-		{
-			extent = 1;
-			base = fix;
-		}
-		else
-		{
-			uint32_t msk_msb = 31 - Util::leading_zeroes(msk);
-			uint32_t fix_lsb = Util::trailing_zeroes(fix);
-
-			// If LSB > MSB, we can rewrite (x & A) | B -> (x & A) + B.
-			if (fix_lsb > msk_msb)
-			{
-				extent = std::min<uint32_t>(1u << (msk_msb + 1), extent);
-				base = fix;
-			}
-		}
-	}
-
-	return { base, extent };
-}
-
 FlushStats GSRenderer::consume_flush_stats()
 {
 	FlushStats s = total_stats;

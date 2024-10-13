@@ -32,9 +32,19 @@ bool triangles_form_parallelogram(const VertexPosition *pos, const VertexAttribu
                                   const VertexPosition *last_pos, const VertexAttribute *last_attr,
                                   const muglm::ivec3 &last_order, const PRIMBits &prim);
 
-void compute_has_potential_feedback(const TEX0Bits &tex0,
+void compute_has_potential_feedback(const TEX0Bits &tex0, const CLAMPBits &clamp,
                                     const FRAMEBits &frame, const ZBUFBits &z,
                                     uint32_t pages_in_vram, bool &color_feedback, bool &depth_feedback);
+
+struct Extent1D
+{
+	uint32_t base;
+	uint32_t extent;
+};
+
+Extent1D compute_effective_texture_extent(uint32_t extent, uint32_t wrap_mode,
+                                          uint32_t lo, uint32_t hi,
+                                          uint32_t levels);
 
 template <uint32_t PSM>
 static inline void vram_readback(void *readback_data, const void *host_data, uint32_t base_256, uint32_t page_stride,

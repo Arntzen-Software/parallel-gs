@@ -1641,7 +1641,8 @@ void GSInterface::update_color_feedback_state()
 		// This will break if game actually intended to sample like this, but it seems extremely unlikely in practice.
 		// TODO: A more proper solution is to do analysis of UV bb per draw when we're in the "potential feedback" case.
 
-		compute_has_potential_feedback(ctx.tex0.desc, ctx.frame.desc, ctx.zbuf.desc,
+		compute_has_potential_feedback(ctx.tex0.desc, ctx.clamp.desc,
+		                               ctx.frame.desc, ctx.zbuf.desc,
 		                               vram_size / PGS_PAGE_ALIGNMENT_BYTES,
 		                               render_pass.is_potential_color_feedback,
 		                               render_pass.is_potential_depth_feedback);
