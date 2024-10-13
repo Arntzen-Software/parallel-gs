@@ -134,21 +134,8 @@ void compute_has_potential_feedback(const TEX0Bits &tex0, const CLAMPBits &clamp
 	fb_base_page -= base_page;
 	z_base_page -= base_page;
 
-	// Only accept potential feedback if the overlap ratio is < 50% as a heuristic,
-	// (i.e. we assume the overlap is benign and only caused by POT rounding).
-	// Some games use UV offsets to align the texture appropriately with frame buffer exactly.
-	// Could do more accurate analysis, but this heuristic is probably good enough.
-	// If the textures are not swizzle compatible, we can be somewhat safe in the assumption
-	// there is no meaningful feedback.
-
 	color_feedback = last_page >= fb_base_page;
 	depth_feedback = last_page >= z_base_page;
-
-	uint32_t tex_compat_key = swizzle_compat_key(tex0.PSM);
-	if (color_feedback && tex_compat_key == swizzle_compat_key(frame.PSM))
-		color_feedback = fb_base_page * 2 > last_page;
-	if (depth_feedback && tex_compat_key == swizzle_compat_key(z.PSM | ZBUFBits::PSM_MSB))
-		depth_feedback = z_base_page * 2 > last_page;
 }
 
 PageRect compute_page_rect(uint32_t base_256, uint32_t x, uint32_t y,

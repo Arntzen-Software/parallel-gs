@@ -729,6 +729,7 @@ void GSInterface::check_frame_buffer_state()
 		inst->fb_page_width_log2 = fb_layout.page_width_log2;
 		inst->fb_page_height_log2 = fb_layout.page_height_log2;
 		inst->frame = ctx.frame;
+		state_tracker.dirty_flags |= STATE_DIRTY_POTENTIAL_FEEDBACK_REGION_BIT;
 	}
 
 	if (z_delta)
@@ -737,6 +738,7 @@ void GSInterface::check_frame_buffer_state()
 		inst->z_page_width_log2 = z_layout.page_width_log2;
 		inst->z_page_height_log2 = z_layout.page_height_log2;
 		inst->zbuf = ctx.zbuf;
+		state_tracker.dirty_flags |= STATE_DIRTY_POTENTIAL_FEEDBACK_REGION_BIT;
 	}
 
 	assert(inst->frame.desc.compat(ctx.frame.desc));
@@ -848,7 +850,7 @@ uint32_t GSInterface::drawing_kick_update_state_vector()
 	return find_or_place_unique_state_vector(state);
 }
 
-void GSInterface::update_texture_page_rects_and_read()
+void GSInterface::update_texture_page_rects()
 {
 	auto &prim = registers.prim;
 	auto &ctx = registers.ctx[prim.desc.CTXT];
@@ -858,54 +860,57 @@ void GSInterface::update_texture_page_rects_and_read()
 	// Mark that we're starting a read. This will check for any hazards and flush render pass if need be.
 	for (uint32_t level = 0; level < tex.rect.levels; level++)
 	{
-		if (render_pass.is_potential_color_feedback || render_pass.is_potential_depth_feedback)
-		{
-			assert(tex.rect.levels == 1);
-			auto &rect = tex.page_rects[level];
-			auto tex_base_page = uint32_t(ctx.tex0.desc.TBP0) / PGS_BLOCKS_PER_PAGE;
-
-			// Clamp the hazard region so we don't falsely invalidate the texture.
-			rect = {};
-			rect.base_page = tex_base_page;
-			rect.page_width = vram_size / PGS_PAGE_ALIGNMENT_BYTES;
-			rect.page_height = 1;
-			rect.page_stride = 0;
-			rect.block_mask = UINT32_MAX;
-			rect.write_mask = UINT32_MAX;
-
-			if (render_pass.is_potential_color_feedback)
-			{
-				uint32_t fb_base_page = ctx.frame.desc.FBP;
-				if (fb_base_page <= tex_base_page)
-					fb_base_page += vram_size / PGS_PAGE_ALIGNMENT_BYTES;
-				rect.page_width = std::min<uint32_t>(rect.page_width, fb_base_page - tex_base_page);
-			}
-
-			if (render_pass.is_potential_depth_feedback)
-			{
-				uint32_t z_base_page = ctx.zbuf.desc.ZBP;
-				if (z_base_page <= tex_base_page)
-					z_base_page += vram_size / PGS_PAGE_ALIGNMENT_BYTES;
-				rect.page_width = std::min<uint32_t>(rect.page_width, z_base_page - tex_base_page);
-			}
-		}
-		else
-		{
-			tex.page_rects[level] = compute_page_rect(
-					tex.levels[level].base,
-					tex.rect.x >> level,
-					tex.rect.y >> level,
-					tex.rect.width >> level,
-					tex.rect.height >> level,
-					tex.levels[level].stride,
-					psm);
-		}
-
-		tracker.mark_texture_read(state_tracker.tex.page_rects[level]);
+		tex.page_rects[level] = compute_page_rect(
+				tex.levels[level].base,
+				tex.rect.x >> level,
+				tex.rect.y >> level,
+				tex.rect.width >> level,
+				tex.rect.height >> level,
+				tex.levels[level].stride,
+				psm);
 	}
 }
 
-void GSInterface::texture_page_rects_read()
+void GSInterface::texture_page_rects_read_region(const ivec4 &uv_bb)
+{
+	auto &prim = registers.prim;
+	auto &tex = state_tracker.tex;
+	auto &ctx = registers.ctx[prim.desc.CTXT];
+
+	assert(render_pass.is_potential_feedback);
+	auto &feedback = render_pass.potential_feedback;
+
+	assert(tex.rect.levels == 1);
+	auto &rect = tex.page_rects[0];
+	auto tex_base_page = uint32_t(ctx.tex0.desc.TBP0) / PGS_BLOCKS_PER_PAGE;
+
+	assert(uv_bb.z >= 0);
+	assert(uv_bb.w >= 0);
+	uint32_t max_page_x = uint32_t(uv_bb.z) >> feedback.page_width_log2;
+	uint32_t max_page_y = uint32_t(uv_bb.w) >> feedback.page_height_log2;
+
+	if (!get_and_clear_dirty_flag(STATE_DIRTY_POTENTIAL_FEEDBACK_REGION_BIT))
+	{
+		// Don't have to loop over all pages if we know we won't collide.
+		// It's only safe to skip the page traversal if we have checked once already
+		// and frame buffer pointer isn't stale.
+		if (max_page_x + max_page_y * feedback.page_stride <= feedback.max_safe_page)
+			return;
+	}
+
+	// Clamp the hazard region so we don't falsely invalidate the texture.
+	rect = {};
+	rect.base_page = tex_base_page;
+	rect.page_width = max_page_x + 1 + feedback.width_bias;
+	rect.page_height = max_page_y + 1;
+	rect.page_stride = feedback.page_stride;
+	rect.block_mask = UINT32_MAX;
+	rect.write_mask = UINT32_MAX;
+
+	tracker.mark_texture_read(rect);
+}
+
+void GSInterface::texture_page_rects_read_full()
 {
 	auto &tex = state_tracker.tex;
 	for (uint32_t level = 0; level < tex.rect.levels; level++)
@@ -1228,8 +1233,9 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 	desc.tex1.desc.K = 0;
 
 	// May flush render pass if there is a hazard.
+	update_texture_page_rects();
 	if (cache_texture)
-		update_texture_page_rects_and_read();
+		texture_page_rects_read_full();
 
 	// If we have called texflush, last_texture_index is invalid, and we need full re-check.
 	if (state_tracker.last_texture_index != UINT32_MAX &&
@@ -1266,7 +1272,7 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 		// If we're not caching in the page tracker, we have to at least do hazard tracking on the first read from VRAM.
 		// Any subsequent read from this texture will ignore hazard tracking.
 		if (!cache_texture)
-			update_texture_page_rects_and_read();
+			texture_page_rects_read_full();
 
 		auto image = tracker.find_cached_texture(hasher.get());
 		if (!image)
@@ -1584,8 +1590,7 @@ void GSInterface::update_color_feedback_state()
 	auto &ctx = registers.ctx[prim.desc.CTXT];
 	render_pass.is_color_feedback = false;
 	render_pass.is_awkward_color_feedback = false;
-	render_pass.is_potential_color_feedback = false;
-	render_pass.is_potential_depth_feedback = false;
+	render_pass.is_potential_feedback = false;
 
 	if (!prim.desc.TME)
 		return;
@@ -1641,11 +1646,12 @@ void GSInterface::update_color_feedback_state()
 		// This will break if game actually intended to sample like this, but it seems extremely unlikely in practice.
 		// TODO: A more proper solution is to do analysis of UV bb per draw when we're in the "potential feedback" case.
 
+		bool is_potential_color_feedback = false;
+		bool is_potential_depth_feedback = false;
 		compute_has_potential_feedback(ctx.tex0.desc, ctx.clamp.desc,
 		                               ctx.frame.desc, ctx.zbuf.desc,
 		                               vram_size / PGS_PAGE_ALIGNMENT_BYTES,
-		                               render_pass.is_potential_color_feedback,
-		                               render_pass.is_potential_depth_feedback);
+		                               is_potential_color_feedback, is_potential_depth_feedback);
 
 		auto &inst = render_pass.instances[render_pass.current_instance];
 
@@ -1667,9 +1673,45 @@ void GSInterface::update_color_feedback_state()
 
 		// If aliasing with 8H and 24, that is fine.
 		if ((tex_write_mask & fb_write_mask) == 0)
-			render_pass.is_potential_color_feedback = false;
+			is_potential_color_feedback = false;
 		if ((tex_write_mask & z_write_mask) == 0 || !has_z_write)
-			render_pass.is_potential_depth_feedback = false;
+			is_potential_depth_feedback = false;
+
+		render_pass.is_potential_feedback = is_potential_color_feedback || is_potential_depth_feedback;
+
+		if (render_pass.is_potential_feedback)
+		{
+			auto layout = get_data_structure(ctx.tex0.desc.PSM);
+
+			render_pass.potential_feedback.base_page = uint32_t(ctx.tex0.desc.TBP0) / PGS_BLOCKS_PER_PAGE;
+			render_pass.potential_feedback.page_width_log2 = layout.page_width_log2;
+			render_pass.potential_feedback.page_height_log2 = layout.page_height_log2;
+			render_pass.potential_feedback.page_stride = ctx.tex0.desc.TBW;
+			if (ctx.tex0.desc.PSM == PSMT4 || ctx.tex0.desc.PSM == PSMT8)
+				render_pass.potential_feedback.page_stride >>= 1;
+			// Potential straddle.
+			render_pass.potential_feedback.width_bias = (ctx.tex0.desc.TBP0 & (PGS_BLOCKS_PER_PAGE - 1)) != 0 ? 1 : 0;
+
+			uint32_t num_safe_pages = UINT32_MAX;
+			if (is_potential_color_feedback)
+			{
+				uint32_t safe_color_pages = ctx.frame.desc.FBP - render_pass.potential_feedback.base_page;
+				safe_color_pages &= vram_size / PGS_PAGE_ALIGNMENT_BYTES - 1;
+				num_safe_pages = std::min<uint32_t>(num_safe_pages, safe_color_pages);
+			}
+
+			if (is_potential_depth_feedback)
+			{
+				uint32_t safe_depth_pages = ctx.zbuf.desc.ZBP - render_pass.potential_feedback.base_page;
+				safe_depth_pages &= vram_size / PGS_PAGE_ALIGNMENT_BYTES - 1;
+				num_safe_pages = std::min<uint32_t>(num_safe_pages, safe_depth_pages);
+			}
+
+			if (render_pass.potential_feedback.width_bias >= num_safe_pages)
+				render_pass.is_potential_feedback = false;
+			else
+				render_pass.potential_feedback.max_safe_page = num_safe_pages - 1u - render_pass.potential_feedback.width_bias;
+		}
 
 		// Exit analysis, we know it's not true feedback.
 		return;
@@ -1681,10 +1723,90 @@ void GSInterface::update_color_feedback_state()
 	state_tracker.dirty_flags |= STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_TEX_BIT;
 }
 
+template <bool quad, unsigned num_vertices, bool conservative>
+static void compute_uv_bb(const VertexAttribute *attr, const ContextState &ctx, const PRIMBits &prim, ivec4 &uv_bb,
+                          ivec2 *uvs, bool *needs_perspective)
+{
+	int width = 1 << int(ctx.tex0.desc.TW);
+	int height = 1 << int(ctx.tex0.desc.TH);
+	auto fwidth = float(width * 16);
+	auto fheight = float(height * 16);
+	ivec2 local_uvs[3];
+
+	if (needs_perspective)
+		*needs_perspective = false;
+	if (!uvs)
+		uvs = local_uvs;
+
+	if (prim.FST)
+	{
+		uvs[0] = ivec2(attr[0].uv);
+		uvs[1] = ivec2(attr[1].uv);
+		if (!quad)
+			uvs[2] = ivec2(attr[2].uv);
+	}
+	else
+	{
+		// If we have perspective, we cannot assume pixel correctness.
+		// For sprite, Q is flat, and we only use Q0 anyway.
+		if (!quad && needs_perspective)
+			if (attr[0].q != attr[1].q || attr[1].q != attr[2].q)
+				*needs_perspective = true;
+
+		float inv_q0 = 1.0f / attr[0].q;
+		float inv_q1 = 1.0f / attr[1].q;
+		uvs[0] = ivec2(vec2(fwidth, fheight) * (attr[0].st * inv_q0));
+		uvs[1] = ivec2(vec2(fwidth, fheight) * (attr[1].st * inv_q1));
+
+		if (!quad)
+		{
+			float inv_q2 = 1.0f / attr[2].q;
+			uvs[2] = ivec2(vec2(fwidth, fheight) * (attr[2].st * inv_q2));
+		}
+	}
+
+	ivec2 uv_min = min(uvs[0], uvs[1]);
+	ivec2 uv_max = max(uvs[0], uvs[1]);
+	if (!quad)
+	{
+		uv_min = min(uv_min, uvs[2]);
+		uv_max = max(uv_max, uvs[2]);
+	}
+
+	if (conservative)
+	{
+		if (ctx.tex1.desc.MMAG != 0)
+		{
+			// Consider linear filtering if using that. Expand the BB appropriately.
+			uv_min -= ivec2(1 << (PGS_SUBPIXEL_BITS - 1));
+			uv_max += ivec2((1 << (PGS_SUBPIXEL_BITS - 1)) - 1);
+		}
+		else if (!prim.FST)
+		{
+			// Consider FP rounding errors.
+			uv_min -= ivec2(1);
+			uv_max += ivec2(1);
+		}
+	}
+
+	// This can safely become a REGION_CLAMP.
+	uv_bb = ivec4(uv_min, uv_max) >> PGS_SUBPIXEL_BITS;
+
+	if (!conservative)
+	{
+		// The bottom-right pixels tend to be unused due to raster rules.
+		// If there's only a one pixel overlap region, we can safely ignore that since
+		// it's going to be a false positive in 99.999999% of cases ...
+		uv_bb.z = std::max<int>(uv_bb.z - 1, 0);
+		uv_bb.w = std::max<int>(uv_bb.w - 1, 0);
+	}
+}
+
 template <bool quad, unsigned num_vertices>
 GSInterface::ColorFeedbackMode
 GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexAttribute *attr,
-                                        const ContextState &ctx, const PRIMBits &prim, ivec4 &uv_bb, const ivec4 &bb)
+                                        const ContextState &ctx, const PRIMBits &prim,
+                                        ivec4 &uv_bb, const ivec4 &bb)
 {
 	// Sprite and triangle is fine. Line is not ok.
 	constexpr bool can_feedback = num_vertices == 3 || (quad && num_vertices == 2);
@@ -1696,61 +1818,10 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 
 	int width = 1 << int(ctx.tex0.desc.TW);
 	int height = 1 << int(ctx.tex0.desc.TH);
-	auto fwidth = float(width * 16);
-	auto fheight = float(height * 16);
 	bool needs_perspective = false;
 
-	ivec2 uv0, uv1, uv2 = {};
-	if (prim.FST)
-	{
-		uv0 = ivec2(attr[0].uv);
-		uv1 = ivec2(attr[1].uv);
-		if (!quad)
-			uv2 = ivec2(attr[2].uv);
-	}
-	else
-	{
-		// If we have perspective, we cannot assume pixel correctness.
-		// For sprite, Q is flat, and we only use Q0 anyway.
-		if (!quad)
-			if (attr[0].q != attr[1].q || attr[1].q != attr[2].q)
-				needs_perspective = true;
-
-		float inv_q0 = 1.0f / attr[0].q;
-		float inv_q1 = 1.0f / attr[1].q;
-		uv0 = ivec2(vec2(fwidth, fheight) * (attr[0].st * inv_q0));
-		uv1 = ivec2(vec2(fwidth, fheight) * (attr[1].st * inv_q1));
-
-		if (!quad)
-		{
-			float inv_q2 = 1.0f / attr[2].q;
-			uv2 = ivec2(vec2(fwidth, fheight) * (attr[2].st * inv_q2));
-		}
-	}
-
-	ivec2 uv_min = min(uv0, uv1);
-	ivec2 uv_max = max(uv0, uv1);
-	if (!quad)
-	{
-		uv_min = min(uv_min, uv2);
-		uv_max = max(uv_max, uv2);
-	}
-
-	if (ctx.tex1.desc.MMAG != 0)
-	{
-		// Consider linear filtering if using that. Expand the BB appropriately.
-		uv_min -= ivec2(1 << (PGS_SUBPIXEL_BITS - 1));
-		uv_max += ivec2((1 << (PGS_SUBPIXEL_BITS - 1)) - 1);
-	}
-	else if (!prim.FST)
-	{
-		// Consider FP rounding errors.
-		uv_min -= ivec2(1);
-		uv_max += ivec2(1);
-	}
-
-	// This can safely become a REGION_CLAMP.
-	uv_bb = ivec4(uv_min, uv_max) >> PGS_SUBPIXEL_BITS;
+	ivec2 uvs[3] = {};
+	compute_uv_bb<quad, num_vertices, true>(attr, ctx, prim, uv_bb, uvs, &needs_perspective);
 
 	// Check if we're sampling outside the texture's range. In this case we get clamp or repeat,
 	// and we cannot assume 1:1 pixel mapping.
@@ -1782,14 +1853,14 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 	else if (bb.w >= height)
 		return ColorFeedbackMode::Sliced;
 
-	ivec2 uv0_delta = uv0 - pos[0].pos;
-	ivec2 uv1_delta = uv1 - pos[1].pos;
+	ivec2 uv0_delta = uvs[0] - pos[0].pos;
+	ivec2 uv1_delta = uvs[1] - pos[1].pos;
 	ivec2 min_delta = min(uv0_delta, uv1_delta);
 	ivec2 max_delta = max(uv0_delta, uv1_delta);
 
 	if (!quad)
 	{
-		ivec2 uv2_delta = uv2 - pos[2].pos;
+		ivec2 uv2_delta = uvs[2] - pos[2].pos;
 		min_delta = min(min_delta, uv2_delta);
 		max_delta = max(max_delta, uv2_delta);
 	}
@@ -1948,6 +2019,8 @@ void GSInterface::drawing_kick_append()
 		render_pass.last_triangle_is_parallelogram_candidate = is_parallelogram_candidate;
 		feedback_mode = deduce_color_feedback_mode<quad, num_vertices>(pos, attr, ctx, prim.desc, uv_bb, bb);
 	}
+	else if (render_pass.is_potential_feedback)
+		compute_uv_bb<quad, num_vertices, false>(attr, ctx, prim.desc, uv_bb, nullptr, nullptr);
 
 	// If there's a partial transfer in-flight, flush it.
 	// The write should technically happen as soon as we write HWREG.
@@ -1969,7 +2042,12 @@ void GSInterface::drawing_kick_append()
 	// Have to make sure it's still safe to read the texture we're using.
 	// Only do this when dirty flag is not set. Otherwise, we'll check it when resolving texture index anyway.
 	if (prim.desc.TME && (state_tracker.dirty_flags & STATE_DIRTY_TEX_BIT) == 0)
-		texture_page_rects_read();
+	{
+		if (render_pass.is_potential_feedback)
+			texture_page_rects_read_region(uv_bb);
+		else
+			texture_page_rects_read_full();
+	}
 
 	drawing_kick_update_state(feedback_mode, uv_bb, bb);
 

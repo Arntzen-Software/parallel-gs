@@ -318,8 +318,15 @@ void PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t l
 	handle->set_hash(hash);
 	handle->image = std::move(image);
 
-	CachedTextureHandle delete_t{cached_textures.insert_yield(handle)};
+	auto *delete_t = cached_textures.insert_yield(handle);
+	// We should always have called find_cached_texture before creating a new one.
+	(void)delete_t;
+	assert(!delete_t);
+
 	CachedTextureHandle tex{handle};
+
+	assert(levels > 0);
+	assert(level_rect[0].page_width && level_rect[0].page_height);
 
 	for (unsigned level = 0; level < levels; level++)
 	{

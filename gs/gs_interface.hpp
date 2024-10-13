@@ -116,13 +116,15 @@ enum StateDirtyFlagBits : uint32_t
 	STATE_DIRTY_FEEDBACK_BIT = 1 << 4,
 	STATE_DIRTY_DEGENERATE_BIT = 1 << 5,
 	STATE_DIRTY_SCISSOR_BIT = 1 << 6,
+	STATE_DIRTY_POTENTIAL_FEEDBACK_REGION_BIT = 1 << 7,
 	STATE_DIRTY_ALL_BITS = STATE_DIRTY_FB_BIT |
 	                       STATE_DIRTY_TEX_BIT |
 	                       STATE_DIRTY_STATE_BIT |
 	                       STATE_DIRTY_PRIM_TEMPLATE_BIT |
 	                       STATE_DIRTY_FEEDBACK_BIT |
 	                       STATE_DIRTY_DEGENERATE_BIT |
-	                       STATE_DIRTY_SCISSOR_BIT
+	                       STATE_DIRTY_SCISSOR_BIT |
+	                       STATE_DIRTY_POTENTIAL_FEEDBACK_REGION_BIT
 };
 using StateDirtyFlags = uint32_t;
 
@@ -333,8 +335,20 @@ private:
 		bool last_triangle_is_parallelogram_candidate = false;
 		bool is_color_feedback = false;
 		bool is_awkward_color_feedback = false;
-		bool is_potential_color_feedback = false;
-		bool is_potential_depth_feedback = false;
+		bool is_potential_feedback = false;
+
+		// For potential feedback, we need crude UV bb analysis to see if we're
+		// actually straddling into framebuffer territory.
+		struct
+		{
+			uint32_t base_page = 0;
+			uint32_t page_width_log2 = 0;
+			uint32_t page_height_log2 = 0;
+			uint32_t page_stride = 0;
+			uint32_t width_bias = 0;
+			uint32_t max_safe_page = 0;
+		} potential_feedback;
+
 		bool has_color_feedback = false;
 		bool has_aa1 = false;
 		bool has_scanmsk = false;
@@ -450,8 +464,9 @@ private:
 
 	void update_internal_register(uint64_t &reg, uint64_t value, StateDirtyFlags flags);
 
-	void update_texture_page_rects_and_read();
-	void texture_page_rects_read();
+	void update_texture_page_rects();
+	void texture_page_rects_read_region(const ivec4 &uv_bb);
+	void texture_page_rects_read_full();
 	bool get_and_clear_dirty_flag(StateDirtyFlags flags);
 
 	void check_frame_buffer_state();
