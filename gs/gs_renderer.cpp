@@ -1507,13 +1507,28 @@ void GSRenderer::dispatch_cache_read_only_depth(Vulkan::CommandBuffer &cmd, cons
 	cmd.end_region();
 }
 
-void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t instance,
-                                  uint32_t base_primitive, uint32_t num_primitives)
+void GSRenderer::bind_debug_resources(Vulkan::CommandBuffer &cmd,
+                                      const RenderPass &rp,
+                                      const RenderPass::Instance &inst)
 {
-	cmd.begin_region("shading");
-	auto &inst = rp.instances[instance];
+	const auto image_info_need_recreate = [](const Vulkan::ImageCreateInfo &info,
+	                                         const Vulkan::ImageHandle &handle) {
+		return !handle ||
+		       handle->get_width() < info.width ||
+		       handle->get_height() < info.height ||
+		       handle->get_format() != info.format ||
+		       handle->get_create_info().layers != info.layers;
+	};
 
-	Vulkan::ImageHandle feedback_color, feedback_depth, feedback_prim, feedback_vary;
+	const auto clear_image = [&](const Vulkan::Image &img) {
+		cmd.image_barrier(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		                  VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+		cmd.clear_image(img, {}, VK_IMAGE_ASPECT_COLOR_BIT);
+		cmd.image_barrier(img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+		                  VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+		                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+	};
 
 	if (rp.feedback_color)
 	{
@@ -1528,42 +1543,35 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 		info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 		info.layers = inst.sampling_rate_y_log2 || inst.sampling_rate_x_log2 ? 5 : 2;
-		feedback_color = device->create_image(info);
+
+		if (image_info_need_recreate(info, feedback_color))
+			feedback_color = device->create_image(info);
 
 		info.layers = 1;
 		info.format = VK_FORMAT_R32G32B32A32_UINT;
-		feedback_prim = device->create_image(info);
+		if (image_info_need_recreate(info, feedback_prim))
+			feedback_prim = device->create_image(info);
 
 		info.layers = 3;
 		info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-		feedback_vary = device->create_image(info);
+		if (image_info_need_recreate(info, feedback_vary))
+			feedback_vary = device->create_image(info);
 
 		if (inst.sampling_rate_x_log2 || inst.sampling_rate_y_log2)
-		{
-			cmd.image_barrier(*feedback_color, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			                  0, 0, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-			cmd.clear_image(*feedback_color, {}, VK_IMAGE_ASPECT_COLOR_BIT);
-			cmd.image_barrier(*feedback_color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-			                  VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-			                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 			device->set_name(*feedback_color, "DebugColor - [after, before, after 1x, before 1x, ref 1x]");
-		}
 		else
-		{
-			cmd.image_barrier(*feedback_color, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-			                  0, 0, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 			device->set_name(*feedback_color, "DebugColor - [after, before]");
-		}
-		cmd.image_barrier(*feedback_prim, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-		                  0, 0, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-		cmd.image_barrier(*feedback_vary, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-		                  0, 0, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-		cmd.set_storage_texture(0, BINDING_FEEDBACK_COLOR, feedback_color->get_view());
-		cmd.set_storage_texture(0, BINDING_FEEDBACK_PRIM, feedback_prim->get_view());
-		cmd.set_storage_texture(0, BINDING_FEEDBACK_VARY, feedback_vary->get_view());
 
 		device->set_name(*feedback_prim, "DebugStat - [ShadeCount, LastShadePrim, CoverageCount, TexMask]");
 		device->set_name(*feedback_vary, "DebugVary - [UV, Q, LOD] [RGBA] [Z, IJ]");
+
+		clear_image(*feedback_color);
+		clear_image(*feedback_prim);
+		clear_image(*feedback_vary);
+
+		cmd.set_storage_texture(0, BINDING_FEEDBACK_COLOR, feedback_color->get_view());
+		cmd.set_storage_texture(0, BINDING_FEEDBACK_PRIM, feedback_prim->get_view());
+		cmd.set_storage_texture(0, BINDING_FEEDBACK_VARY, feedback_vary->get_view());
 	}
 
 	if (rp.feedback_depth)
@@ -1579,13 +1587,23 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 		info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		info.usage = VK_IMAGE_USAGE_STORAGE_BIT;
 		info.layers = 2;
-		feedback_depth = device->create_image(info);
 
-		cmd.image_barrier(*feedback_depth, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-		                  0, 0, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+		if (image_info_need_recreate(info, feedback_depth))
+			feedback_depth = device->create_image(info);
+
+		clear_image(*feedback_depth);
 		cmd.set_storage_texture(0, BINDING_FEEDBACK_DEPTH, feedback_depth->get_view());
 		device->set_name(*feedback_depth, "DebugDepth - layer 0 = after - layer 1 = before");
 	}
+}
+
+void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t instance,
+                                  uint32_t base_primitive, uint32_t num_primitives)
+{
+	cmd.begin_region("shading");
+	auto &inst = rp.instances[instance];
+
+	bind_debug_resources(cmd, rp, inst);
 
 	// The shading itself runs at workgroup size == 64, we can handle multiple subgroups, but prefer large waves,
 	// since we're doing so much scalar work.

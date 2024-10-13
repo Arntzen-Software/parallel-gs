@@ -353,6 +353,9 @@ private:
 	                            uint32_t base_primitive, uint32_t num_primitives);
 	void flush_palette_upload();
 
+	void bind_debug_resources(Vulkan::CommandBuffer &cmd, const RenderPass &rp, const RenderPass::Instance &instance);
+	Vulkan::ImageHandle feedback_color, feedback_depth, feedback_prim, feedback_vary;
+
 	void dispatch_cache_read_only_depth(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t depth_psm, uint32_t instance);
 
 	void flush_rendering(const RenderPass &rp, uint32_t instance, uint32_t base_primitive, uint32_t num_primitives);
