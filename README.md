@@ -39,7 +39,7 @@ This is best left to blog posts.
 
 ## Tested GPU / driver combos.
 
-- RADV on RX 7600. Currently there is an ACO bug causing random glitches in output. `ACO_DEBUG=nosched` works around it. `RADV_DEBUG=llvm` also works around it, although it is way slower.
+- RADV on RX 7600.
 - AMDVLK on RX 7600.
 - amdgpu-pro on RX 7600.
 - Steam Deck on SteamOS 3.6.6.
