@@ -871,6 +871,19 @@ void GSInterface::update_texture_page_rects()
 	}
 }
 
+void GSInterface::texture_page_rects_read_safe_region()
+{
+	PageRect rect = {};
+	rect.base_page = render_pass.potential_feedback.base_page;
+	rect.page_width = render_pass.potential_feedback.max_safe_page + 1;
+	rect.page_height = 1;
+	rect.page_stride = 0;
+	rect.block_mask = UINT32_MAX;
+	rect.write_mask = UINT32_MAX;
+
+	tracker.mark_texture_read(rect);
+}
+
 void GSInterface::texture_page_rects_read_region(const ivec4 &uv_bb)
 {
 	auto &prim = registers.prim;
@@ -1111,9 +1124,6 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 		cache_texture = false;
 	}
 
-	if (!cache_texture)
-		render_pass.has_uncached_textures = true;
-
 	auto TW = uint32_t(desc.tex0.desc.TW);
 	auto TH = uint32_t(desc.tex0.desc.TH);
 	uint32_t width = 1u << TW;
@@ -1232,70 +1242,45 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 	desc.tex1.desc.L = 0;
 	desc.tex1.desc.K = 0;
 
-	Util::Hasher hasher;
-	const auto hash_texture_state = [&]() {
-		hasher.u64(desc.tex0.bits);
-		hasher.u64(desc.tex1.bits);
-		hasher.u64(desc.texa.bits);
-		hasher.u64(desc.miptbp1_3.bits);
-		hasher.u64(desc.miptbp4_6.bits);
-		hasher.u64(desc.clamp.bits);
-		// Palette bank needs to be part of hash key.
-		// If the same texture is being used with different palettes things break really fast.
-		// We need to be able to hold different variants of the same texture in the memoization structure.
-		// The page tracker never keeps more than one variant alive however, so the multiple variants only
-		// live as long as we can maintain the render pass.
-		hasher.u64(desc.palette_bank);
-	};
-
 	// May flush render pass if there is a hazard.
 	update_texture_page_rects();
-	RenderPassState::TextureStateToLocalIndex *cached_index = nullptr;
-	bool read_partial_region = false;
-	bool need_hashing = true;
-
-	bool last_texture_index_valid =
-			state_tracker.last_texture_index != UINT32_MAX &&
-			!render_pass.tex_infos.empty() &&
-			state_tracker.last_texture_descriptor == desc;
 
 	if (render_pass.is_potential_feedback)
 	{
-		hash_texture_state();
-		need_hashing = false;
-
-		// If the image we're looking for is already cached, we don't need to keep reading the full region
-		// over and over. That will likely trigger more false positives. It's also slow.
-		read_partial_region = last_texture_index_valid;
-		if (!read_partial_region)
-		{
-			cached_index = render_pass.texture_map.find(hasher.get());
-			read_partial_region = cached_index != nullptr && cached_index->valid;
-		}
+		// This texture will not survive beyond the render pass anyway, so don't bother caching it.
+		cache_texture = false;
+		texture_page_rects_read_region(uv_bb);
 	}
-
-	if (cache_texture)
+	else if (cache_texture)
 	{
-		if (read_partial_region)
-			texture_page_rects_read_region(uv_bb);
-		else
-			texture_page_rects_read_full();
+		texture_page_rects_read_full();
 	}
 
-	// last_texture_index_valid may have been invalidated by the read above.
-	if (state_tracker.last_texture_index != UINT32_MAX && last_texture_index_valid)
+	if (!cache_texture)
+		render_pass.has_uncached_textures = true;
+
+	if (state_tracker.last_texture_index != UINT32_MAX &&
+	    !render_pass.tex_infos.empty() &&
+	    state_tracker.last_texture_descriptor == desc)
+	{
 		return state_tracker.last_texture_index;
+	}
 
-	if (state_tracker.last_texture_index == UINT32_MAX)
-		cached_index = nullptr;
-
+	Util::Hasher hasher;
+	hasher.u64(desc.tex0.bits);
+	hasher.u64(desc.tex1.bits);
+	hasher.u64(desc.texa.bits);
+	hasher.u64(desc.miptbp1_3.bits);
+	hasher.u64(desc.miptbp4_6.bits);
+	hasher.u64(desc.clamp.bits);
+	// Palette bank needs to be part of hash key.
+	// If the same texture is being used with different palettes things break really fast.
+	// We need to be able to hold different variants of the same texture in the memoization structure.
+	// The page tracker never keeps more than one variant alive however, so the multiple variants only
+	// live as long as we can maintain the render pass.
+	hasher.u64(desc.palette_bank);
+	auto *cached_index = render_pass.texture_map.find(hasher.get());
 	uint32_t texture_index;
-
-	if (need_hashing)
-		hash_texture_state();
-
-	if (!cached_index)
-		cached_index = render_pass.texture_map.find(hasher.get());
 
 	if (cached_index && cached_index->valid)
 	{
@@ -1305,7 +1290,9 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 	{
 		// If we're not caching in the page tracker, we have to at least do hazard tracking on the first read from VRAM.
 		// Any subsequent read from this texture will ignore hazard tracking.
-		if (!cache_texture)
+		if (render_pass.is_potential_feedback)
+			texture_page_rects_read_safe_region();
+		else if (!cache_texture)
 			texture_page_rects_read_full();
 
 		auto image = tracker.find_cached_texture(hasher.get());

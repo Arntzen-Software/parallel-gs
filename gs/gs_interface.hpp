@@ -465,6 +465,7 @@ private:
 	void update_internal_register(uint64_t &reg, uint64_t value, StateDirtyFlags flags);
 
 	void update_texture_page_rects();
+	void texture_page_rects_read_safe_region();
 	void texture_page_rects_read_region(const ivec4 &uv_bb);
 	void texture_page_rects_read_full();
 	bool get_and_clear_dirty_flag(StateDirtyFlags flags);
