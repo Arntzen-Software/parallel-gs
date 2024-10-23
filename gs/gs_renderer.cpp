@@ -1620,11 +1620,13 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	if (single_primitive_step)
 		variant_flags |= VARIANT_FLAG_HAS_PRIMITIVE_RANGE_BIT;
 
-	if (rp.feedback_texture)
+	if (rp.feedback_mode != RenderPass::Feedback::None)
 	{
 		cmd.set_specialization_constant(6, rp.feedback_texture_psm);
 		cmd.set_specialization_constant(7, rp.feedback_texture_cpsm);
 		variant_flags |= VARIANT_FLAG_FEEDBACK_BIT;
+		if (rp.feedback_mode == RenderPass::Feedback::Depth)
+			variant_flags |= VARIANT_FLAG_FEEDBACK_DEPTH_BIT;
 	}
 	else
 	{
@@ -2066,7 +2068,7 @@ void GSRenderer::flush_rendering(const RenderPass &rp, uint32_t instance,
 		begin_region(cmd,
 		             "RP %u[%u] - %u prims - %u tex%s - %ux%u + (%u, %u) - %ux%u - FB 0x%x %s - Z 0x%x %s - %s",
 		             rp.label_key, instance,
-		             num_primitives, rp.num_textures, (rp.feedback_texture ? " (feedback)" : ""),
+		             num_primitives, rp.num_textures, (rp.feedback_mode != RenderPass::Feedback::None ? " (feedback)" : ""),
 		             inst.coarse_tiles_width << rp.coarse_tile_size_log2,
 		             inst.coarse_tiles_height << rp.coarse_tile_size_log2,
 		             inst.base_x, inst.base_y,

@@ -188,7 +188,7 @@ void GSInterface::flush_render_pass(FlushReason reason)
 			pass.z_write = inst.z_write;
 		}
 
-		rp.feedback_texture = render_pass.has_color_feedback;
+		rp.feedback_mode = render_pass.feedback_mode;
 		rp.feedback_texture_psm = render_pass.feedback_psm;
 		rp.feedback_texture_cpsm = render_pass.feedback_cpsm;
 
@@ -250,7 +250,7 @@ void GSInterface::flush_render_pass(FlushReason reason)
 	inst.z_page_height_log2 = instance.z_page_height_log2;
 
 	render_pass.last_triangle_is_parallelogram_candidate = false;
-	render_pass.has_color_feedback = false;
+	render_pass.feedback_mode = RenderPass::Feedback::None;
 	render_pass.has_aa1 = false;
 	render_pass.has_scanmsk = false;
 	render_pass.has_uncached_textures = false;
@@ -639,9 +639,12 @@ bool GSInterface::get_and_clear_dirty_flag(StateDirtyFlags flags)
 	return ret;
 }
 
-void GSInterface::mark_render_pass_has_texture_feedback(const TEX0Bits &tex0)
+void GSInterface::mark_render_pass_has_texture_feedback(const TEX0Bits &tex0, RenderPass::Feedback mode)
 {
-	if (render_pass.has_color_feedback)
+	if (render_pass.feedback_mode != RenderPass::Feedback::None && mode != render_pass.feedback_mode)
+		tracker.flush_render_pass(FlushReason::TextureHazard);
+
+	if (render_pass.feedback_mode != RenderPass::Feedback::None)
 	{
 		if (uint32_t(tex0.PSM) != render_pass.feedback_psm ||
 		    (is_palette_format(render_pass.feedback_psm) &&
@@ -651,9 +654,9 @@ void GSInterface::mark_render_pass_has_texture_feedback(const TEX0Bits &tex0)
 		}
 	}
 
-	if (!render_pass.has_color_feedback)
+	if (render_pass.feedback_mode == RenderPass::Feedback::None)
 	{
-		render_pass.has_color_feedback = true;
+		render_pass.feedback_mode = mode;
 		render_pass.feedback_psm = uint32_t(tex0.PSM);
 		render_pass.feedback_cpsm = is_palette_format(render_pass.feedback_psm) ? uint32_t(tex0.CPSM) : 0;
 	}
@@ -964,7 +967,7 @@ void GSInterface::mark_texture_state_dirty()
 	state_tracker.dirty_flags |= STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_TEX_BIT;
 }
 
-uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mode, const ivec4 &uv_bb, const ivec4 &bb)
+uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, const ivec4 &uv_bb, const ivec4 &bb)
 {
 	if (!get_and_clear_dirty_flag(STATE_DIRTY_TEX_BIT))
 	{
@@ -975,9 +978,12 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 	auto &prim = registers.prim;
 	auto &ctx = registers.ctx[prim.desc.CTXT];
 
-	if (feedback_mode == ColorFeedbackMode::Pixel)
+	if (feedback_mode == FBFeedbackMode::Pixel)
 	{
-		mark_render_pass_has_texture_feedback(ctx.tex0.desc);
+		mark_render_pass_has_texture_feedback(ctx.tex0.desc,
+		                                      render_pass.is_color_feedback ?
+		                                      RenderPass::Feedback::Color : RenderPass::Feedback::Depth);
+
 		// Special index indicating on-tile feedback.
 		// We could add a different sentinel for depth feedback.
 		// 1024k CLUT instances and 32 sub-banks. Fits in 15 bits. Use bit 15 MSB to mark feedback texture.
@@ -1053,7 +1059,7 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 	// rendering pattern where render region and sampling region is disjoint.
 	bool cache_texture = true;
 
-	if (feedback_mode == ColorFeedbackMode::Sliced)
+	if (feedback_mode == FBFeedbackMode::Sliced)
 	{
 		// If game explicitly clamps the rect to a small region, it's likely doing well-defined feedbacks.
 		// E.g. Tales of Abyss main menu ping-pong blurs.
@@ -1118,7 +1124,7 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 			}
 		}
 	}
-	else if (feedback_mode == ColorFeedbackMode::BypassHazards)
+	else if (feedback_mode == FBFeedbackMode::BypassHazards)
 	{
 		// Ignore hazards for these.
 		cache_texture = false;
@@ -1132,7 +1138,7 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 	// In sliced mode with clamping, we can clamp harder based on uv_bb.
 	// In this path, we're guaranteed to not hit wrapping with region clamp.
 	// For repeat, give up. Should not happen (hopefully).
-	if (feedback_mode == ColorFeedbackMode::Sliced && cache_texture &&
+	if (feedback_mode == FBFeedbackMode::Sliced && cache_texture &&
 	    desc.clamp.desc.WMS != CLAMPBits::REGION_REPEAT &&
 	    desc.clamp.desc.WMT != CLAMPBits::REGION_REPEAT)
 	{
@@ -1362,7 +1368,7 @@ uint32_t GSInterface::drawing_kick_update_texture(ColorFeedbackMode feedback_mod
 	return texture_index;
 }
 
-void GSInterface::drawing_kick_update_state(ColorFeedbackMode feedback_mode, const ivec4 &uv_bb, const ivec4 &bb)
+void GSInterface::drawing_kick_update_state(FBFeedbackMode feedback_mode, const ivec4 &uv_bb, const ivec4 &bb)
 {
 	if (!get_and_clear_dirty_flag(STATE_DIRTY_PRIM_TEMPLATE_BIT))
 		return;
@@ -1464,7 +1470,7 @@ void GSInterface::drawing_kick_update_state(ColorFeedbackMode feedback_mode, con
 
 	// If we're in a feedback situation,
 	// we cannot be opaque since sampling a texture essentially becomes blending.
-	if (render_pass.is_color_feedback)
+	if ((render_pass.is_color_feedback || render_pass.is_depth_feedback) && feedback_mode == FBFeedbackMode::Pixel)
 		color_write_needs_previous_pixels = true;
 
 	// If OPAQUE, the frame buffer color content is fully written if Z test passes.
@@ -1602,14 +1608,17 @@ void GSInterface::update_color_feedback_state()
 	{
 		// If we're in feedback, we have to recheck state every draw. We expect that anyway
 		// since FB will likely have to be flushed every draw ...
-		if (render_pass.is_color_feedback)
+		if (render_pass.is_color_feedback || render_pass.is_depth_feedback)
 			state_tracker.dirty_flags |= STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_TEX_BIT;
 		return;
 	}
 
 	auto &prim = registers.prim;
 	auto &ctx = registers.ctx[prim.desc.CTXT];
+	auto &inst = render_pass.instances[render_pass.current_instance];
+
 	render_pass.is_color_feedback = false;
+	render_pass.is_depth_feedback = false;
 	render_pass.is_awkward_color_feedback = false;
 	render_pass.is_potential_feedback = false;
 
@@ -1623,10 +1632,6 @@ void GSInterface::update_color_feedback_state()
 	auto tbp0 = uint32_t(ctx.tex0.desc.TBP0);
 	auto tex_psm = uint32_t(ctx.tex0.desc.PSM);
 
-	// Check if there is any possibility of feedback first.
-	if ((psm_word_write_mask(tex_psm) & psm_word_write_mask(ctx.frame.desc.PSM)) == 0)
-		return;
-
 	// A game might use REGION_CLAMP to align the effective "base pointer" of the texture to the frame buffer.
 	if (!is_palette_format(tex_psm))
 	{
@@ -1636,9 +1641,12 @@ void GSInterface::update_color_feedback_state()
 			tbp0 += PGS_BLOCKS_PER_PAGE * uint32_t(ctx.tex0.desc.TBW) * (uint32_t(ctx.clamp.desc.MINV) >> get_data_structure(tex_psm).page_height_log2);
 	}
 
-	const bool equal_address = tbp0 == ctx.frame.desc.FBP * PGS_BLOCKS_PER_PAGE;
+	const bool equal_address_color = tbp0 == ctx.frame.desc.FBP * PGS_BLOCKS_PER_PAGE;
+	// Only consider feedbacks if we're actually Z sensitive, i.e. there is a depth buffer to read in the first place.
+	const bool equal_address_depth = tbp0 == ctx.zbuf.desc.ZBP * PGS_BLOCKS_PER_PAGE &&
+	                                 (inst.z_sensitive || state_is_z_sensitive());
 
-	if (equal_address)
+	if (equal_address_color)
 	{
 		if (swizzle_compat_key(tex_psm) != swizzle_compat_key(ctx.frame.desc.PSM) ||
 		    uint32_t(ctx.tex0.desc.TBW) != ctx.frame.desc.FBW)
@@ -1651,13 +1659,24 @@ void GSInterface::update_color_feedback_state()
 		}
 	}
 
+	if (equal_address_depth)
+	{
+		if (swizzle_compat_key(tex_psm) != swizzle_compat_key(ctx.zbuf.desc.PSM | ZBUFBits::PSM_MSB) ||
+		    uint32_t(ctx.tex0.desc.TBW) != ctx.frame.desc.FBW)
+		{
+			// Mayhem. We don't really care unless there is content in the wild that relies on this to work well.
+			return;
+		}
+	}
+
 	if (ctx.clamp.desc.WMS == CLAMPBits::REGION_REPEAT || ctx.clamp.desc.WMT == CLAMPBits::REGION_REPEAT)
 	{
 		// Anything repeat region is too messy.
 		return;
 	}
 
-	if (!equal_address)
+	// Check for potential feedback case.
+	if (!equal_address_color && !equal_address_depth)
 	{
 		// If TBP < FBP we may still have a potential feedback caused by game using randomly large TW/TH
 		// and not using REGION_CLAMP properly. E.g. a 1024x1024 texture with 32-bit will cover the entirety of VRAM.
@@ -1673,8 +1692,6 @@ void GSInterface::update_color_feedback_state()
 		                               ctx.frame.desc, ctx.zbuf.desc,
 		                               vram_size / PGS_PAGE_ALIGNMENT_BYTES,
 		                               is_potential_color_feedback, is_potential_depth_feedback);
-
-		auto &inst = render_pass.instances[render_pass.current_instance];
 
 		bool existing_z_write = inst.z_write;
 		if (existing_z_write)
@@ -1733,15 +1750,17 @@ void GSInterface::update_color_feedback_state()
 			else
 				render_pass.potential_feedback.max_safe_page = num_safe_pages - 1u - render_pass.potential_feedback.width_bias;
 		}
-
-		// Exit analysis, we know it's not true feedback.
-		return;
 	}
+	else
+	{
+		// If we're in proper feedback, we have to recheck state every draw, since texture state depends on per-primitive UVs.
+		render_pass.is_color_feedback = equal_address_color &&
+		                                (psm_word_write_mask(tex_psm) & psm_word_write_mask(ctx.frame.desc.PSM)) != 0;
+		render_pass.is_depth_feedback = equal_address_depth &&
+		                                (psm_word_write_mask(tex_psm) & psm_word_write_mask(ctx.zbuf.desc.PSM)) != 0;
 
-	// If we're in feedback, we have to recheck state every draw. We expect that anyway
-	// since FB will likely have to be flushed every draw anyway ...
-	render_pass.is_color_feedback = true;
-	state_tracker.dirty_flags |= STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_TEX_BIT;
+		state_tracker.dirty_flags |= STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_TEX_BIT;
+	}
 }
 
 template <bool quad, unsigned num_vertices, bool conservative>
@@ -1824,7 +1843,7 @@ static void compute_uv_bb(const VertexAttribute *attr, const ContextState &ctx, 
 }
 
 template <bool quad, unsigned num_vertices>
-GSInterface::ColorFeedbackMode
+GSInterface::FBFeedbackMode
 GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexAttribute *attr,
                                         const ContextState &ctx, const PRIMBits &prim,
                                         ivec4 &uv_bb, const ivec4 &bb)
@@ -1832,10 +1851,10 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 	// Sprite and triangle is fine. Line is not ok.
 	constexpr bool can_feedback = num_vertices == 3 || (quad && num_vertices == 2);
 	if (!can_feedback)
-		return ColorFeedbackMode::None;
+		return FBFeedbackMode::None;
 
 	if (render_pass.is_awkward_color_feedback)
-		return ColorFeedbackMode::BypassHazards;
+		return FBFeedbackMode::BypassHazards;
 
 	int width = 1 << int(ctx.tex0.desc.TW);
 	int height = 1 << int(ctx.tex0.desc.TH);
@@ -1850,7 +1869,7 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 	// Any line with linear filtering is probably not pixel feedback.
 	// Anything with perspective won't work with Pixel mode either.
 	if (needs_perspective)
-		return ColorFeedbackMode::Sliced;
+		return FBFeedbackMode::Sliced;
 
 	// Based on the primitive BB, if the region clamp contains the full primitive BB, we cannot observe clamping,
 	// so ignore the effect.
@@ -1859,20 +1878,20 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 		int minu = int(ctx.clamp.desc.MINU);
 		int maxu = int(ctx.clamp.desc.MAXU);
 		if (bb.x < minu || bb.z > maxu)
-			return ColorFeedbackMode::Sliced;
+			return FBFeedbackMode::Sliced;
 	}
 	else if (bb.z >= width)
-		return ColorFeedbackMode::Sliced;
+		return FBFeedbackMode::Sliced;
 
 	if (uint32_t(ctx.clamp.desc.WMT) == CLAMPBits::REGION_CLAMP)
 	{
 		int minv = int(ctx.clamp.desc.MINV);
 		int maxv = int(ctx.clamp.desc.MAXV);
 		if (bb.y < minv || bb.w > maxv)
-			return ColorFeedbackMode::Sliced;
+			return FBFeedbackMode::Sliced;
 	}
 	else if (bb.w >= height)
-		return ColorFeedbackMode::Sliced;
+		return FBFeedbackMode::Sliced;
 
 	ivec2 uv0_delta = uvs[0] - pos[0].pos;
 	ivec2 uv1_delta = uvs[1] - pos[1].pos;
@@ -1893,18 +1912,18 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 	{
 		// Must land on pixel center for LINEAR to work.
 		if (min_delta2 != (1 << (PGS_SUBPIXEL_BITS - 1)) || max_delta2 != (1 << (PGS_SUBPIXEL_BITS - 1)))
-			return ColorFeedbackMode::Sliced;
+			return FBFeedbackMode::Sliced;
 	}
 	else
 	{
 		// The UV offset must be in range of [0, 2^SUBPIXEL_BITS - 1]. This guarantees snapping with NEAREST.
 		// 8 is ideal. That means pixel centers during interpolation will land exactly in the center of the texel.
 		if (min_delta2 < 0 || max_delta2 >= (1 << PGS_SUBPIXEL_BITS))
-			return ColorFeedbackMode::Sliced;
+			return FBFeedbackMode::Sliced;
 	}
 
 	// Perf go brrrrrrr.
-	return ColorFeedbackMode::Pixel;
+	return FBFeedbackMode::Pixel;
 }
 
 template <bool list_primitive, bool fan_primitive, bool quad, unsigned num_vertices>
@@ -2032,9 +2051,9 @@ void GSInterface::drawing_kick_append()
 	}
 
 	update_color_feedback_state();
-	auto feedback_mode = ColorFeedbackMode::None;
+	auto feedback_mode = FBFeedbackMode::None;
 	ivec4 uv_bb = {};
-	if (render_pass.is_color_feedback)
+	if (render_pass.is_color_feedback || render_pass.is_depth_feedback)
 	{
 		// Some heuristics would like to know about this.
 		render_pass.last_triangle_is_parallelogram_candidate = is_parallelogram_candidate;

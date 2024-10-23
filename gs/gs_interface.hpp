@@ -334,6 +334,7 @@ private:
 
 		bool last_triangle_is_parallelogram_candidate = false;
 		bool is_color_feedback = false;
+		bool is_depth_feedback = false;
 		bool is_awkward_color_feedback = false;
 		bool is_potential_feedback = false;
 
@@ -349,7 +350,7 @@ private:
 			uint32_t max_safe_page = 0;
 		} potential_feedback;
 
-		bool has_color_feedback = false;
+		RenderPass::Feedback feedback_mode = RenderPass::Feedback::None;
 		bool has_aa1 = false;
 		bool has_scanmsk = false;
 		bool has_uncached_textures = false;
@@ -424,7 +425,7 @@ private:
 	void update_draw_handler();
 	void update_optimized_gif_handler(uint32_t path);
 
-	enum class ColorFeedbackMode
+	enum class FBFeedbackMode
 	{
 		None,
 		Pixel,
@@ -432,7 +433,7 @@ private:
 		BypassHazards
 	};
 
-	uint32_t drawing_kick_update_texture(ColorFeedbackMode feedback_mode, const ivec4 &uv_bb, const ivec4 &bb);
+	uint32_t drawing_kick_update_texture(FBFeedbackMode feedback_mode, const ivec4 &uv_bb, const ivec4 &bb);
 
 	struct PrimitiveTemplate
 	{
@@ -471,18 +472,18 @@ private:
 	bool get_and_clear_dirty_flag(StateDirtyFlags flags);
 
 	void check_frame_buffer_state();
-	void mark_render_pass_has_texture_feedback(const TEX0Bits &tex0);
+	void mark_render_pass_has_texture_feedback(const TEX0Bits &tex0, RenderPass::Feedback mode);
 	bool draw_is_degenerate();
 	uint32_t find_or_place_unique_state_vector(const StateVector &state);
 	uint32_t drawing_kick_update_state_vector();
 
-	void drawing_kick_update_state(ColorFeedbackMode feedback_mode, const ivec4 &uv_bb, const ivec4 &bb);
+	void drawing_kick_update_state(FBFeedbackMode feedback_mode, const ivec4 &uv_bb, const ivec4 &bb);
 	bool state_is_z_sensitive() const;
 
 	template <bool quad, unsigned num_vertices>
-	ColorFeedbackMode deduce_color_feedback_mode(const VertexPosition *pos, const VertexAttribute *attr,
-	                                             const ContextState &ctx, const PRIMBits &prim,
-	                                             ivec4 &uv_bb, const ivec4 &bb);
+	FBFeedbackMode deduce_color_feedback_mode(const VertexPosition *pos, const VertexAttribute *attr,
+	                                          const ContextState &ctx, const PRIMBits &prim,
+	                                          ivec4 &uv_bb, const ivec4 &bb);
 
 	template <bool list_primitive, bool fan_primitive, bool quad, unsigned num_vertices>
 	void drawing_kick_primitive(bool adc);

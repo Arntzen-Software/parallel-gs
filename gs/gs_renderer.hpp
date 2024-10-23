@@ -181,7 +181,15 @@ struct RenderPass
 	// For debugging. Aids capture tools.
 	bool feedback_color;
 	bool feedback_depth;
-	bool feedback_texture;
+
+	enum Feedback
+	{
+		None,
+		Color,
+		Depth
+	};
+
+	Feedback feedback_mode;
 
 	uint32_t feedback_texture_psm;
 	uint32_t feedback_texture_cpsm;

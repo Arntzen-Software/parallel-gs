@@ -68,6 +68,7 @@ const bool HAS_AA1 = (VARIANT_FLAGS & VARIANT_FLAG_HAS_AA1_BIT) != 0;
 const bool HAS_SCANMSK = (VARIANT_FLAGS & VARIANT_FLAG_HAS_SCANMSK_BIT) != 0;
 const bool HAS_PRIMITIVE_RANGE = (VARIANT_FLAGS & VARIANT_FLAG_HAS_PRIMITIVE_RANGE_BIT) != 0;
 const bool HAS_SUPER_SAMPLE_REFERENCE = (VARIANT_FLAGS & VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT) != 0;
+const bool FEEDBACK_READS_DEPTH = (VARIANT_FLAGS & VARIANT_FLAG_FEEDBACK_DEPTH_BIT) != 0;
 
 layout(std430, set = 0, binding = BINDING_CLUT) readonly buffer CLUT16
 {
@@ -878,7 +879,9 @@ float texture_clamp(float coord, vec2 region, float LOD)
 
 vec4 feedback_texture(uint tex_index, uint tex2)
 {
+	uint feedback_input = FEEDBACK_READS_DEPTH ? fb_depth : fb_color;
 	ivec4 color;
+
 	if (is_palette_format(FEEDBACK_PSM))
 	{
 		uint color_index;
@@ -891,15 +894,15 @@ vec4 feedback_texture(uint tex_index, uint tex2)
 		switch (FEEDBACK_PSM)
 		{
 			case PSMT8H:
-				color_index = bitfieldExtract(fb_color, 24, 8);
+				color_index = bitfieldExtract(feedback_input, 24, 8);
 				break;
 
 			case PSMT4HL:
-				color_index = bitfieldExtract(fb_color, 24, 4);
+				color_index = bitfieldExtract(feedback_input, 24, 4);
 				break;
 
 			case PSMT4HH:
-				color_index = bitfieldExtract(fb_color, 28, 4);
+				color_index = bitfieldExtract(feedback_input, 28, 4);
 				break;
 
 			default:
@@ -939,7 +942,7 @@ vec4 feedback_texture(uint tex_index, uint tex2)
 	}
 	else
 	{
-		color = unpack_color(fb_color);
+		color = unpack_color(feedback_input);
 
 		uint aem = bitfieldExtract(tex2, TEX2_FEEDBACK_AEM_OFFSET, 1);
 		uint ta0 = bitfieldExtract(tex2, TEX2_FEEDBACK_TA0_OFFSET, 8);
