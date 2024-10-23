@@ -183,6 +183,15 @@ void GSInterface::flush_render_pass(FlushReason reason)
 				pass.sampling_rate_x_log2 = 0;
 				pass.sampling_rate_y_log2 = 0;
 			}
+			else if (inst.z_feedback)
+			{
+				// If we're doing Z-feedback effects, it's not safe to run super-sampled since there are too many glitches in play
+				// for it to be viable. When super-sampled Z is converted to color, then downsampled, there will be bleeding
+				// across geometry, and we have no way of resolving this other than forwarding super-sampled textures
+				// everywhere.
+				pass.sampling_rate_x_log2 = 0;
+				pass.sampling_rate_y_log2 = 0;
+			}
 
 			pass.z_sensitive = inst.z_sensitive;
 			pass.z_write = inst.z_write;
@@ -660,6 +669,9 @@ void GSInterface::mark_render_pass_has_texture_feedback(const TEX0Bits &tex0, Re
 		render_pass.feedback_psm = uint32_t(tex0.PSM);
 		render_pass.feedback_cpsm = is_palette_format(render_pass.feedback_psm) ? uint32_t(tex0.CPSM) : 0;
 	}
+
+	if (render_pass.feedback_mode == RenderPass::Feedback::Depth)
+		render_pass.instances[render_pass.current_instance].z_feedback = true;
 }
 
 void GSInterface::check_frame_buffer_state()

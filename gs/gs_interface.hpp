@@ -323,6 +323,7 @@ private:
 			uint32_t color_write_mask = 0;
 			bool z_sensitive = false;
 			bool z_write = false;
+			bool z_feedback = false;
 			uint32_t fb_page_width_log2 = 0;
 			uint32_t fb_page_height_log2 = 0;
 			uint32_t z_page_width_log2 = 0;
