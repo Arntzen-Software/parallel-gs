@@ -2382,12 +2382,42 @@ void GSRenderer::move_image_handles_to_slab()
 	}
 }
 
+void GSRenderer::mark_clut_read(uint32_t clut_instance)
+{
+	// We only care about the latest upload w.r.t. usage.
+	// A new CLUT upload will mark all older uploads as fully committed.
+	if (clut_instance == next_clut_instance)
+		last_clut_update_is_read = true;
+}
+
+bool PaletteUploadDescriptor::fully_replaces_clut_upload(const PaletteUploadDescriptor &old) const
+{
+	bool is_8bit = tex0.desc.PSM == PSMT8 || tex0.desc.PSM == PSMT8H;
+	bool old_is_8bit = old.tex0.desc.PSM == PSMT8 || old.tex0.desc.PSM == PSMT8H;
+
+	// Technically we could just check that new write just covers all of old's footprint, but that's too cumbersome.
+	// A straight equal check is sufficient.
+	return old.tex0.desc.CPSM == tex0.desc.CPSM &&
+	       old.tex0.desc.CSA == tex0.desc.CSA &&
+	       is_8bit == old_is_8bit;
+}
+
 uint32_t GSRenderer::update_palette_cache(const PaletteUploadDescriptor &desc)
 {
-	next_clut_instance = (next_clut_instance + 1) % CLUTInstances;
-	palette_uploads.push_back(desc);
-	stats.num_palette_updates++;
-	check_flush_stats();
+	if (!last_clut_update_is_read && !palette_uploads.empty() &&
+	    desc.fully_replaces_clut_upload(palette_uploads.back()))
+	{
+		palette_uploads.back() = desc;
+	}
+	else
+	{
+		next_clut_instance = (next_clut_instance + 1) % CLUTInstances;
+		palette_uploads.push_back(desc);
+		stats.num_palette_updates++;
+		check_flush_stats();
+	}
+
+	last_clut_update_is_read = false;
 	return next_clut_instance;
 }
 

@@ -99,6 +99,8 @@ struct PaletteUploadDescriptor
 {
 	Reg64<TEX0Bits> tex0;
 	Reg64<TEXCLUTBits> texclut;
+
+	bool fully_replaces_clut_upload(const PaletteUploadDescriptor &old) const;
 };
 
 struct CopyDescriptor
@@ -224,6 +226,8 @@ public:
 
 	// Caching stage.
 	uint32_t update_palette_cache(const PaletteUploadDescriptor &desc);
+	void mark_clut_read(uint32_t clut_instance);
+
 	Vulkan::ImageHandle create_cached_texture(const TextureDescriptor &desc);
 	// Creating 1k+ VkImages per frame can be a noticeable CPU burden on drivers.
 	// Computing swizzling layouts and stuff is quite complicated and slow.
@@ -285,6 +289,7 @@ private:
 	uint32_t next_clut_instance = 0;
 	uint32_t base_clut_instance = 0;
 	Vulkan::Semaphore timeline;
+	bool last_clut_update_is_read = false;
 
 	std::vector<VkImageMemoryBarrier2> pre_image_barriers;
 	std::vector<VkImageMemoryBarrier2> post_image_barriers;

@@ -515,9 +515,30 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 	}
 
 	render_pass.clut_instance = renderer.update_palette_cache(palette_desc);
+	bool replacing_clut = render_pass.latest_clut_instance == render_pass.clut_instance;
 	render_pass.latest_clut_instance = render_pass.clut_instance;
-	render_pass.pending_palette_updates++;
 	mark_texture_state_dirty();
+
+	if (replacing_clut)
+	{
+		// If we replaced an existing memoization entry which went unused, it's no longer part of the cache.
+		for (uint32_t i = 0; i < render_pass.num_memoized_palettes; i++)
+		{
+			if (render_pass.memoized_palettes[i].clut_instance == render_pass.clut_instance)
+			{
+				render_pass.num_memoized_palettes--;
+
+				if (i < render_pass.num_memoized_palettes)
+				{
+					memmove(render_pass.memoized_palettes + i,
+					        render_pass.memoized_palettes + i + 1,
+					        (render_pass.num_memoized_palettes - i) * sizeof(render_pass.memoized_palettes[0]));
+				}
+
+				break;
+			}
+		}
+	}
 
 	// Maintain a sliding window.
 	if (render_pass.num_memoized_palettes == NumMemoizedPalettes)
@@ -535,8 +556,12 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 
 	TRACE("CACHE CLUT", palette_desc);
 
-	if (render_pass.pending_palette_updates >= CLUTInstances)
-		tracker.flush_render_pass(FlushReason::Overflow);
+	if (!replacing_clut)
+	{
+		render_pass.pending_palette_updates++;
+		if (render_pass.pending_palette_updates >= CLUTInstances)
+			tracker.flush_render_pass(FlushReason::Overflow);
+	}
 }
 
 void GSInterface::handle_tex0_write(uint32_t ctx_index)
@@ -1002,6 +1027,10 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 		                                      render_pass.is_color_feedback ?
 		                                      RenderPass::Feedback::Color : RenderPass::Feedback::Depth);
 
+		// Lock the current CLUT upload as sensitive.
+		if (is_palette_format(render_pass.feedback_psm))
+			renderer.mark_clut_read(render_pass.clut_instance);
+
 		// Special index indicating on-tile feedback.
 		// We could add a different sentinel for depth feedback.
 		// 1024k CLUT instances and 32 sub-banks. Fits in 15 bits. Use bit 15 MSB to mark feedback texture.
@@ -1051,6 +1080,9 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 			csa_mask &= 0xffff;
 			csa_mask |= csa_mask << 16;
 		}
+
+		// Lock the current CLUT upload as sensitive.
+		renderer.mark_clut_read(render_pass.clut_instance);
 	}
 	else
 	{
