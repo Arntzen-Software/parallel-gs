@@ -2029,7 +2029,7 @@ static inline void sanitize_state_indices(const RenderPass &rp)
 
 		if (tex_index >= 0x8000)
 		{
-			if (!rp.feedback_texture)
+			if (rp.feedback_mode == RenderPass::Feedback::None)
 				std::terminate();
 		}
 		else if ((rp.states[state_index].combiner & COMBINER_TME_BIT) != 0)
