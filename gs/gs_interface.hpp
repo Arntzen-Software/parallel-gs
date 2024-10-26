@@ -293,7 +293,9 @@ private:
 
 		struct TextureStateToLocalIndex : Util::IntrusiveHashMapEnabled<TextureStateToLocalIndex>
 		{
-			explicit TextureStateToLocalIndex(uint32_t index_) : index(index_) {}
+			TextureStateToLocalIndex(uint32_t index_, uint64_t valid_at_texflush_)
+				: valid_at_texflush(valid_at_texflush_), index(index_) {}
+			uint64_t valid_at_texflush = 0;
 			uint32_t index;
 			bool valid = true;
 		};
@@ -354,7 +356,7 @@ private:
 		RenderPass::Feedback feedback_mode = RenderPass::Feedback::None;
 		bool has_aa1 = false;
 		bool has_scanmsk = false;
-		bool has_uncached_textures = false;
+		bool has_short_term_texture_caching = false;
 
 		ivec3 last_triangle_parallelogram_order;
 
@@ -451,6 +453,9 @@ private:
 		uint32_t last_state_index = 0;
 		TextureDescriptor last_texture_descriptor = {};
 		uint32_t last_texture_index = 0;
+		uint64_t last_texture_index_valid_at_texflush = 0;
+		uint64_t texflush_counter = 1;
+		bool texflush_counter_pending = false;
 
 		struct StateTrackerTexture
 		{

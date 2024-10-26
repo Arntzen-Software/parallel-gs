@@ -262,7 +262,7 @@ void GSInterface::flush_render_pass(FlushReason reason)
 	render_pass.feedback_mode = RenderPass::Feedback::None;
 	render_pass.has_aa1 = false;
 	render_pass.has_scanmsk = false;
-	render_pass.has_uncached_textures = false;
+	render_pass.has_short_term_texture_caching = false;
 	state_tracker.dirty_flags = STATE_DIRTY_ALL_BITS;
 }
 
@@ -694,11 +694,11 @@ void GSInterface::check_frame_buffer_state()
 	{
 		render_pass.current_instance = render_pass.num_instances;
 
-		bool can_fuse_render_pass = !render_pass.has_uncached_textures;
+		bool can_fuse_render_pass = !render_pass.has_short_term_texture_caching;
 
-		// If we have uncached textures, any framebuffer change will need to invalidate uncached textures,
+		// If we have short-term cached textures, any framebuffer change will need to invalidate those textures,
 		// and therefore end the render pass.
-		// Uncached textures are effectively defer-invalidated until next framebuffer change.
+		// Short-term textures are effectively defer-invalidated until next framebuffer change.
 		if (can_fuse_render_pass)
 		{
 			for (uint32_t instance = 0; instance < render_pass.num_instances; instance++)
@@ -755,6 +755,10 @@ void GSInterface::check_frame_buffer_state()
 		inst->zbuf = ctx.zbuf;
 		state_tracker.dirty_flags |= STATE_DIRTY_POTENTIAL_FEEDBACK_REGION_BIT;
 	}
+
+	// This is treated as an implicit texflush. Just makes sure we recheck the texture when changing FB.
+	if (fb_delta || z_delta)
+		state_tracker.texflush_counter++;
 
 	assert(inst->frame.desc.compat(ctx.frame.desc));
 	assert(inst->zbuf.desc.compat(ctx.zbuf.desc));
@@ -976,6 +980,7 @@ void GSInterface::recycle_image_handle(Vulkan::ImageHandle image)
 void GSInterface::mark_texture_state_dirty()
 {
 	state_tracker.last_texture_index = UINT32_MAX;
+	state_tracker.last_texture_index_valid_at_texflush = 0;
 	state_tracker.dirty_flags |= STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_TEX_BIT;
 }
 
@@ -984,6 +989,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	if (!get_and_clear_dirty_flag(STATE_DIRTY_TEX_BIT))
 	{
 		assert(state_tracker.last_texture_index != UINT32_MAX);
+		assert(state_tracker.last_texture_index_valid_at_texflush == state_tracker.texflush_counter);
 		return state_tracker.last_texture_index;
 	}
 
@@ -1066,10 +1072,11 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	desc.tex0.desc.CSM = 0;
 	desc.tex0.desc.CLD = 0;
 
-	// As a general rule we should cache a texture, but in feedback scenarios where there is overlap between
+	// As a general rule we should cache a texture long term which allows us to track COPY hazards properly,
+	// but in feedback scenarios where there is overlap between
 	// the UV BB and rendering BB, we temporarily suspend hazard tracking until we can prove a well-defined
 	// rendering pattern where render region and sampling region is disjoint.
-	bool cache_texture = true;
+	bool long_term_cache_texture = true;
 
 	if (feedback_mode == FBFeedbackMode::Sliced)
 	{
@@ -1096,7 +1103,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 					is_assumed_channel_shuffle = true;
 			}
 
-			cache_texture = !is_assumed_channel_shuffle;
+			long_term_cache_texture = !is_assumed_channel_shuffle;
 		}
 		else if (desc.clamp.desc.WMS == CLAMPBits::REGION_CLAMP && desc.clamp.desc.WMT == CLAMPBits::REGION_CLAMP)
 		{
@@ -1112,7 +1119,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 					std::min<int>(clamped_uv_bb.z, bb.z),
 					std::min<int>(clamped_uv_bb.w, bb.w));
 
-			cache_texture = hazard_bb.x > hazard_bb.z || hazard_bb.y > hazard_bb.w;
+			long_term_cache_texture = hazard_bb.x > hazard_bb.z || hazard_bb.y > hazard_bb.w;
 		}
 		else
 		{
@@ -1125,21 +1132,21 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 						std::min<int>(uv_bb.z, bb.z),
 						std::min<int>(uv_bb.w, bb.w));
 
-				cache_texture = hazard_bb.x > hazard_bb.z || hazard_bb.y > hazard_bb.w;
+				long_term_cache_texture = hazard_bb.x > hazard_bb.z || hazard_bb.y > hazard_bb.w;
 			}
 			else
 			{
 				// Questionable, but it seems almost impossible to do this correctly and fast.
 				// Need to emulate the PS2 texture cache exactly, which is just insane.
 				// This should be fine in most cases.
-				cache_texture = false;
+				long_term_cache_texture = false;
 			}
 		}
 	}
 	else if (feedback_mode == FBFeedbackMode::BypassHazards)
 	{
-		// Ignore hazards for these.
-		cache_texture = false;
+		// Only hold this texture for the duration of the render pass.
+		long_term_cache_texture = false;
 	}
 
 	auto TW = uint32_t(desc.tex0.desc.TW);
@@ -1150,7 +1157,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	// In sliced mode with clamping, we can clamp harder based on uv_bb.
 	// In this path, we're guaranteed to not hit wrapping with region clamp.
 	// For repeat, give up. Should not happen (hopefully).
-	if (feedback_mode == FBFeedbackMode::Sliced && cache_texture &&
+	if (feedback_mode == FBFeedbackMode::Sliced && long_term_cache_texture &&
 	    desc.clamp.desc.WMS != CLAMPBits::REGION_REPEAT &&
 	    desc.clamp.desc.WMT != CLAMPBits::REGION_REPEAT)
 	{
@@ -1263,27 +1270,6 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	// May flush render pass if there is a hazard.
 	update_texture_page_rects();
 
-	if (render_pass.is_potential_feedback)
-	{
-		// This texture will not survive beyond the render pass anyway, so don't bother caching it.
-		cache_texture = false;
-		texture_page_rects_read_region(uv_bb);
-	}
-	else if (cache_texture)
-	{
-		texture_page_rects_read_full();
-	}
-
-	if (!cache_texture)
-		render_pass.has_uncached_textures = true;
-
-	if (state_tracker.last_texture_index != UINT32_MAX &&
-	    !render_pass.tex_infos.empty() &&
-	    state_tracker.last_texture_descriptor == desc)
-	{
-		return state_tracker.last_texture_index;
-	}
-
 	Util::Hasher hasher;
 	hasher.u64(desc.tex0.bits);
 	hasher.u64(desc.tex1.bits);
@@ -1298,6 +1284,44 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	// live as long as we can maintain the render pass.
 	hasher.u64(desc.palette_bank);
 	auto *cached_index = render_pass.texture_map.find(hasher.get());
+
+	// For explicit feedback, we have to be super careful, and we skip these checks.
+	// This is mostly relevant for potential feedback and textures placed at an address
+	// slightly above the frame buffer pointer for whatever reason.
+	bool skip_hazard_checks = cached_index && cached_index->valid &&
+	                          cached_index->valid_at_texflush == state_tracker.texflush_counter &&
+	                          feedback_mode == FBFeedbackMode::None;
+
+	if (!skip_hazard_checks)
+	{
+		if (render_pass.is_potential_feedback)
+		{
+			// This texture will not survive beyond the render pass anyway, so don't bother caching it.
+			long_term_cache_texture = false;
+			texture_page_rects_read_region(uv_bb);
+		}
+		else if (long_term_cache_texture)
+		{
+			texture_page_rects_read_full();
+		}
+
+		// The render pass might have been flushed, have to requery.
+		cached_index = render_pass.texture_map.find(hasher.get());
+	}
+
+	if (!long_term_cache_texture)
+		render_pass.has_short_term_texture_caching = true;
+
+	if (state_tracker.last_texture_index != UINT32_MAX &&
+	    !render_pass.tex_infos.empty() &&
+	    state_tracker.last_texture_descriptor == desc)
+	{
+		state_tracker.last_texture_index_valid_at_texflush = state_tracker.texflush_counter;
+		if (cached_index && cached_index->valid)
+			cached_index->valid_at_texflush = state_tracker.texflush_counter;
+		return state_tracker.last_texture_index;
+	}
+
 	uint32_t texture_index;
 
 	if (cached_index && cached_index->valid)
@@ -1310,7 +1334,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 		// Any subsequent read from this texture will ignore hazard tracking.
 		if (render_pass.is_potential_feedback)
 			texture_page_rects_read_safe_region();
-		else if (!cache_texture)
+		else if (!long_term_cache_texture || skip_hazard_checks)
 			texture_page_rects_read_full();
 
 		auto image = tracker.find_cached_texture(hasher.get());
@@ -1322,7 +1346,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 
 			// If this is not the case, we imply self-managed.
 			// This is the case for explicit feedback where we don't want to care about hazards.
-			if (cache_texture)
+			if (long_term_cache_texture)
 			{
 				tracker.register_cached_texture(state_tracker.tex.page_rects, desc.rect.levels,
 				                                csa_mask, render_pass.clut_instance,
@@ -1334,11 +1358,12 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 
 		if (cached_index)
 		{
+			cached_index->valid_at_texflush = state_tracker.texflush_counter;
 			cached_index->index = texture_index;
 			cached_index->valid = true;
 		}
 		else
-			render_pass.texture_map.emplace_replace(hasher.get(), texture_index);
+			render_pass.texture_map.emplace_replace(hasher.get(), texture_index, state_tracker.texflush_counter);
 
 		TextureInfo info = {};
 		info.view = &image->get_view();
@@ -1377,6 +1402,8 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 
 	state_tracker.last_texture_descriptor = desc;
 	state_tracker.last_texture_index = texture_index;
+	state_tracker.last_texture_index_valid_at_texflush = state_tracker.texflush_counter;
+	state_tracker.texflush_counter_pending = false;
 	return texture_index;
 }
 
@@ -2091,14 +2118,25 @@ void GSInterface::drawing_kick_append()
 	// re-triggering state checks.
 	check_frame_buffer_state();
 
-	// Have to make sure it's still safe to read the texture we're using.
-	// Only do this when dirty flag is not set. Otherwise, we'll check it when resolving texture index anyway.
 	if (prim.desc.TME && (state_tracker.dirty_flags & STATE_DIRTY_TEX_BIT) == 0)
 	{
-		if (render_pass.is_potential_feedback)
-			texture_page_rects_read_region(uv_bb);
-		else
-			texture_page_rects_read_full();
+		// TEXFLUSH while keeping the texture state frozen is curious.
+		if (state_tracker.texflush_counter_pending)
+		{
+			state_tracker.texflush_counter++;
+			state_tracker.texflush_counter_pending = false;
+		}
+
+		// Have to make sure it's still safe to read the texture we're using.
+		// Only do this when dirty flag is not set. Otherwise, we'll check it when resolving texture index anyway.
+		if (state_tracker.texflush_counter != state_tracker.last_texture_index_valid_at_texflush ||
+		    feedback_mode != FBFeedbackMode::None)
+		{
+			if (render_pass.is_potential_feedback)
+				texture_page_rects_read_region(uv_bb);
+			else
+				texture_page_rects_read_full();
+		}
 	}
 
 	drawing_kick_update_state(feedback_mode, uv_bb, bb);
@@ -2383,7 +2421,10 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 
 		tracker.mark_transfer_write(dst_rect);
 		if (tracker.invalidate_texture_cache(render_pass.clut_instance))
+		{
 			mark_texture_state_dirty();
+			state_tracker.texflush_counter++;
+		}
 
 		transfer_state.copy.host_data = transfer_state.host_to_local_payload.data();
 		transfer_state.copy.host_data_size = transfer_state.host_to_local_payload.size() * sizeof(uint64_t);
@@ -2455,7 +2496,10 @@ void GSInterface::init_transfer()
 
 		transfer_state.copy.needs_shadow_vram = tracker.mark_transfer_copy(dst_rect, src_rect);
 		if (tracker.invalidate_texture_cache(render_pass.clut_instance))
+		{
 			mark_texture_state_dirty();
+			state_tracker.texflush_counter++;
+		}
 		renderer.copy_vram(transfer_state.copy);
 	}
 	else if (XDIR == HOST_TO_LOCAL)
@@ -3022,9 +3066,19 @@ void GSInterface::a_d_FOGCOL(uint64_t payload)
 
 void GSInterface::a_d_TEXFLUSH(uint64_t)
 {
-	// We cannot rely on TEXFLUSH unfortunately.
-	// We'll have to rely on our own tracking.
+	// We cannot rely on TEXFLUSH fully, unfortunately.
+	// We'll have to rely on our own tracking,
+	// but there are some edge cases where TEXFLUSH is a useful heuristic.
 	TRACE("TEXFLUSH", Reg64<DummyBits>{0});
+
+	// This is relevant for textures which are held during a render pass.
+	// If game never uses texflush, we should probably ignore any potential feedback hazards which are very unlikely to be real hazards.
+	// Newly seen textures ignore texflush however, since games screw that up regularly.
+	// We don't want to commit to updating the counter just yet however.
+	// We want to make sure this TEXFLUSH is actually targeting a real, cached texture that needs to be invalidated.
+	// If it's a new texture we have yet to cache, we will speculate that this is most likely
+	// a TEXFLUSH that attempts to invalidate the new texture, and we should not increase the counter.
+	state_tracker.texflush_counter_pending = true;
 }
 
 void GSInterface::a_d_SCISSOR_1(uint64_t payload)
