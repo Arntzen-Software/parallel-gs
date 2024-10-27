@@ -2153,7 +2153,7 @@ static bool instance_has_hazard(const RenderPass::Instance &a, const RenderPass:
 		return true;
 	if (a.z_sensitive && page_rect_overlaps(b_fb_rect, a_z_rect))
 		return true;
-	if ((a.z_write || b.z_write) && page_rect_overlaps(a_z_rect, b_z_rect))
+	if (a.z_sensitive && b.z_sensitive && (a.z_write || b.z_write) && page_rect_overlaps(a_z_rect, b_z_rect))
 		return true;
 
 	return false;
