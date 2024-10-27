@@ -287,6 +287,7 @@ private:
 		std::vector<StateVector> state_vectors;
 		std::vector<Vulkan::ImageHandle> held_images;
 		std::vector<TextureInfo> tex_infos;
+		std::vector<TEX0Bits> tex0_infos;
 
 		uint32_t clut_instance = 0;
 		uint32_t latest_clut_instance = 0;
@@ -512,6 +513,9 @@ private:
 	void handle_tex0_write(uint32_t ctx);
 	void handle_clut_upload(uint32_t ctx);
 	void handle_miptbl_gen(uint32_t ctx);
+
+	void rewrite_forwarded_clut_upload(const ContextState &ctx, PaletteUploadDescriptor &upload,
+	                                   uint32_t &palette_width, uint32_t &palette_height);
 
 	PageRect compute_fb_rect() const;
 	PageRect compute_z_rect() const;

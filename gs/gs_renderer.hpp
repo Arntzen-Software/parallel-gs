@@ -99,7 +99,11 @@ struct PaletteUploadDescriptor
 {
 	Reg64<TEX0Bits> tex0;
 	Reg64<TEXCLUTBits> texclut;
-
+	// Allows for certain FB forwarding techniques.
+	uint32_t csm2_x_bias;
+	float csm2_x_scale;
+	uint32_t csm1_reference_base;
+	uint32_t csm1_mask;
 	bool fully_replaces_clut_upload(const PaletteUploadDescriptor &old) const;
 };
 

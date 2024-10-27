@@ -94,7 +94,7 @@ void main()
 		uvec2 coord;
 		if (clut.csm != 0)
 		{
-			coord.x = read_coord + bitfieldExtract(clut.co_uv, 0, 16) * 16;
+			coord.x = uint(float(read_coord) * clut.csm2_x_scale + 1.0 / 256.0) + clut.csm2_x_bias + bitfieldExtract(clut.co_uv, 0, 16) * 16;
 			coord.y = bitfieldExtract(clut.co_uv, 16, 16);
 		}
 		else
@@ -109,8 +109,26 @@ void main()
 		{
 			if (clut.format == PSMCT32)
 			{
-				uint vram_addr = swizzle_PS2(coord.x, coord.y, clut.base_pointer, clut.cbw, clut.format, VRAM_MASK);
+				uint vram_addr = swizzle_PS2(coord.x, coord.y, clut.base_pointer, clut.cbw, PSMCT32, VRAM_MASK);
 				uint vram_data = vram32.data[vram_addr];
+
+				// See rewrite_forwarded_clut_upload for reference.
+				// Degenerate speed hack where RGB of palette is read from redirected texture to avoid hazard,
+				// and A is read from the original FB because write mask only actually updates RGB,
+				// and thus there is no hazard to read alpha.
+				// The intent it seems is that CLUT entry 15 is alpha transparent color.
+				// We only have a path for PSMCT32, so don't both adding this to PSMCT16 unless proven necessary.
+				if (clut.csm1_mask != 0u)
+				{
+					coord.x = bitfieldExtract(read_coord, 0, 3);
+					coord.y = bitfieldExtract(read_coord, 3, 1);
+					coord.x = bitfieldInsert(coord.x, bitfieldExtract(read_coord, 4, 1), 3, 1);
+					coord.y = bitfieldInsert(coord.y, bitfieldExtract(read_coord, 5, 3), 1, 3);
+					vram_addr = swizzle_PS2(coord.x, coord.y, clut.csm1_reference_base, 0, PSMCT32, VRAM_MASK);
+					uint csm1_data = vram32.data[vram_addr];
+					vram_data = (vram_data & ~clut.csm1_mask) | (csm1_data & clut.csm1_mask);
+				}
+
 				tmp_clut[write_coord] = bitfieldExtract(vram_data, 0, 16);
 				if (write_coord + 256u < 512u)
 					tmp_clut[write_coord + 256u] = bitfieldExtract(vram_data, 16, 16);
