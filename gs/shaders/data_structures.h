@@ -87,6 +87,10 @@ struct CLUTDescriptor
 	uint co_uv;
 	uint cbw;
 	uint csa;
+	float csm2_x_scale;
+	uint csm2_x_bias;
+	uint padding0;
+	uint padding1;
 };
 
 struct TexInfo

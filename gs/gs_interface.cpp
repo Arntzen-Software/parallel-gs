@@ -240,6 +240,7 @@ void GSInterface::flush_render_pass(FlushReason reason)
 	render_pass.held_images.clear();
 	render_pass.texture_map.clear();
 	render_pass.tex_infos.clear();
+	render_pass.tex0_infos.clear();
 	render_pass.state_vector_map.clear();
 	render_pass.state_vectors.clear();
 	render_pass.primitive_count = 0;
@@ -348,6 +349,102 @@ void GSInterface::mark_copy_write_page(uint32_t page_index)
 	renderer.mark_copy_write_page(page_index);
 }
 
+void GSInterface::rewrite_forwarded_clut_upload(
+		const ContextState &ctx, PaletteUploadDescriptor &upload,
+		uint32_t &palette_width, uint32_t &palette_height)
+{
+	// Horrible engine-specific speed hack. Try to forward some extreme edge cases where
+	// game renders to FB only to use that as a palette.
+	// It's basically CSM2 mode with a scaled palette coordinate, so attempt to rewrite the descriptor to that style.
+	// Absolute insanity, but what you gonna do *shrug*.
+	// Without this, we end up with one full flush per primitive almost, making everything sub 5 fps ...
+
+	auto &fb_instance = render_pass.instances[render_pass.current_instance];
+	auto &desc = ctx.tex0.desc;
+
+	// Match 16 color palette.
+	if (uint32_t(ctx.tex0.desc.CBP) == fb_instance.frame.desc.FBP * PGS_BLOCKS_PER_PAGE &&
+	    fb_instance.color_write_mask != 0 && render_pass.primitive_count >= 2 &&
+	    desc.CPSM == PSMCT32 && desc.PSM == PSMT4)
+	{
+		auto &prim_a = render_pass.prim[render_pass.primitive_count - 2];
+		auto &prim_b = render_pass.prim[render_pass.primitive_count - 1];
+
+		if (prim_a.state != prim_b.state || prim_a.tex != prim_b.tex)
+			return;
+
+		// This engine renders two horizontal lines, representing the palette.
+		if ((prim_a.state & (1u << STATE_BIT_LINE)) == 0)
+			return;
+
+		// Check for any unexpected state which could cause the heuristic to fail.
+		if ((prim_a.state & ((1u << STATE_BIT_PERSPECTIVE) | (1u << STATE_BIT_Z_TEST) | (1u << STATE_BIT_Z_WRITE))) != 0)
+			return;
+
+		// Make sure the primitive we're testing targets the current FB.
+		auto a_fb_index = prim_a.state >> STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET;
+		if (a_fb_index != render_pass.current_instance)
+			return;
+
+		// And that it's sampling from a texture.
+		auto a_state_index = prim_a.state & ((1u << STATE_INDEX_BIT_COUNT) - 1u);
+		auto &state = render_pass.state_vectors[a_state_index];
+		if ((state.combiner & COMBINER_TME_BIT) == 0)
+			return;
+
+		// Sanity check, ignore any blending-like state.
+		// Allow ATE, since the engine does that, but it always passes the test, so *shrug*.
+		if ((state.blend_mode & (BLEND_MODE_ABE_BIT | BLEND_MODE_DATE_BIT | BLEND_MODE_DATM_BIT)) != 0)
+			return;
+
+		auto &pos0 = render_pass.positions[3 * render_pass.primitive_count - 5];
+		auto &pos1 = render_pass.positions[3 * render_pass.primitive_count - 6];
+		auto &pos2 = render_pass.positions[3 * render_pass.primitive_count - 2];
+		auto &pos3 = render_pass.positions[3 * render_pass.primitive_count - 3];
+
+		// Ensure the full 16 color palette is written as expected.
+		if (pos0.pos.x != 0 || pos0.pos.y != 0)
+			return;
+		if (pos1.pos.x <= 7 * PGS_SUBPIXELS || pos1.pos.y != 0)
+			return;
+		if (pos2.pos.x != 0 || pos2.pos.y != PGS_SUBPIXELS)
+			return;
+		if (pos3.pos.x <= 7 * PGS_SUBPIXEL_BITS || pos3.pos.y != PGS_SUBPIXELS)
+			return;
+
+		auto &attr0= render_pass.attributes[3 * render_pass.primitive_count - 5];
+		auto &attr1 = render_pass.attributes[3 * render_pass.primitive_count - 6];
+		auto &attr2 = render_pass.attributes[3 * render_pass.primitive_count - 2];
+		auto &attr3 = render_pass.attributes[3 * render_pass.primitive_count - 3];
+
+		// CSM2 can only sample from a single line.
+		if (attr0.uv.y != attr1.uv.y || attr0.uv.y != attr2.uv.y || attr0.uv.y != attr3.uv.y)
+			return;
+
+		// Make sure the coordinates are increasing.
+		if (attr1.uv.x <= attr0.uv.x || attr3.uv.x <= attr0.uv.x)
+			return;
+
+		// Make sure the sampling is aligned to COU alignment (can be relaxed if need be).
+		if ((attr0.uv.x & (PGS_SUBPIXELS - 1)))
+			return;
+
+		// Rewrite the upload.
+		upload.csm2_x_scale = float(attr3.uv.x - attr0.uv.x) / (float(pos3.pos.x) + 8 * PGS_SUBPIXELS);
+		upload.csm2_x_bias = attr0.uv.x >> PGS_SUBPIXEL_BITS;
+		upload.tex0.desc.CSM = TEX0Bits::CSM_LAYOUT_LINE;
+
+		uint32_t tex_index = prim_a.tex & ((1u << TEX_TEXTURE_INDEX_BITS) - 1u);
+		upload.tex0.desc.CBP = render_pass.tex0_infos[tex_index].TBP0;
+		upload.texclut.desc.CBW = render_pass.tex0_infos[tex_index].TBW;
+		upload.texclut.desc.COU = 0;
+		upload.texclut.desc.COV = attr0.uv.y >> PGS_SUBPIXEL_BITS;
+
+		palette_width = ((attr3.uv.x - 1) >> PGS_SUBPIXEL_BITS) + 1u - upload.csm2_x_bias;
+		palette_height = 1;
+	}
+}
+
 void GSInterface::handle_clut_upload(uint32_t ctx_index)
 {
 	auto &ctx = registers.ctx[ctx_index];
@@ -445,24 +542,6 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 	if (cpsm == PSMCT32)
 		page.csa_mask |= page.csa_mask << 16;
 
-	uint32_t x_offset = desc.CSM == TEX0Bits::CSM_LAYOUT_LINE ? registers.texclut.desc.COU * TEX0Bits::COU_SCALE : 0;
-	uint32_t y_offset = desc.CSM == TEX0Bits::CSM_LAYOUT_LINE ? registers.texclut.desc.COV : 0;
-
-	auto clut_page = compute_page_rect(uint32_t(desc.CBP), x_offset, y_offset,
-	                                   palette_width, palette_height,
-	                                   registers.texclut.desc.CBW,
-	                                   cpsm);
-
-	page.base_page = clut_page.base_page;
-	page.page_width = clut_page.page_width;
-	page.page_height = clut_page.page_height;
-	page.page_stride = clut_page.page_stride;
-	page.block_mask = clut_page.block_mask;
-	page.write_mask = clut_page.write_mask;
-
-	tracker.mark_texture_read(page);
-	tracker.register_cached_clut_clobber(page);
-
 	// Queue up palette upload.
 	PaletteUploadDescriptor palette_desc = {};
 	palette_desc.texclut = registers.texclut;
@@ -478,6 +557,28 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 	palette_desc.tex0.desc.TBW = 0;
 	palette_desc.tex0.desc.CLD = 0;
 	palette_desc.tex0.desc.CSA = csa;
+	palette_desc.csm2_x_scale = 1.0f;
+
+	rewrite_forwarded_clut_upload(ctx, palette_desc, palette_width, palette_height);
+
+	uint32_t x_offset = desc.CSM == TEX0Bits::CSM_LAYOUT_LINE ? palette_desc.texclut.desc.COU * TEX0Bits::COU_SCALE : 0;
+	uint32_t y_offset = desc.CSM == TEX0Bits::CSM_LAYOUT_LINE ? palette_desc.texclut.desc.COV : 0;
+	x_offset += palette_desc.csm2_x_bias;
+
+	auto clut_page = compute_page_rect(uint32_t(palette_desc.tex0.desc.CBP), x_offset, y_offset,
+	                                   palette_width, palette_height,
+	                                   palette_desc.texclut.desc.CBW,
+	                                   cpsm);
+
+	page.base_page = clut_page.base_page;
+	page.page_width = clut_page.page_width;
+	page.page_height = clut_page.page_height;
+	page.page_stride = clut_page.page_stride;
+	page.block_mask = clut_page.block_mask;
+	page.write_mask = clut_page.write_mask;
+
+	tracker.mark_texture_read(page);
+	tracker.register_cached_clut_clobber(page);
 
 	// Try to find a memoized palette. In case game constantly uploads CLUT redundantly.
 	// This is very common, and this optimization is extremely important.
@@ -491,7 +592,9 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 
 		if (memoized.csa_mask == page.csa_mask &&
 		    memoized.upload.texclut.bits == palette_desc.texclut.bits &&
-		    memoized.upload.tex0.bits == palette_desc.tex0.bits)
+		    memoized.upload.tex0.bits == palette_desc.tex0.bits &&
+		    memoized.upload.csm2_x_scale == palette_desc.csm2_x_scale &&
+		    memoized.upload.csm2_x_bias == palette_desc.csm2_x_bias)
 		{
 			if (memoized.clut_instance != render_pass.clut_instance)
 				mark_texture_state_dirty();
@@ -1429,6 +1532,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 		info.info.bias.y = -float(desc.rect.y) * info.info.sizes.w;
 
 		render_pass.tex_infos.push_back(info);
+		render_pass.tex0_infos.push_back(ctx.tex0.desc);
 		render_pass.held_images.push_back(std::move(image));
 	}
 

@@ -94,7 +94,7 @@ void main()
 		uvec2 coord;
 		if (clut.csm != 0)
 		{
-			coord.x = read_coord + bitfieldExtract(clut.co_uv, 0, 16) * 16;
+			coord.x = uint(float(read_coord) * clut.csm2_x_scale) + clut.csm2_x_bias + bitfieldExtract(clut.co_uv, 0, 16) * 16;
 			coord.y = bitfieldExtract(clut.co_uv, 16, 16);
 		}
 		else
