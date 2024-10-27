@@ -452,6 +452,11 @@ void GSInterface::rewrite_forwarded_clut_upload(
 
 		palette_width = ((attr3.uv.x - 1) >> PGS_SUBPIXEL_BITS) + 1u - upload.csm2_x_bias;
 		palette_height = 1;
+
+		// We won't be needing these primitives later. Rendering 1k+ primitives on one tile
+		// is a serious performance drain.
+		prim_a.bb = i16vec4(0, 0, -1, -1);
+		prim_b.bb = i16vec4(0, 0, -1, -1);
 	}
 }
 
