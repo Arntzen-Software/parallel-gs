@@ -371,13 +371,13 @@ void PageTracker::notify_pressure_flush()
 {
 	clear_cache_pages();
 	clear_copy_pages();
-	clear_fb_pages();
 }
 
 void PageTracker::flush_render_pass(FlushReason reason)
 {
 	cb.flush(PAGE_TRACKER_FLUSH_FB_ALL, reason);
 	notify_pressure_flush();
+	clear_fb_pages();
 	// While TEXFLUSH is necessary, plenty of content do not do this properly.
 	invalidate_texture_cache(UINT32_MAX);
 
