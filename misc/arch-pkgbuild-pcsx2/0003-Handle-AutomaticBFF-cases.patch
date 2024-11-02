@@ -1,14 +1,14 @@
-From 362147b38c6a03ed898f826fd4828b3acf77bc22 Mon Sep 17 00:00:00 2001
+From a7bb329d39254831d1e98fca0b2b4e43b59b3571 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sat, 24 Aug 2024 12:48:17 +0200
-Subject: [PATCH 3/3] Handle AutomaticBFF cases.
+Subject: [PATCH 3/4] Handle AutomaticBFF cases.
 
 ---
  pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp | 7 +++++++
  1 file changed, 7 insertions(+)
 
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
-index 63072d6f5..5ff60d857 100644
+index 63072d6f5f..5ff60d8574 100644
 --- a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 @@ -434,6 +434,13 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
@@ -26,5 +26,5 @@ index 63072d6f5..5ff60d857 100644
  	info.force_progressive = true;
  	info.overscan = GSConfig.PCRTCOverscan;
 -- 
-2.46.0
+2.47.0
 

@@ -1,4 +1,4 @@
-From c05ac2f292cd4bf74047de0eeda221e5d0ea98d5 Mon Sep 17 00:00:00 2001
+From c25959dbaae4eee210479ca276a254565430ebc2 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Wed, 4 Sep 2024 19:24:55 +0200
 Subject: [PATCH 4/4] Hook up GSreset.
@@ -10,10 +10,10 @@ Subject: [PATCH 4/4] Hook up GSreset.
  3 files changed, 11 insertions(+)
 
 diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
-index 7e348caca1..a080c92e3a 100644
+index f0fc16f5a6..94af60d8a3 100644
 --- a/pcsx2/GS/GS.cpp
 +++ b/pcsx2/GS/GS.cpp
-@@ -478,6 +478,11 @@ void GSclose()
+@@ -484,6 +484,11 @@ void GSclose()
  
  void GSreset(bool hardware_reset)
  {
@@ -54,5 +54,5 @@ index 289b974838..ae14e4b6ef 100644
  	void Transfer(const u8 *mem, u32 size);
  
 -- 
-2.46.0
+2.47.0
 

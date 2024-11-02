@@ -5,7 +5,7 @@
 # Contributor: Themaister <post@themaister.net>
 
 pkgname=pcsx2-parallel-gs-git
-pkgver=2.1.106.r4.gd45115ff53
+pkgver=2.2.0.r4.gd45115ff53
 pkgrel=1
 pkgdesc='A Sony PlayStation 2 emulator with experimental paraLLEl-GS support'
 arch=(x86_64)
@@ -40,7 +40,6 @@ makedepends=(
     libpulse
     libpipewire
     p7zip
-    ccache
     # See .github/workflows/scripts/linux/build-dependencies-qt.sh
     libjpeg-turbo
     qt6-tools
@@ -64,7 +63,7 @@ SHADERC_SPIRVTOOLS=dd4b663e13c07fea4fbb3f70c1c91c86731099f7
 INSTALLDIR="${srcdir}/deps-build"
 
 source=(
-    git+https://github.com/PCSX2/pcsx2.git#commit=fd5a6522702c3279c2a968f395983a46374b7fa2
+    git+https://github.com/PCSX2/pcsx2.git#tag=v2.2.0
     git+https://github.com/Arntzen-Software/parallel-gs.git
     git+https://github.com/PCSX2/pcsx2_patches.git
     git+https://github.com/ianlancetaylor/libbacktrace.git#commit=$LIBBACKTRACE
@@ -102,9 +101,7 @@ prepare()
 	ln -sf "${srcdir}/parallel-gs" parallel-gs
 	cd parallel-gs
 	echo "Updating parallel-gs submodules."
-	git submodule update --init
-	cd Granite
-	git submodule update --init
+	./checkout_submodules.sh
 }
 
 pkgver() {

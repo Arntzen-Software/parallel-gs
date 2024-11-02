@@ -1,14 +1,14 @@
-From 3d0f2d13b80a48587b4f8a7250cfca8b5881c4ef Mon Sep 17 00:00:00 2001
+From b4f085c1b27992fb3363b8b56da004c5b841eadd Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sun, 23 Jun 2024 14:54:43 +0200
-Subject: [PATCH 1/3] Add an ad-hoc GS stream format.
+Subject: [PATCH 1/4] Add an ad-hoc GS stream format.
 
 ---
  pcsx2/GS/GS.cpp | 36 ++++++++++++++++++++++++++++++++++++
  1 file changed, 36 insertions(+)
 
 diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
-index 98bb62ba5..8e42ebd46 100644
+index 84956d86a3..76787be9ad 100644
 --- a/pcsx2/GS/GS.cpp
 +++ b/pcsx2/GS/GS.cpp
 @@ -58,6 +58,9 @@ Pcsx2Config::GSOptions GSConfig;
@@ -21,7 +21,7 @@ index 98bb62ba5..8e42ebd46 100644
  GSRendererType GSGetCurrentRenderer()
  {
  	return GSCurrentRenderer;
-@@ -216,6 +219,11 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
+@@ -222,6 +225,11 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
  	g_gs_renderer->ResetPCRTC();
  	g_gs_renderer->UpdateRenderFixes();
  	g_perfmon.Reset();
@@ -33,7 +33,7 @@ index 98bb62ba5..8e42ebd46 100644
  	return true;
  }
  
-@@ -228,6 +236,8 @@ static void CloseGSRenderer()
+@@ -234,6 +242,8 @@ static void CloseGSRenderer()
  		g_gs_renderer->Destroy();
  		g_gs_renderer.reset();
  	}
@@ -42,7 +42,7 @@ index 98bb62ba5..8e42ebd46 100644
  }
  
  bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_renderer,
-@@ -410,6 +420,18 @@ void GSReadLocalMemoryUnsync(u8* mem, u32 qwc, u64 BITBLITBUF, u64 TRXPOS, u64 T
+@@ -416,6 +426,18 @@ void GSReadLocalMemoryUnsync(u8* mem, u32 qwc, u64 BITBLITBUF, u64 TRXPOS, u64 T
  void GSgifTransfer(const u8* mem, u32 size)
  {
  	g_gs_renderer->Transfer<3>(mem, size);
@@ -61,7 +61,7 @@ index 98bb62ba5..8e42ebd46 100644
  }
  
  void GSgifTransfer1(u8* mem, u32 addr)
-@@ -429,6 +451,20 @@ void GSgifTransfer3(u8* mem, u32 size)
+@@ -435,6 +457,20 @@ void GSgifTransfer3(u8* mem, u32 size)
  
  void GSvsync(u32 field, bool registers_written)
  {
@@ -83,5 +83,5 @@ index 98bb62ba5..8e42ebd46 100644
  	// get cleared in HW VSync, and may be needed for a buffered draw (FFX FMVs).
  	g_gs_renderer->Flush(GSState::VSYNC);
 -- 
-2.46.0
+2.47.0
 

@@ -1,7 +1,7 @@
-From 1e2942304dd3570cfb88cfbdf4e96d623aa39737 Mon Sep 17 00:00:00 2001
+From 3efa5f4fedad83d6ac0ddd77d143b2e3e80f4fd4 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Fri, 12 Jul 2024 23:01:39 +0200
-Subject: [PATCH 2/3] Early integration of parallel-GS.
+Subject: [PATCH 2/4] Early integration of parallel-GS.
 
 ---
  .gitignore                                    |   2 +
@@ -24,15 +24,15 @@ Subject: [PATCH 2/3] Early integration of parallel-GS.
  .../Renderers/parallel-gs/GSRendererPGS.cpp   | 760 ++++++++++++++++++
  .../GS/Renderers/parallel-gs/GSRendererPGS.h  |  84 ++
  pcsx2/ImGui/ImGuiFullscreen.cpp               |   2 +
- pcsx2/Pcsx2Config.cpp                         |  23 +-
+ pcsx2/Pcsx2Config.cpp                         |   5 +-
  pcsx2/pcsx2.vcxproj                           |  51 +-
- 22 files changed, 1360 insertions(+), 100 deletions(-)
+ 22 files changed, 1351 insertions(+), 91 deletions(-)
  create mode 100644 pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
 
 diff --git a/.gitignore b/.gitignore
-index b59e873da..aac77d348 100644
+index b59e873da7..aac77d3488 100644
 --- a/.gitignore
 +++ b/.gitignore
 @@ -120,3 +120,5 @@ CMakeSettings.json
@@ -42,7 +42,7 @@ index b59e873da..aac77d348 100644
 +
 +/pcsx2/GS/parallel-gs
 diff --git a/pcsx2-gsrunner/Main.cpp b/pcsx2-gsrunner/Main.cpp
-index d3ad1e818..0f4120573 100644
+index d3ad1e8182..0f41205736 100644
 --- a/pcsx2-gsrunner/Main.cpp
 +++ b/pcsx2-gsrunner/Main.cpp
 @@ -519,6 +519,10 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
@@ -57,10 +57,10 @@ index d3ad1e818..0f4120573 100644
  				else if (StringUtil::Strcasecmp(rname, "gl") == 0)
  					type = GSRendererType::OGL;
 diff --git a/pcsx2-qt/MainWindow.cpp b/pcsx2-qt/MainWindow.cpp
-index b0c60588d..3d93053e5 100644
+index 616e9efa94..4fe7cfc8f6 100644
 --- a/pcsx2-qt/MainWindow.cpp
 +++ b/pcsx2-qt/MainWindow.cpp
-@@ -458,6 +458,9 @@ void MainWindow::createRendererSwitchMenu()
+@@ -462,6 +462,9 @@ void MainWindow::createRendererSwitchMenu()
  {
  	static constexpr const GSRendererType renderers[] = {
  		GSRendererType::Auto,
@@ -71,7 +71,7 @@ index b0c60588d..3d93053e5 100644
  		GSRendererType::DX11,
  		GSRendererType::DX12,
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
-index 5873377d8..3a844dbaa 100644
+index 311143fd46..faa0ab4e4e 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 @@ -20,6 +20,9 @@ struct RendererInfo
@@ -84,7 +84,7 @@ index 5873377d8..3a844dbaa 100644
  #ifdef _WIN32
  	//: Graphics backend/engine type. Leave as-is.
  	{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "Direct3D 11"), GSRendererType::DX11},
-@@ -263,6 +266,11 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
+@@ -264,6 +267,11 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
  	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.swAutoFlush, "EmuCore/GS", "autoflush_sw", true);
  	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.swMipmap, "EmuCore/GS", "mipmap", true);
  
@@ -96,7 +96,7 @@ index 5873377d8..3a844dbaa 100644
  	//////////////////////////////////////////////////////////////////////////
  	// Non-trivial settings
  	//////////////////////////////////////////////////////////////////////////
-@@ -297,6 +305,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
+@@ -298,6 +306,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
  	connect(m_ui.extendedUpscales, &QCheckBox::checkStateChanged, this, &GraphicsSettingsWidget::updateRendererDependentOptions);
  	connect(m_ui.textureFiltering, &QComboBox::currentIndexChanged, this, &GraphicsSettingsWidget::onTextureFilteringChange);
  	connect(m_ui.swTextureFiltering, &QComboBox::currentIndexChanged, this, &GraphicsSettingsWidget::onSWTextureFilteringChange);
@@ -104,7 +104,7 @@ index 5873377d8..3a844dbaa 100644
  	updateRendererDependentOptions();
  
  #ifndef _WIN32
-@@ -570,6 +579,11 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
+@@ -571,6 +580,11 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
  
  		dialog->registerWidgetHelp(
  			m_ui.swMipmap, tr("Mipmapping"), tr("Checked"), tr("Enables mipmapping, which some games require to render correctly."));
@@ -116,7 +116,7 @@ index 5873377d8..3a844dbaa 100644
  	}
  
  	// Hardware Fixes tab
-@@ -1078,6 +1092,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+@@ -1084,6 +1098,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
  	const bool is_hardware = (type == GSRendererType::DX11 || type == GSRendererType::DX12 || type == GSRendererType::OGL ||
  							  type == GSRendererType::VK || type == GSRendererType::Metal);
  	const bool is_software = (type == GSRendererType::SW);
@@ -124,7 +124,7 @@ index 5873377d8..3a844dbaa 100644
  	const bool is_auto = (type == GSRendererType::Auto);
  	const bool is_vk = (type == GSRendererType::VK);
  	const bool is_disable_barriers = (type == GSRendererType::DX11 || type == GSRendererType::DX12 || type == GSRendererType::Metal || type == GSRendererType::SW);
-@@ -1092,22 +1107,32 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+@@ -1098,22 +1113,32 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
  	m_ui.tabs->setTabEnabled(2, is_software);
  	m_ui.tabs->setTabVisible(2, is_software);
  
@@ -166,10 +166,10 @@ index 5873377d8..3a844dbaa 100644
  
  	if (m_ui.useBlitSwapChain)
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.ui b/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
-index de1240e5f..8f8326676 100644
+index d1b6a9031d..a11828fda5 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
-@@ -751,6 +751,59 @@
+@@ -721,6 +721,59 @@
         </item>
        </layout>
       </widget>
@@ -230,10 +230,10 @@ index de1240e5f..8f8326676 100644
        <attribute name="title">
         <string>Hardware Fixes</string>
 diff --git a/pcsx2-qt/pcsx2-qt.vcxproj b/pcsx2-qt/pcsx2-qt.vcxproj
-index 4f444793c..8f9c57fdc 100644
+index f77da95952..5c3536ce90 100644
 --- a/pcsx2-qt/pcsx2-qt.vcxproj
 +++ b/pcsx2-qt/pcsx2-qt.vcxproj
-@@ -53,7 +53,7 @@
+@@ -54,7 +54,7 @@
        <ForcedIncludeFiles>PrecompiledHeader.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
        <PreprocessorDefinitions Condition="'$(Platform)'!='ARM64'">ENABLE_RAINTEGRATION;ENABLE_OPENGL;ENABLE_VULKAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
        <PreprocessorDefinitions>LZMA_API_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -243,10 +243,10 @@ index 4f444793c..8f9c57fdc 100644
        <RuntimeTypeInfo Condition="$(Configuration.Contains(Debug))">true</RuntimeTypeInfo>
      </ClCompile>
 diff --git a/pcsx2/CMakeLists.txt b/pcsx2/CMakeLists.txt
-index 1f2bfd9e9..c96c9ec15 100644
+index 804ab2e406..87e7905a2b 100644
 --- a/pcsx2/CMakeLists.txt
 +++ b/pcsx2/CMakeLists.txt
-@@ -636,6 +636,7 @@ if(USE_VULKAN)
+@@ -638,6 +638,7 @@ if(USE_VULKAN)
  		GS/Renderers/Vulkan/VKEntryPoints.h
  		GS/Renderers/Vulkan/VKEntryPoints.inl
  		GS/Renderers/Vulkan/VKLoader.h
@@ -254,7 +254,7 @@ index 1f2bfd9e9..c96c9ec15 100644
  		GS/Renderers/Vulkan/VKShaderCache.h
  		GS/Renderers/Vulkan/VKStreamBuffer.h
  		GS/Renderers/Vulkan/VKSwapChain.h
-@@ -644,6 +645,25 @@ if(USE_VULKAN)
+@@ -646,6 +647,25 @@ if(USE_VULKAN)
  	target_include_directories(PCSX2_FLAGS INTERFACE ${SHADERC_INCLUDE_DIR})
  endif()
  
@@ -281,10 +281,10 @@ index 1f2bfd9e9..c96c9ec15 100644
  	GS/Renderers/Metal/cas.metal
  	GS/Renderers/Metal/convert.metal
 diff --git a/pcsx2/Config.h b/pcsx2/Config.h
-index 3b12a9694..4237d88ec 100644
+index 88f4da719c..ce871d3b77 100644
 --- a/pcsx2/Config.h
 +++ b/pcsx2/Config.h
-@@ -245,6 +245,7 @@ enum class GSRendererType : s8
+@@ -276,6 +276,7 @@ enum class GSRendererType : s8
  	VK = 14,
  	Metal = 17,
  	DX12 = 15,
@@ -292,7 +292,7 @@ index 3b12a9694..4237d88ec 100644
  };
  
  enum class GSVSyncMode : u8
-@@ -728,6 +729,7 @@ struct Pcsx2Config
+@@ -814,6 +815,7 @@ struct Pcsx2Config
  		u8 ShadeBoost_Contrast = 50;
  		u8 ShadeBoost_Saturation = 50;
  		u8 PNGCompressionLevel = 1;
@@ -301,7 +301,7 @@ index 3b12a9694..4237d88ec 100644
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
 diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
-index 8e42ebd46..7e348caca 100644
+index 76787be9ad..f0fc16f5a6 100644
 --- a/pcsx2/GS/GS.cpp
 +++ b/pcsx2/GS/GS.cpp
 @@ -22,6 +22,11 @@
@@ -316,7 +316,7 @@ index 8e42ebd46..7e348caca 100644
  #ifdef ENABLE_OPENGL
  #include "GS/Renderers/OpenGL/GSDeviceOGL.h"
  #endif
-@@ -82,6 +87,11 @@ static RenderAPI GetAPIForRenderer(GSRendererType renderer)
+@@ -88,6 +93,11 @@ static RenderAPI GetAPIForRenderer(GSRendererType renderer)
  		case GSRendererType::VK:
  			return RenderAPI::Vulkan;
  
@@ -328,7 +328,7 @@ index 8e42ebd46..7e348caca 100644
  #ifdef _WIN32
  		case GSRendererType::DX11:
  			return RenderAPI::D3D11;
-@@ -95,6 +105,10 @@ static RenderAPI GetAPIForRenderer(GSRendererType renderer)
+@@ -101,6 +111,10 @@ static RenderAPI GetAPIForRenderer(GSRendererType renderer)
  			return RenderAPI::Metal;
  #endif
  
@@ -339,7 +339,7 @@ index 8e42ebd46..7e348caca 100644
  			// We could end up here if we ever removed a renderer.
  		default:
  			return GetAPIForRenderer(GSUtil::GetPreferredRenderer());
-@@ -132,6 +146,12 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool
+@@ -138,6 +152,12 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool
  			break;
  #endif
  
@@ -352,7 +352,7 @@ index 8e42ebd46..7e348caca 100644
  		default:
  			Console.Error("Unsupported render API %s", GSDevice::RenderAPIToString(new_api));
  			return false;
-@@ -152,16 +172,20 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool
+@@ -158,16 +178,20 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool
  	if (!okay)
  	{
  		ImGuiManager::Shutdown(clear_state_on_fail);
@@ -377,7 +377,7 @@ index 8e42ebd46..7e348caca 100644
  
  	return true;
  }
-@@ -205,6 +229,17 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
+@@ -211,6 +235,17 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
  	{
  		g_gs_renderer = std::make_unique<GSRendererNull>();
  	}
@@ -395,7 +395,7 @@ index 8e42ebd46..7e348caca 100644
  	else if (renderer != GSRendererType::SW)
  	{
  		GSClampUpscaleMultiplier(GSConfig);
-@@ -215,9 +250,12 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
+@@ -221,9 +256,12 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
  		g_gs_renderer = std::unique_ptr<GSRenderer>(MULTI_ISA_SELECT(makeGSRendererSW)(GSConfig.SWExtraThreads));
  	}
  
@@ -411,7 +411,7 @@ index 8e42ebd46..7e348caca 100644
  	g_perfmon.Reset();
  
  	const char *env = getenv("GS_STREAM");
-@@ -231,6 +269,10 @@ static void CloseGSRenderer()
+@@ -237,6 +275,10 @@ static void CloseGSRenderer()
  {
  	GSTextureReplacements::Shutdown();
  
@@ -422,7 +422,7 @@ index 8e42ebd46..7e348caca 100644
  	if (g_gs_renderer)
  	{
  		g_gs_renderer->Destroy();
-@@ -245,18 +287,21 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
+@@ -251,18 +293,21 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
  {
  	Console.WriteLn("Reopening GS with %s device", recreate_device ? "new" : "existing");
  
@@ -455,7 +455,7 @@ index 8e42ebd46..7e348caca 100644
  	}
  
  	std::string capture_filename;
-@@ -266,27 +311,65 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
+@@ -272,27 +317,65 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
  		capture_filename = GSCapture::GetNextCaptureFileName();
  		capture_size = GSCapture::GetSize();
  		Console.Warning(fmt::format("Restarting video capture to {}.", capture_filename));
@@ -529,7 +529,7 @@ index 8e42ebd46..7e348caca 100644
  		}
  
  		CloseGSRenderer();
-@@ -295,9 +378,10 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
+@@ -301,9 +384,10 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
  	if (recreate_device)
  	{
  		// We need a new render window when changing APIs.
@@ -543,7 +543,7 @@ index 8e42ebd46..7e348caca 100644
  		CloseGSDevice(false);
  
  		if (!OpenGSDevice(new_renderer, false, recreate_window, vsync_mode, allow_present_throttle))
-@@ -328,14 +412,27 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
+@@ -334,14 +418,27 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
  			return false;
  		}
  
@@ -575,7 +575,7 @@ index 8e42ebd46..7e348caca 100644
  		g_gs_renderer->BeginCapture(std::move(capture_filename), capture_size);
  
  	return true;
-@@ -381,6 +478,9 @@ void GSclose()
+@@ -387,6 +484,9 @@ void GSclose()
  
  void GSreset(bool hardware_reset)
  {
@@ -585,7 +585,7 @@ index 8e42ebd46..7e348caca 100644
  	g_gs_renderer->Reset(hardware_reset);
  
  	// Restart video capture if it's been started.
-@@ -397,29 +497,48 @@ void GSreset(bool hardware_reset)
+@@ -403,29 +503,48 @@ void GSreset(bool hardware_reset)
  
  void GSgifSoftReset(u32 mask)
  {
@@ -641,7 +641,7 @@ index 8e42ebd46..7e348caca 100644
  
  	if (g_gs_stream)
  	{
-@@ -436,17 +555,23 @@ void GSgifTransfer(const u8* mem, u32 size)
+@@ -442,17 +561,23 @@ void GSgifTransfer(const u8* mem, u32 size)
  
  void GSgifTransfer1(u8* mem, u32 addr)
  {
@@ -668,7 +668,7 @@ index 8e42ebd46..7e348caca 100644
  }
  
  void GSvsync(u32 field, bool registers_written)
-@@ -457,7 +582,15 @@ void GSvsync(u32 field, bool registers_written)
+@@ -463,7 +588,15 @@ void GSvsync(u32 field, bool registers_written)
  
  		const uint8_t priv_type = 3;
  		fwrite(&priv_type, sizeof(priv_type), 1, f);
@@ -685,7 +685,7 @@ index 8e42ebd46..7e348caca 100644
  
  		const uint8_t type = 1;
  		fwrite(&type, sizeof(type), 1, f);
-@@ -465,14 +598,37 @@ void GSvsync(u32 field, bool registers_written)
+@@ -471,14 +604,37 @@ void GSvsync(u32 field, bool registers_written)
  		fwrite(&u8_field, sizeof(u8_field), 1, f);
  	}
  
@@ -725,7 +725,7 @@ index 8e42ebd46..7e348caca 100644
  	if (mode == FreezeAction::Save)
  	{
  		return g_gs_renderer->Freeze(data, false);
-@@ -499,6 +655,10 @@ int GSfreeze(FreezeAction mode, freezeData* data)
+@@ -505,6 +661,10 @@ int GSfreeze(FreezeAction mode, freezeData* data)
  
  void GSQueueSnapshot(const std::string& path, u32 gsdump_frames)
  {
@@ -736,7 +736,7 @@ index 8e42ebd46..7e348caca 100644
  	if (g_gs_renderer)
  		g_gs_renderer->QueueSnapshot(path, gsdump_frames);
  }
-@@ -525,11 +685,15 @@ void GSEndCapture()
+@@ -531,11 +691,15 @@ void GSEndCapture()
  
  void GSPresentCurrentFrame()
  {
@@ -753,7 +753,7 @@ index 8e42ebd46..7e348caca 100644
  	if (g_gs_device->GetVSyncMode() == GSVSyncMode::FIFO)
  	{
  		// Let vsync take care of throttling.
-@@ -550,25 +714,49 @@ void GSGameChanged()
+@@ -556,25 +720,49 @@ void GSGameChanged()
  
  bool GSHasDisplayWindow()
  {
@@ -798,7 +798,7 @@ index 8e42ebd46..7e348caca 100644
 +
 +	if (g_gs_device && !g_gs_device->UpdateWindow())
  	{
- 		Host::ReportErrorAsync("Error", "Failed to change window after update. The log may contain more information.");
+ 		Host::ReportErrorAsync("Error", TRANSLATE_SV("GS", "Failed to change window after update. The log may contain more information."));
  		return;
  	}
  
@@ -808,7 +808,7 @@ index 8e42ebd46..7e348caca 100644
  }
  
  void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
-@@ -580,7 +768,12 @@ void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
+@@ -586,7 +774,12 @@ void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
  	}};
  	Console.WriteLnFmt(Color_StrongCyan, "Setting vsync mode: {}{}", modes[static_cast<size_t>(mode)],
  		allow_present_throttle ? " (throttle allowed)" : "");
@@ -822,7 +822,7 @@ index 8e42ebd46..7e348caca 100644
  }
  
  bool GSWantsExclusiveFullscreen()
-@@ -629,6 +822,19 @@ std::vector<GSAdapterInfo> GSGetAdapterInfo(GSRendererType renderer)
+@@ -635,6 +828,19 @@ std::vector<GSAdapterInfo> GSGetAdapterInfo(GSRendererType renderer)
  		break;
  #endif
  
@@ -842,7 +842,7 @@ index 8e42ebd46..7e348caca 100644
  #ifdef __APPLE__
  		case GSRendererType::Metal:
  		{
-@@ -652,13 +858,29 @@ u32 GSGetMaxUpscaleMultiplier(u32 max_texture_size)
+@@ -658,13 +864,29 @@ u32 GSGetMaxUpscaleMultiplier(u32 max_texture_size)
  
  GSVideoMode GSgetDisplayMode()
  {
@@ -873,7 +873,7 @@ index 8e42ebd46..7e348caca 100644
  	GSRenderer* gs = g_gs_renderer.get();
  	if (!gs)
  	{
-@@ -756,8 +978,11 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
+@@ -785,8 +1007,11 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
  {
  	Pcsx2Config::GSOptions old_config(std::move(GSConfig));
  	GSConfig = new_config;
@@ -887,7 +887,7 @@ index 8e42ebd46..7e348caca 100644
  
  	// Handle OSD scale changes by pushing a window resize through.
  	if (new_config.OsdScale != old_config.OsdScale)
-@@ -771,6 +996,9 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
+@@ -800,6 +1025,9 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
  		return;
  	}
  
@@ -898,7 +898,7 @@ index 8e42ebd46..7e348caca 100644
  	GSClampUpscaleMultiplier(GSConfig);
  
 diff --git a/pcsx2/GS/GS.h b/pcsx2/GS/GS.h
-index 0ab827f0a..1bf01d984 100644
+index f2882c3a7f..433bdfb622 100644
 --- a/pcsx2/GS/GS.h
 +++ b/pcsx2/GS/GS.h
 @@ -20,6 +20,7 @@ enum class RenderAPI
@@ -909,7 +909,7 @@ index 0ab827f0a..1bf01d984 100644
  	OpenGL
  };
  
-@@ -109,6 +110,8 @@ bool GSSaveSnapshotToMemory(u32 window_width, u32 window_height, bool apply_aspe
+@@ -110,6 +111,8 @@ bool GSSaveSnapshotToMemory(u32 window_width, u32 window_height, bool apply_aspe
  	u32* width, u32* height, std::vector<u32>* pixels);
  void GSJoinSnapshotThreads();
  
@@ -919,7 +919,7 @@ index 0ab827f0a..1bf01d984 100644
  {
  	/// Called when the GS is creating a render device.
 diff --git a/pcsx2/GS/GSState.cpp b/pcsx2/GS/GSState.cpp
-index 83068f15d..045201926 100644
+index 83068f15db..045201926a 100644
 --- a/pcsx2/GS/GSState.cpp
 +++ b/pcsx2/GS/GSState.cpp
 @@ -32,7 +32,7 @@ static __fi bool IsFirstProvokingVertex()
@@ -932,7 +932,7 @@ index 83068f15d..045201926 100644
  	int size = 0;
  
 diff --git a/pcsx2/GS/GSState.h b/pcsx2/GS/GSState.h
-index 94f9a5442..5128a0043 100644
+index 94f9a5442b..5128a0043d 100644
 --- a/pcsx2/GS/GSState.h
 +++ b/pcsx2/GS/GSState.h
 @@ -21,7 +21,7 @@ public:
@@ -945,7 +945,7 @@ index 94f9a5442..5128a0043 100644
  private:
  	// RESTRICT prevents multiple loads of the same part of the register when accessing its bitfields (the compiler is happy to know that memory writes in-between will not go there)
 diff --git a/pcsx2/GS/GSUtil.cpp b/pcsx2/GS/GSUtil.cpp
-index 63ae1db03..fdea62b2d 100644
+index 63ae1db030..fdea62b2d1 100644
 --- a/pcsx2/GS/GSUtil.cpp
 +++ b/pcsx2/GS/GSUtil.cpp
 @@ -204,7 +204,9 @@ GSRendererType GSUtil::GetPreferredRenderer()
@@ -960,7 +960,7 @@ index 63ae1db03..fdea62b2d 100644
  		preferred_renderer = GSRendererType::Metal;
  #elif defined(_WIN32) && defined(_M_ARM64)
 diff --git a/pcsx2/GS/Renderers/Common/GSRenderer.cpp b/pcsx2/GS/Renderers/Common/GSRenderer.cpp
-index 2ac36da07..f373dc998 100644
+index e564e0e6d2..e29148065b 100644
 --- a/pcsx2/GS/Renderers/Common/GSRenderer.cpp
 +++ b/pcsx2/GS/Renderers/Common/GSRenderer.cpp
 @@ -275,7 +275,7 @@ float GSRenderer::GetModXYOffset()
@@ -970,10 +970,10 @@ index 2ac36da07..f373dc998 100644
 -static float GetCurrentAspectRatioFloat(bool is_progressive)
 +float GetCurrentAspectRatioFloat(bool is_progressive)
  {
- 	static constexpr std::array<float, static_cast<size_t>(AspectRatioType::MaxCount) + 1> ars = {{4.0f / 3.0f, 4.0f / 3.0f, 4.0f / 3.0f, 16.0f / 9.0f, 3.0f / 2.0f}};
+ 	static constexpr std::array<float, static_cast<size_t>(AspectRatioType::MaxCount) + 1> ars = {{4.0f / 3.0f, 4.0f / 3.0f, 4.0f / 3.0f, 16.0f / 9.0f, 10.0f / 7.0f, 3.0f / 2.0f}};
  	return ars[static_cast<u32>(GSConfig.AspectRatio) + (3u * (is_progressive && GSConfig.AspectRatio == AspectRatioType::RAuto4_3_3_2))];
 diff --git a/pcsx2/GS/Renderers/Vulkan/VKLoader.cpp b/pcsx2/GS/Renderers/Vulkan/VKLoader.cpp
-index e386e6fe5..c7d538135 100644
+index e386e6fe53..c7d5381358 100644
 --- a/pcsx2/GS/Renderers/Vulkan/VKLoader.cpp
 +++ b/pcsx2/GS/Renderers/Vulkan/VKLoader.cpp
 @@ -16,6 +16,8 @@
@@ -1032,7 +1032,7 @@ index e386e6fe5..c7d538135 100644
  			std::fprintf(stderr, "Vulkan: Failed to load required instance function %s\n", name);
  			required_functions_missing = true;
 diff --git a/pcsx2/GS/Renderers/Vulkan/VKLoader.h b/pcsx2/GS/Renderers/Vulkan/VKLoader.h
-index 736723fca..cfba3a7c9 100644
+index 736723fca5..cfba3a7c9d 100644
 --- a/pcsx2/GS/Renderers/Vulkan/VKLoader.h
 +++ b/pcsx2/GS/Renderers/Vulkan/VKLoader.h
 @@ -7,24 +7,7 @@ class Error;
@@ -1063,7 +1063,7 @@ index 736723fca..cfba3a7c9 100644
  
 diff --git a/pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h b/pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
 new file mode 100644
-index 000000000..d3447f6f7
+index 0000000000..d3447f6f7d
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
 @@ -0,0 +1,23 @@
@@ -1092,7 +1092,7 @@ index 000000000..d3447f6f7
 +
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 new file mode 100644
-index 000000000..63072d6f5
+index 0000000000..63072d6f5f
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 @@ -0,0 +1,760 @@
@@ -1858,7 +1858,7 @@ index 000000000..63072d6f5
 +}
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
 new file mode 100644
-index 000000000..289b97483
+index 0000000000..289b974838
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
 @@ -0,0 +1,84 @@
@@ -1947,7 +1947,7 @@ index 000000000..289b97483
 +	uint32_t dump_frames = 0;
 +};
 diff --git a/pcsx2/ImGui/ImGuiFullscreen.cpp b/pcsx2/ImGui/ImGuiFullscreen.cpp
-index d3f92d26d..f9f906ab7 100644
+index 8d9a8a07e0..d20b14963d 100644
 --- a/pcsx2/ImGui/ImGuiFullscreen.cpp
 +++ b/pcsx2/ImGui/ImGuiFullscreen.cpp
 @@ -586,6 +586,8 @@ ImGuiFullscreen::FocusResetType ImGuiFullscreen::GetQueuedFocusResetType()
@@ -1960,36 +1960,18 @@ index d3f92d26d..f9f906ab7 100644
  	g.ActiveIdSource = (g.ActiveIdSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
  	g.NavInputSource = (g.NavInputSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
 diff --git a/pcsx2/Pcsx2Config.cpp b/pcsx2/Pcsx2Config.cpp
-index fc87c91c9..f949738ae 100644
+index be60b540fe..2968b2a076 100644
 --- a/pcsx2/Pcsx2Config.cpp
 +++ b/pcsx2/Pcsx2Config.cpp
-@@ -586,15 +586,16 @@ const char* Pcsx2Config::GSOptions::GetRendererName(GSRendererType type)
- 	switch (type)
- 	{
- 		// clang-format off
--		case GSRendererType::Auto:  return "Auto";
--		case GSRendererType::DX11:  return "Direct3D 11";
--		case GSRendererType::DX12:  return "Direct3D 12";
--		case GSRendererType::Metal: return "Metal";
--		case GSRendererType::OGL:   return "OpenGL";
--		case GSRendererType::VK:    return "Vulkan";
--		case GSRendererType::SW:    return "Software";
--		case GSRendererType::Null:  return "Null";
--		default:                    return "";
-+		case GSRendererType::Auto:       return "Auto";
-+		case GSRendererType::DX11:       return "Direct3D 11";
-+		case GSRendererType::DX12:       return "Direct3D 12";
-+		case GSRendererType::Metal:      return "Metal";
-+		case GSRendererType::OGL:        return "OpenGL";
-+		case GSRendererType::VK:         return "Vulkan";
-+		case GSRendererType::SW:         return "Software";
-+		case GSRendererType::Null:       return "Null";
+@@ -683,6 +683,7 @@ const char* Pcsx2Config::GSOptions::GetRendererName(GSRendererType type)
+ 		case GSRendererType::VK:    return "Vulkan";
+ 		case GSRendererType::SW:    return "Software";
+ 		case GSRendererType::Null:  return "Null";
 +		case GSRendererType::ParallelGS: return "paraLLEl";
-+		default:                         return "";
+ 		default:                    return "";
  			// clang-format on
  	}
- }
-@@ -770,7 +771,8 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
+@@ -860,7 +861,8 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
  		OpEqu(Adapter) &&
  
  		OpEqu(HWDumpDirectory) &&
@@ -1999,7 +1981,7 @@ index fc87c91c9..f949738ae 100644
  }
  
  bool Pcsx2Config::GSOptions::operator!=(const GSOptions& right) const
-@@ -851,6 +853,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
+@@ -942,6 +944,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
  	SettingsWrapBitBool(HWSpinCPUForReadbacks);
  	SettingsWrapBitBoolEx(GPUPaletteConversion, "paltex");
  	SettingsWrapBitBoolEx(AutoFlushSW, "autoflush_sw");
@@ -2008,10 +1990,10 @@ index fc87c91c9..f949738ae 100644
  	SettingsWrapBitBoolEx(Mipmap, "mipmap");
  	SettingsWrapBitBoolEx(ManualUserHacks, "UserHacks");
 diff --git a/pcsx2/pcsx2.vcxproj b/pcsx2/pcsx2.vcxproj
-index aeeb1a853..71b3182ea 100644
+index 41ff04385a..7c1ad72952 100644
 --- a/pcsx2/pcsx2.vcxproj
 +++ b/pcsx2/pcsx2.vcxproj
-@@ -53,13 +53,22 @@
+@@ -53,6 +53,15 @@
        <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\d3d12memalloc\include</AdditionalIncludeDirectories>
        <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\lzma\include</AdditionalIncludeDirectories>
        <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\freesurround\include</AdditionalIncludeDirectories>
@@ -2027,6 +2009,7 @@ index aeeb1a853..71b3182ea 100644
        <AdditionalIncludeDirectories Condition="'$(Platform)'=='x64'">%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\xbyak</AdditionalIncludeDirectories>
        <AdditionalIncludeDirectories Condition="'$(Platform)'=='x64'">%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\zydis\include;$(SolutionDir)3rdparty\zydis\dependencies\zycore\include</AdditionalIncludeDirectories>
        <AdditionalIncludeDirectories Condition="'$(Platform)'=='ARM64'">%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\vixl\include</AdditionalIncludeDirectories>
+@@ -61,7 +70,7 @@
        <PrecompiledHeader>Use</PrecompiledHeader>
        <PrecompiledHeaderFile>PrecompiledHeader.h</PrecompiledHeaderFile>
        <ForcedIncludeFiles>PrecompiledHeader.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
@@ -2035,7 +2018,7 @@ index aeeb1a853..71b3182ea 100644
        <PreprocessorDefinitions Condition="'$(Platform)'!='ARM64'">ENABLE_RAINTEGRATION;ENABLE_OPENGL;ENABLE_VULKAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
        <PreprocessorDefinitions Condition="'$(Platform)'=='x64'">XBYAK_NO_EXCEPTION;ZYCORE_STATIC_DEFINE;ZYDIS_STATIC_DEFINE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
        <PreprocessorDefinitions Condition="'$(Platform)'=='ARM64'">VIXL_INCLUDE_TARGET_AARCH64;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-@@ -256,6 +265,46 @@
+@@ -259,6 +268,46 @@
      <ClCompile Include="Gif_Logger.cpp" />
      <ClCompile Include="Gif_Unit.cpp" />
      <ClCompile Include="GSDumpReplayer.cpp" />
@@ -2083,5 +2066,5 @@ index aeeb1a853..71b3182ea 100644
      <ClCompile Include="GS\Renderers\DX12\GSDevice12.cpp" />
      <ClCompile Include="GS\Renderers\DX12\GSTexture12.cpp" />
 -- 
-2.46.0
+2.47.0
 
