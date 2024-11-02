@@ -5,7 +5,7 @@
 # Contributor: Themaister <post@themaister.net>
 
 pkgname=pcsx2-parallel-gs-git
-pkgver=2.2.0.r4.gd45115ff53
+pkgver=2.2.0.r1.g30d8f01e23
 pkgrel=1
 pkgdesc='A Sony PlayStation 2 emulator with experimental paraLLEl-GS support'
 arch=(x86_64)
@@ -72,10 +72,7 @@ source=(
     git+https://github.com/KhronosGroup/SPIRV-Headers.git#commit=$SHADERC_SPIRVHEADERS
     git+https://github.com/KhronosGroup/SPIRV-Tools.git#commit=$SHADERC_SPIRVTOOLS
     pcsx2-qt.sh
-	0001-Add-an-ad-hoc-GS-stream-format.patch
-	0002-Early-integration-of-parallel-GS.patch
-	0003-Handle-AutomaticBFF-cases.patch
-	0004-Hook-up-GSreset.patch
+	0001-Early-integration-of-parallel-GS.patch
 )
 
 prepare() 
@@ -91,10 +88,7 @@ prepare()
 
 	echo "Patching PCSX2 with paraLLEl-GS support ..."
 	cd pcsx2
-	git am "${srcdir}/0001-Add-an-ad-hoc-GS-stream-format.patch"
-	git am "${srcdir}/0002-Early-integration-of-parallel-GS.patch"
-	git am "${srcdir}/0003-Handle-AutomaticBFF-cases.patch"
-	git am "${srcdir}/0004-Hook-up-GSreset.patch"
+	git am "${srcdir}/0001-Early-integration-of-parallel-GS.patch"
 
 	echo "Linking in parallel-gs."
 	cd pcsx2/GS
@@ -139,7 +133,6 @@ build()
     -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
     -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
-    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DUSE_VULKAN=ON \
     -DENABLE_SETCAP=OFF \
     -DWAYLAND_API=ON \
@@ -148,15 +141,7 @@ build()
     -DCMAKE_PREFIX_PATH="${srcdir}/deps-build" \
     -DCMAKE_BUILD_RPATH="/opt/pcsx2-parallel-gs/lib"
 
-    cd build
-    ccache -p
-    ccache -z
-    # Build
-    ninja
-    # Save the Cache
-    ccache -s
-
-    cd ..
+	ninja -C build --verbose
     
     cd pcsx2_patches
     7z a -r ../patches.zip patches/.
@@ -184,7 +169,4 @@ sha256sums=(
 	'SKIP'
 	'SKIP'
 	'176748c2ed9b578359f559125afbcf212fd35ea60667b683dc2862d682673964'
-	'SKIP'
-	'SKIP'
-	'SKIP'
 	'SKIP')
