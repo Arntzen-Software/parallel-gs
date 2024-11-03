@@ -1001,15 +1001,16 @@ void GSRenderer::flush_host_vram_copy(const uint32_t *page_indices, uint32_t num
 	if (invalidate_super_sampling)
 		stages |= VK_PIPELINE_STAGE_2_CLEAR_BIT;
 
+	// Cannot use more than one pipeline stage in timestamps.
 	if (enable_timestamps)
-		start_ts = cmd.write_timestamp(stages);
+		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_TRANSFER_BIT);
 
 	copy_pages(cmd, *buffers.gpu, *buffers.cpu, page_indices, num_indices, invalidate_super_sampling);
 	stats.num_copies += num_indices;
 
 	if (enable_timestamps)
 	{
-		end_ts = cmd.write_timestamp(stages);
+		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_TRANSFER_BIT);
 		timestamps.push_back({ TimestampType::SyncHostToVRAM, std::move(start_ts), std::move(end_ts) });
 	}
 
