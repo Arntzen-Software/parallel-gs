@@ -2299,6 +2299,9 @@ void GSInterface::drawing_kick_append()
 				texture_page_rects_read_region(uv_bb);
 			else
 				texture_page_rects_read_full();
+
+			if ((state_tracker.dirty_flags & STATE_DIRTY_TEX_BIT) == 0)
+				state_tracker.last_texture_index_valid_at_texflush = state_tracker.texflush_counter;
 		}
 	}
 
