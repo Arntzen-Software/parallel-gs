@@ -15,6 +15,8 @@
 #include <queue>
 #include <future>
 #include <atomic>
+#include <condition_variable>
+#include <thread>
 
 namespace ParallelGS
 {
@@ -300,8 +302,11 @@ private:
 	uint32_t base_clut_instance = 0;
 
 	Vulkan::Semaphore timeline;
+	std::thread timeline_thread;
 	uint64_t last_submitted_timeline = 0;
-	uint64_t timeline_observed = 0;
+	std::atomic<uint64_t> timeline_value;
+	std::condition_variable timeline_cond;
+	std::mutex timeline_lock;
 
 	bool last_clut_update_is_read = false;
 

@@ -12,6 +12,7 @@
 #include "shaders/swizzle_utils.h"
 #include "thread_id.hpp"
 #include "gs_util.hpp"
+#include "thread_name.hpp"
 #include <utility>
 #include <algorithm>
 #include <cmath>
@@ -437,6 +438,31 @@ void GSRenderer::kick_compilation_tasks()
 GSRenderer::GSRenderer(PageTracker &tracker_)
 	: tracker(tracker_), compilation_tasks_active(false)
 {
+	timeline_value = 0;
+	timeline_thread = std::thread([this]() {
+		Util::set_current_thread_name("PGS-Waiter");
+		uint64_t last_waited = 0;
+
+		for (;;)
+		{
+			{
+				std::unique_lock<std::mutex> holder{timeline_lock};
+				timeline_cond.wait(holder, [&]() { return last_waited < last_submitted_timeline; });
+			}
+
+			if (last_submitted_timeline == UINT64_MAX)
+				break;
+
+			last_waited++;
+			timeline->wait_timeline(last_waited);
+
+			{
+				std::lock_guard<std::mutex> holder{timeline_lock};
+				timeline_value.store(last_waited, std::memory_order_release);
+				timeline_cond.notify_all();
+			}
+		}
+	});
 }
 
 bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
@@ -592,13 +618,23 @@ GSRenderer::~GSRenderer()
 	// Need to get rid of any command buffer handles at the very least. Otherwise, we deadlock the device.
 	flush_submit(0);
 	drain_compilation_tasks();
+
+	{
+		std::lock_guard<std::mutex> holder{timeline_lock};
+		last_submitted_timeline = UINT64_MAX;
+		timeline_cond.notify_all();
+	}
+
+	if (timeline_thread.joinable())
+		timeline_thread.join();
 }
 
 void GSRenderer::wait_timeline(uint64_t value)
 {
-	if (!device)
-		return;
-	timeline->wait_timeline(value);
+	std::unique_lock<std::mutex> holder{timeline_lock};
+	timeline_cond.wait(holder, [this, value]() {
+		return timeline_value.load(std::memory_order_relaxed) >= value;
+	});
 }
 
 uint64_t GSRenderer::query_timeline(const Vulkan::SemaphoreHolder &sem) const
@@ -615,15 +651,9 @@ uint64_t GSRenderer::query_timeline(const Vulkan::SemaphoreHolder &sem) const
 
 uint64_t GSRenderer::query_timeline()
 {
-	// Avoid driver/kernel overhead in spam-querying timeline.
-	if (timeline_observed == last_submitted_timeline)
-		return timeline_observed;
-
-	uint64_t value = query_timeline(*timeline);
-	if (value > timeline_observed)
-		timeline_observed = value;
-
-	return value;
+	// Actually spam-calling vkGetSemaphoreValue a ton of times has serious CPU overhead.
+	// We need to transition into kernel to do that.
+	return timeline_value.load(std::memory_order_acquire);
 }
 
 void GSRenderer::flush_submit(uint64_t value)
@@ -722,8 +752,12 @@ void GSRenderer::flush_submit(uint64_t value)
 	if (value)
 	{
 		auto binary = device->request_timeline_semaphore_as_binary(*timeline, value);
-		last_submitted_timeline = value;
 		device->submit_empty(Vulkan::CommandBuffer::Type::Generic, nullptr, binary.get());
+		{
+			std::lock_guard<std::mutex> holder{timeline_lock};
+			last_submitted_timeline = value;
+			timeline_cond.notify_all();
+		}
 		binary = device->request_timeline_semaphore_as_binary(*descriptor_timeline, next_descriptor_timeline_signal++);
 		device->submit_empty(Vulkan::CommandBuffer::Type::Generic, nullptr, binary.get());
 	}
