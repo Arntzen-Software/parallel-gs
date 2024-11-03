@@ -1453,7 +1453,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	{
 		if (render_pass.is_potential_feedback)
 		{
-			// This texture will not survive beyond the render pass anyway, so don't bother caching it.
+			// Only keep this alive until end of render pass, or a copy hazard occurs.
 			long_term_cache_texture = false;
 			texture_page_rects_read_region(uv_bb);
 		}
@@ -1501,8 +1501,8 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 			desc.hash = hasher.get();
 			image = renderer.create_cached_texture(desc);
 
-			// If this is not the case, we imply self-managed.
-			// This is the case for explicit feedback where we don't want to care about hazards.
+			// Long-term references can persist across render passes, and intended for normal resource textures.
+			// They will generally be invalidated when it's overwritten by a copy or FB write.
 			if (long_term_cache_texture)
 			{
 				if (tracker.register_cached_texture(state_tracker.tex.page_rects, desc.rect.levels,
@@ -1511,6 +1511,12 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 				{
 					renderer.promote_cached_texture_upload_cpu(state_tracker.tex.page_rects[0]);
 				}
+			}
+			else
+			{
+				// Potential feedback textures are handled explicitly w.r.t. FB hazards,
+				// but we still need to consider potential copy hazards.
+				tracker.register_short_term_cached_texture(state_tracker.tex.page_rects, desc.rect.levels, hasher.get());
 			}
 
 			renderer.commit_cached_texture();

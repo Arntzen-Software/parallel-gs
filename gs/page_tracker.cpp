@@ -209,6 +209,8 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 			TRACE("TRACKER || PAGE 0x%x, WRITE |= 0x%x -> 0x%x\n",
 			      page,
 			      dst_rect.block_mask, state.copy_write_block_mask);
+
+			invalidate_cached_textures(state.short_term_cached_textures, dst_rect.block_mask, dst_rect.write_mask, UINT32_MAX);
 		}
 	}
 
@@ -306,6 +308,52 @@ void PageTracker::register_cached_clut_clobber(const PageRectCLUT &rect)
 			TRACE("TRACKER || PAGE 0x%x, CACHED |= 0x%x -> 0x%x\n",
 				  page,
 				  rect.block_mask, state.cached_read_block_mask);
+		}
+	}
+}
+
+void PageTracker::register_short_term_cached_texture(
+		const PageRect *level_rect, uint32_t levels, Util::Hash hash)
+{
+	CachedTexture *handle = cached_texture_pool.allocate(cached_texture_pool);
+	CachedTextureHandle tex{handle};
+	handle->set_hash(hash);
+
+	for (unsigned level = 0; level < levels; level++)
+	{
+		auto &rect = level_rect[level];
+
+		for (unsigned y = 0; y < rect.page_height; y++)
+		{
+			for (unsigned x = 0; x < rect.page_width; x++)
+			{
+				unsigned page = rect.base_page + y * rect.page_stride + x;
+				page &= page_state_mask;
+
+				auto &state = page_state[page];
+
+				// Need to resolve WAR hazard.
+				if ((state.flags &
+				     (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
+				{
+					accessed_readback_pages.push_back(page);
+				}
+
+				state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
+
+				if (state.cached_read_block_mask == 0)
+					accessed_cache_pages.push_back(page);
+				state.cached_read_block_mask |= rect.block_mask;
+
+				TRACE("TRACKER || PAGE 0x%x, CACHED |= 0x%x -> 0x%x\n",
+				      page, rect.block_mask, state.cached_read_block_mask);
+
+				garbage_collect_texture_masked_handles(state.short_term_cached_textures);
+
+				if (state.short_term_cached_textures.empty())
+					short_term_cache_pages.push_back(page);
+				state.short_term_cached_textures.push_back({ tex, rect.block_mask, rect.write_mask, UINT32_MAX });
+			}
 		}
 	}
 }
@@ -440,6 +488,14 @@ void PageTracker::clear_fb_pages()
 	pending_fb_write_page_lo = UINT32_MAX;
 	pending_fb_write_page_hi = 0;
 	pending_fb_write_mask = 0;
+
+	// Once a FB is flushed, these references are dead.
+	for (uint32_t page_index : short_term_cache_pages)
+	{
+		auto &page = page_state[page_index];
+		page.short_term_cached_textures.clear();
+	}
+	short_term_cache_pages.clear();
 }
 
 void PageTracker::flush_copy()
@@ -529,6 +585,8 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 			TRACE("TRACKER || PAGE 0x%x, WRITE |= 0x%x -> 0x%x\n",
 			      page,
 			      rect.block_mask, state.copy_write_block_mask);
+
+			invalidate_cached_textures(state.short_term_cached_textures, rect.block_mask, rect.write_mask, UINT32_MAX);
 		}
 	}
 
@@ -647,10 +705,10 @@ bool PageTracker::invalidate_cached_textures(
 {
 	auto itr = Util::unstable_remove_if(textures.begin(), textures.end(),
 	                                    [block_mask, write_mask, clut_instance](const CachedTextureMasked &masked) {
-		                                    return !masked.tex->image ||
+		                                    return !masked.tex->is_live_handle ||
 		                                           ((masked.block_mask & block_mask) != 0 &&
 		                                            (masked.write_mask & write_mask) != 0 &&
-		                                            masked.clut_instance != clut_instance);
+		                                            (clut_instance == UINT32_MAX || masked.clut_instance != clut_instance));
 	                                    });
 
 	bool did_work = false;
@@ -658,15 +716,17 @@ bool PageTracker::invalidate_cached_textures(
 	for (auto erase_itr = itr; erase_itr != textures.end(); ++erase_itr)
 	{
 		auto &tex = *erase_itr;
-		if (tex.tex->image)
+		if (tex.tex->is_live_handle)
 		{
 			// If we only invalidated texture due to palette cache being clobbered,
 			// we may be able to ignore the invalidation and keep it alive in the render pass cache if
 			// we sample the texture with same memoized CLUT instance once again.
 			// Essentially, we defer the invalidation until the same texture is used with a different palette instance.
 			cb.invalidate_texture_hash(tex.tex->get_hash(), clut_instance != UINT32_MAX);
-			cb.recycle_image_handle(std::move(tex.tex->image));
+			if (tex.tex->image)
+				cb.recycle_image_handle(std::move(tex.tex->image));
 			tex.tex->image = {};
+			tex.tex->is_live_handle = false;
 			cached_textures.erase(tex.tex.get());
 			did_work = true;
 		}

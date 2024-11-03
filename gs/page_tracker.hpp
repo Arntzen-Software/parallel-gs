@@ -23,6 +23,7 @@ struct CachedTexture : Util::IntrusiveHashMapEnabled<CachedTexture>,
 	explicit CachedTexture(Util::ObjectPool<CachedTexture> &pool_) : pool(pool_) {}
 	Util::ObjectPool<CachedTexture> &pool;
 	Vulkan::ImageHandle image;
+	bool is_live_handle = true;
 };
 using CachedTextureHandle = Util::IntrusivePtr<CachedTexture>;
 
@@ -60,6 +61,7 @@ struct PageState
 {
 	// On TEXFLUSH, we may have to clobber these texture handles if there have been writes to the page.
 	std::vector<CachedTextureMasked> cached_textures;
+	std::vector<CachedTextureMasked> short_term_cached_textures;
 
 	// To safely read from host memory, this timeline must be reached.
 	uint64_t host_read_timeline = 0;
@@ -170,6 +172,9 @@ public:
 	UploadStrategy register_cached_texture(const PageRect *level_rects, uint32_t num_levels,
 	                                       uint32_t csa_mask, uint32_t clut_instance,
 	                                       Util::Hash hash, Vulkan::ImageHandle image);
+
+	void register_short_term_cached_texture(const PageRect *level_rects, uint32_t num_levels, Util::Hash hash);
+
 	Vulkan::ImageHandle find_cached_texture(Util::Hash hash) const;
 
 	// If there are hazards, this returns UINT64_MAX. Must explicitly call mark_submission_timeline first.
@@ -205,6 +210,7 @@ private:
 	std::vector<uint32_t> accessed_copy_pages;
 	std::vector<uint32_t> accessed_readback_pages;
 	std::vector<uint32_t> accessed_shadow_pages;
+	std::vector<uint32_t> short_term_cache_pages;
 
 	void clear_cache_pages();
 	void clear_copy_pages();
