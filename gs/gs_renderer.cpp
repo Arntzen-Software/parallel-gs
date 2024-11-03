@@ -367,7 +367,6 @@ void GSRenderer::kick_compilation_tasks()
 		auto cmd = device->request_command_buffer();
 		cmd->set_program(shaders.upload);
 		cmd->set_specialization_constant_mask(0x7);
-		cmd->set_specialization_constant(1, vram_size - 1);
 
 		static const struct { uint32_t psm; uint32_t cpsm; } formats[] = {
 			{ PSMCT32, 0 },
@@ -388,12 +387,19 @@ void GSRenderer::kick_compilation_tasks()
 			{ PSMT4HL, PSMCT16 },
 		};
 
+		const uint32_t vram_masks[] = { PageSize - 1, vram_size - 1 };
+
 		for (auto &format : formats)
 		{
 			cmd->set_specialization_constant(0, format.psm);
 			cmd->set_specialization_constant(2, format.cpsm);
-			cmd->extract_pipeline_state(deferred);
-			tasks.push_back(deferred);
+
+			for (auto mask : vram_masks)
+			{
+				cmd->set_specialization_constant(1, mask);
+				cmd->extract_pipeline_state(deferred);
+				tasks.push_back(deferred);
+			}
 		}
 
 		device->submit_discard(cmd);
@@ -609,7 +615,15 @@ uint64_t GSRenderer::query_timeline(const Vulkan::SemaphoreHolder &sem) const
 
 uint64_t GSRenderer::query_timeline()
 {
-	return query_timeline(*timeline);
+	// Avoid driver/kernel overhead in spam-querying timeline.
+	if (timeline_observed == last_submitted_timeline)
+		return timeline_observed;
+
+	uint64_t value = query_timeline(*timeline);
+	if (value > timeline_observed)
+		timeline_observed = value;
+
+	return value;
 }
 
 void GSRenderer::flush_submit(uint64_t value)
@@ -708,6 +722,7 @@ void GSRenderer::flush_submit(uint64_t value)
 	if (value)
 	{
 		auto binary = device->request_timeline_semaphore_as_binary(*timeline, value);
+		last_submitted_timeline = value;
 		device->submit_empty(Vulkan::CommandBuffer::Type::Generic, nullptr, binary.get());
 		binary = device->request_timeline_semaphore_as_binary(*descriptor_timeline, next_descriptor_timeline_signal++);
 		device->submit_empty(Vulkan::CommandBuffer::Type::Generic, nullptr, binary.get());
@@ -855,9 +870,30 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 	post_image_barriers.push_back(barrier);
 	texture_uploads.push_back({ img, desc });
 
-	check_flush_stats();
-
 	return img;
+}
+
+void GSRenderer::commit_cached_texture()
+{
+	// Assert that there were no stray flushed between create_cached_texture() and commit_cached_texture().
+	assert(!texture_uploads.empty());
+	// Delay any flushing since we may want to modify the texture upload based on the page tracker later.
+	check_flush_stats();
+}
+
+void GSRenderer::promote_cached_texture_upload_cpu(const PageRect &rect)
+{
+	// Assert that there were no stray flushed between create_cached_texture() and commit_cached_texture().
+	assert(!texture_uploads.empty());
+	auto &upload = texture_uploads.back();
+
+	assert(rect.page_width == 1 && rect.page_height == 1);
+	auto *vram = static_cast<const uint8_t *>(begin_host_vram_access());
+	vram += (rect.base_page * PageSize) & (vram_size - 1);
+
+	upload.scratch.offset = allocate_device_scratch(PageSize, buffers.rebar_scratch, vram);
+	upload.scratch.size = PageSize;
+	upload.scratch.buffer = buffers.rebar_scratch.buffer;
 }
 
 void *GSRenderer::begin_host_vram_access()
@@ -2421,13 +2457,19 @@ uint32_t GSRenderer::update_palette_cache(const PaletteUploadDescriptor &desc)
 	return next_clut_instance;
 }
 
-void GSRenderer::upload_texture(const TextureDescriptor &desc, const Vulkan::Image &img)
+void GSRenderer::upload_texture(const TextureUpload &upload)
 {
+	auto &desc = upload.desc;
+	auto &img = *upload.image;
+	auto &scratch = upload.scratch;
 	auto &cmd = *direct_cmd;
 
 	uint32_t levels = img.get_create_info().levels;
 	cmd.set_program(shaders.upload);
-	cmd.set_storage_buffer(0, 0, *buffers.gpu);
+	if (scratch.buffer)
+		cmd.set_storage_buffer(0, 0, *scratch.buffer, scratch.offset, scratch.size);
+	else
+		cmd.set_storage_buffer(0, 0, *buffers.gpu);
 	cmd.set_storage_buffer(0, BINDING_CLUT, *buffers.clut);
 
 	struct UploadInfo
@@ -2486,8 +2528,13 @@ void GSRenderer::upload_texture(const TextureDescriptor &desc, const Vulkan::Ima
 
 	cmd.set_specialization_constant_mask(0x7);
 	cmd.set_specialization_constant(0, uint32_t(desc.tex0.desc.PSM));
-	cmd.set_specialization_constant(1, vram_size - 1);
 	cmd.set_specialization_constant(2, uint32_t(desc.tex0.desc.CPSM));
+
+	// Makes it feasible to handle REGION_CLAMP where we only access one page, but at an offset.
+	if (scratch.buffer)
+		cmd.set_specialization_constant(1, PageSize - 1);
+	else
+		cmd.set_specialization_constant(1, vram_size - 1);
 
 	for (uint32_t level = 0; level < levels; level++)
 	{
@@ -2499,7 +2546,8 @@ void GSRenderer::upload_texture(const TextureDescriptor &desc, const Vulkan::Ima
 		if (device->consumes_debug_markers())
 		{
 			insert_label(cmd,
-			             "Cache mip %u - 0x%x - %s - %u x %u (stride %u) + (%u, %u) - CPSM %s - CSA %u - bank %u / %u - %016llx",
+			             "%s mip %u - 0x%x - %s - %u x %u (stride %u) + (%u, %u) - CPSM %s - CSA %u - bank %u / %u - %016llx",
+			             (scratch.buffer ? "CPU" : "GPU"),
 			             level, info.addr_block * PGS_BLOCK_ALIGNMENT_BYTES,
 			             psm_to_str(uint32_t(desc.tex0.desc.PSM)),
 			             info.width, info.height, info.stride_block * PGS_BUFFER_WIDTH_SCALE,
@@ -2742,7 +2790,7 @@ void GSRenderer::flush_cache_upload()
 		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	// TODO: We could potentially sort this based on shader key to avoid some context rolls, but eeeeeh.
 	for (auto &upload : texture_uploads)
-		upload_texture(upload.desc, *upload.image);
+		upload_texture(upload);
 
 	if (enable_timestamps)
 	{

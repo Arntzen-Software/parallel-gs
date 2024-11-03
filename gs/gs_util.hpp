@@ -108,4 +108,99 @@ static inline void vram_readback(void *readback_data, const void *host_data, uin
 		}
 	}
 }
+
+template <uint32_t PSM>
+static inline void vram_upload(void *vram_data, const void *upload_data,
+                               uint32_t base_256, uint32_t page_stride,
+                               uint32_t dst_x, uint32_t dst_y,
+                               uint32_t width, uint32_t height,
+                               uint32_t vram_mask)
+{
+	// This can definitely be optimized a lot if need be.
+	// Especially if we are block-aligned, it should be possible to de-swizzle a full 8x8 block in one go in SIMD or something ...
+	for (uint32_t y = 0; y < height; y++)
+	{
+		uint32_t effective_y = (y + dst_y) & 2047;
+		uint32_t input_pixel = y * width;
+		for (uint32_t x = 0; x < width; x++, input_pixel++)
+		{
+			uint32_t effective_x = (x + dst_x) & 2047;
+
+			// Hopefully inlining with templated argument should collapse branches.
+			uint32_t addr = swizzle_PS2(effective_x, effective_y, base_256, page_stride, PSM, vram_mask);
+
+			// Templated, so should collapse into branchless code.
+			switch (PSM)
+			{
+			case PSMCT32:
+			case PSMZ32:
+				static_cast<uint32_t *>(vram_data)[addr] = static_cast<const uint32_t *>(upload_data)[input_pixel];
+				break;
+
+			case PSMCT24:
+			case PSMZ24:
+			{
+				auto *dst = static_cast<uint8_t *>(vram_data) + addr * 4;
+				auto *src = static_cast<const uint8_t *>(upload_data) + input_pixel * 3;
+				dst[0] = src[0];
+				dst[1] = src[1];
+				dst[2] = src[2];
+				break;
+			}
+
+			case PSMCT16:
+			case PSMCT16S:
+			case PSMZ16:
+			case PSMZ16S:
+				static_cast<uint16_t *>(vram_data)[addr] = static_cast<const uint16_t *>(upload_data)[input_pixel];
+				break;
+
+			case PSMT8:
+				static_cast<uint8_t *>(vram_data)[addr] = static_cast<const uint8_t *>(upload_data)[input_pixel];
+				break;
+
+			case PSMT8H:
+				static_cast<uint8_t *>(vram_data)[4 * addr + 3] = static_cast<const uint8_t *>(upload_data)[input_pixel];
+				break;
+
+			case PSMT4:
+			{
+				auto &pix = static_cast<uint8_t *>(vram_data)[addr / 2];
+
+				uint8_t input_data = static_cast<const uint8_t *>(upload_data)[input_pixel / 2];
+				if (input_pixel & 1)
+					input_data >>= 4;
+				input_data &= 0xfu;
+
+				if (addr & 1)
+					pix = (pix & 0xfu) | (input_data << 4u);
+				else
+					pix = (pix & 0xf0u) | input_data;
+
+				break;
+			}
+
+			case PSMT4HL:
+			case PSMT4HH:
+			{
+				auto &pix = static_cast<uint32_t *>(vram_data)[addr];
+				uint32_t input_data = static_cast<const uint8_t *>(upload_data)[input_pixel / 2];
+				if (input_pixel & 1)
+					input_data >>= 4;
+				input_data &= 0xfu;
+
+				constexpr uint32_t shamt = PSM == PSMT4HL ? 24 : 28;
+				constexpr uint32_t mask = PSM == PSMT4HL ? 0xf0ffffffu : 0x0fffffffu;
+				input_data <<= shamt;
+				pix = (pix & mask) | input_data;
+
+				break;
+			}
+
+			default:
+				break;
+			}
+		}
+	}
+}
 }

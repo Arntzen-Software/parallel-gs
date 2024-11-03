@@ -1122,6 +1122,11 @@ void GSInterface::recycle_image_handle(Vulkan::ImageHandle image)
 		renderer.recycle_image_handle(std::move(image));
 }
 
+uint64_t GSInterface::query_timeline()
+{
+	return renderer.query_timeline();
+}
+
 void GSInterface::mark_texture_state_dirty()
 {
 	state_tracker.last_texture_index = UINT32_MAX;
@@ -1500,10 +1505,15 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 			// This is the case for explicit feedback where we don't want to care about hazards.
 			if (long_term_cache_texture)
 			{
-				tracker.register_cached_texture(state_tracker.tex.page_rects, desc.rect.levels,
-				                                csa_mask, render_pass.clut_instance,
-				                                hasher.get(), image);
+				if (tracker.register_cached_texture(state_tracker.tex.page_rects, desc.rect.levels,
+				                                    csa_mask, render_pass.clut_instance,
+				                                    hasher.get(), image) == PageTracker::UploadStrategy::CPU)
+				{
+					renderer.promote_cached_texture_upload_cpu(state_tracker.tex.page_rects[0]);
+				}
 			}
+
+			renderer.commit_cached_texture();
 		}
 
 		texture_index = render_pass.tex_infos.size();
@@ -2572,22 +2582,74 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 		                                  transfer_state.copy.bitbltbuf.desc.DBW,
 		                                  transfer_state.copy.bitbltbuf.desc.DPSM);
 
-		tracker.mark_transfer_write(dst_rect);
-		if (tracker.invalidate_texture_cache(render_pass.clut_instance))
-		{
-			mark_texture_state_dirty();
-			state_tracker.texflush_counter++;
-		}
+		bool copy_cpu = false;
 
 		transfer_state.copy.host_data = transfer_state.host_to_local_payload.data();
 		transfer_state.copy.host_data_size = transfer_state.host_to_local_payload.size() * sizeof(uint64_t);
 		transfer_state.copy.host_data_size_offset = transfer_state.last_flushed_qwords * sizeof(uint64_t);
 		transfer_state.copy.host_data_size_required = transfer_state.required_qwords * sizeof(uint64_t);
-		renderer.copy_vram(transfer_state.copy);
+
+		// Can we resolve this on CPU timeline?
+		// Only bother with cases which are known to fix hazards.
+		// Also, only bother with simple cases. No partial copies, etc ...
+		if (dst_rect.page_width == 1 && dst_rect.page_height == 1 &&
+		    transfer_state.copy.host_data_size_offset == 0 &&
+		    transfer_state.copy.host_data_size == transfer_state.copy.host_data_size_required)
+		{
+			// Attempt a non-blocking write.
+			copy_cpu = tracker.acquire_host_write(dst_rect, renderer.query_timeline());
+		}
+
+		if (copy_cpu)
+		{
+			// TODO: vram_upload.
+			void *mapped = renderer.begin_host_vram_access();
+			switch (transfer_state.copy.bitbltbuf.desc.DPSM)
+			{
+#define PSM_DISPATCH(psm) \
+		case psm: \
+			vram_upload<psm>(mapped, transfer_state.copy.host_data, \
+			                 transfer_state.copy.bitbltbuf.desc.DBP, transfer_state.copy.bitbltbuf.desc.DBW, \
+			                 transfer_state.copy.trxpos.desc.DSAX, transfer_state.copy.trxpos.desc.DSAY, \
+			                 transfer_state.copy.trxreg.desc.RRW, transfer_state.copy.trxreg.desc.RRH, vram_size - 1); \
+			break
+			PSM_DISPATCH(PSMT4);
+			PSM_DISPATCH(PSMT4HL);
+			PSM_DISPATCH(PSMT4HH);
+			PSM_DISPATCH(PSMT8);
+			PSM_DISPATCH(PSMT8H);
+			PSM_DISPATCH(PSMCT16);
+			PSM_DISPATCH(PSMCT16S);
+			PSM_DISPATCH(PSMZ16);
+			PSM_DISPATCH(PSMZ16S);
+			PSM_DISPATCH(PSMCT32);
+			PSM_DISPATCH(PSMZ32);
+			PSM_DISPATCH(PSMCT24);
+			PSM_DISPATCH(PSMZ24);
+#undef PSM_DISPATCH
+			default:
+				LOGW("Unsupported CPU upload format %u, falling back.\n", transfer_state.copy.bitbltbuf.desc.DPSM);
+				copy_cpu = false;
+				break;
+			}
+			tracker.commit_host_write(dst_rect);
+		}
+
+		if (!copy_cpu)
+		{
+			tracker.mark_transfer_write(dst_rect);
+			renderer.copy_vram(transfer_state.copy);
+		}
 
 		// Very possible we just have to flush early and we never receive more image data until
 		// game kicks a new transfer.
 		transfer_state.last_flushed_qwords = uint32_t(transfer_state.host_to_local_payload.size());
+
+		if (tracker.invalidate_texture_cache(render_pass.clut_instance))
+		{
+			mark_texture_state_dirty();
+			state_tracker.texflush_counter++;
+		}
 
 		TRACE_HEADER("VRAM COPY", transfer_state.copy);
 	}
@@ -2713,6 +2775,7 @@ void GSInterface::init_transfer()
 			PSM_DISPATCH(PSMZ16S);
 			PSM_DISPATCH(PSMT8);
 			PSM_DISPATCH(PSMT8H);
+#undef PSM_DISPATCH
 
 		default:
 			LOGW("Unrecognized FIFO readback PSM: %u\n", transfer_state.copy.bitbltbuf.desc.SPSM);

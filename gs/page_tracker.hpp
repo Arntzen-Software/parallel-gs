@@ -161,9 +161,15 @@ public:
 
 	void mark_texture_read(const PageRect &rect);
 	void register_cached_clut_clobber(const PageRectCLUT &rect);
-	void register_cached_texture(const PageRect *level_rects, uint32_t num_levels,
-	                             uint32_t csa_mask, uint32_t clut_instance,
-	                             Util::Hash hash, Vulkan::ImageHandle image);
+
+	enum class UploadStrategy
+	{
+		GPU,
+		CPU
+	};
+	UploadStrategy register_cached_texture(const PageRect *level_rects, uint32_t num_levels,
+	                                       uint32_t csa_mask, uint32_t clut_instance,
+	                                       Util::Hash hash, Vulkan::ImageHandle image);
 	Vulkan::ImageHandle find_cached_texture(Util::Hash hash) const;
 
 	// If there are hazards, this returns UINT64_MAX. Must explicitly call mark_submission_timeline first.

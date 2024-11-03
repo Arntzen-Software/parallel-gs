@@ -233,6 +233,12 @@ public:
 	void mark_clut_read(uint32_t clut_instance);
 
 	Vulkan::ImageHandle create_cached_texture(const TextureDescriptor &desc);
+	// Should always be called after create_cached_texture().
+	// We'll be able to do some last minute modifications to the upload descriptor
+	// depending on the page tracker state, e.g. to enable shadow copy strategy.
+	void promote_cached_texture_upload_cpu(const PageRect &rect);
+	void commit_cached_texture();
+
 	// Creating 1k+ VkImages per frame can be a noticeable CPU burden on drivers.
 	// Computing swizzling layouts and stuff is quite complicated and slow.
 	// It's not just about memory allocation.
@@ -292,7 +298,11 @@ private:
 	uint32_t vram_size = 0;
 	uint32_t next_clut_instance = 0;
 	uint32_t base_clut_instance = 0;
+
 	Vulkan::Semaphore timeline;
+	uint64_t last_submitted_timeline = 0;
+	uint64_t timeline_observed = 0;
+
 	bool last_clut_update_is_read = false;
 
 	std::vector<VkImageMemoryBarrier2> pre_image_barriers;
@@ -300,19 +310,20 @@ private:
 	std::vector<PaletteUploadDescriptor> palette_uploads;
 	std::vector<VkDeviceAddress> qword_clears;
 
-	struct TextureUpload
-	{
-		Vulkan::ImageHandle image;
-		TextureDescriptor desc;
-	};
-	std::vector<TextureUpload> texture_uploads;
-
 	struct Scratch
 	{
 		Vulkan::BufferHandle buffer;
 		VkDeviceSize offset = 0;
 		VkDeviceSize size = 0;
 	};
+
+	struct TextureUpload
+	{
+		Vulkan::ImageHandle image;
+		TextureDescriptor desc;
+		Scratch scratch;
+	};
+	std::vector<TextureUpload> texture_uploads;
 
 	struct
 	{
@@ -352,7 +363,7 @@ private:
 	void init_luts();
 	void init_vram(const GSOptions &options);
 
-	void upload_texture(const TextureDescriptor &desc, const Vulkan::Image &img);
+	void upload_texture(const TextureUpload &upload);
 	void bind_textures(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
 	void bind_frame_resources(const RenderPass &rp);
 	void bind_frame_resources_instanced(const RenderPass &rp, uint32_t instance, uint32_t num_primitives);

@@ -310,9 +310,10 @@ void PageTracker::register_cached_clut_clobber(const PageRectCLUT &rect)
 	}
 }
 
-void PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t levels,
-                                          uint32_t csa_mask, uint32_t clut_instance,
-                                          Util::Hash hash, Vulkan::ImageHandle image)
+PageTracker::UploadStrategy
+PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t levels,
+                                     uint32_t csa_mask, uint32_t clut_instance,
+                                     Util::Hash hash, Vulkan::ImageHandle image)
 {
 	CachedTexture *handle = cached_texture_pool.allocate(cached_texture_pool);
 	handle->set_hash(hash);
@@ -328,6 +329,14 @@ void PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t l
 	assert(levels > 0);
 	assert(level_rect[0].page_width && level_rect[0].page_height);
 
+	// Only bother trying to optimize small uploads.
+	// There must be no hazards, in the sense that it's safe to just read the CPU VRAM.
+	// In this case we elide the marking of CACHED reads on the pages.
+	bool promote_to_cpu = levels == 1 &&
+	                      level_rect[0].page_width == 1 &&
+	                      level_rect[0].page_height == 1 &&
+	                      get_host_read_timeline(level_rect[0]) <= cb.query_timeline();
+
 	for (unsigned level = 0; level < levels; level++)
 	{
 		auto &rect = level_rect[level];
@@ -341,14 +350,21 @@ void PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t l
 
 				auto &state = page_state[page];
 
-				// Need to resolve WAR hazard.
-				if ((state.flags & (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
-					accessed_readback_pages.push_back(page);
-				state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
+				if (!promote_to_cpu)
+				{
+					// Need to resolve WAR hazard.
+					if ((state.flags &
+					     (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
+					{
+						accessed_readback_pages.push_back(page);
+					}
 
-				if (state.cached_read_block_mask == 0)
-					accessed_cache_pages.push_back(page);
-				state.cached_read_block_mask |= rect.block_mask;
+					state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
+
+					if (state.cached_read_block_mask == 0)
+						accessed_cache_pages.push_back(page);
+					state.cached_read_block_mask |= rect.block_mask;
+				}
 
 				TRACE("TRACKER || PAGE 0x%x, CACHED |= 0x%x -> 0x%x\n",
 				      page, rect.block_mask, state.cached_read_block_mask);
@@ -365,6 +381,8 @@ void PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t l
 		garbage_collect_texture_masked_handles(texture_cached_palette);
 		texture_cached_palette.push_back({ std::move(tex), csa_mask, UINT32_MAX, clut_instance });
 	}
+
+	return promote_to_cpu ? UploadStrategy::CPU : UploadStrategy::GPU;
 }
 
 void PageTracker::notify_pressure_flush()

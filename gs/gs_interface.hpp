@@ -244,6 +244,7 @@ private:
 	void forget_in_render_pass_memoization();
 	void recycle_image_handle(Vulkan::ImageHandle image);
 	void flush_render_pass(FlushReason reason);
+	uint64_t query_timeline();
 
 	void mark_texture_state_dirty();
 
