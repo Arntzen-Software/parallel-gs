@@ -925,7 +925,17 @@ void GSRenderer::promote_cached_texture_upload_cpu(const PageRect &rect)
 	auto *vram = static_cast<const uint8_t *>(begin_host_vram_access());
 	vram += (rect.base_page * PageSize) & (vram_size - 1);
 
-	upload.scratch.offset = allocate_device_scratch(PageSize, buffers.rebar_scratch, vram);
+	// Only copy what we need.
+	uint32_t scratch_size;
+
+	if (rect.block_mask == UINT32_MAX)
+		scratch_size = 32;
+	else
+		scratch_size = 32 - Util::leading_zeroes(rect.block_mask);
+
+	scratch_size *= PGS_BLOCK_ALIGNMENT_BYTES;
+
+	upload.scratch.offset = allocate_device_scratch(scratch_size, buffers.rebar_scratch, vram);
 	upload.scratch.size = PageSize;
 	upload.scratch.buffer = buffers.rebar_scratch.buffer;
 }
