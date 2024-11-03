@@ -586,7 +586,7 @@ VkDeviceSize GSRenderer::allocate_device_scratch(VkDeviceSize size, Scratch &scr
 		Vulkan::BufferCreateInfo info = {};
 		constexpr VkDeviceSize DefaultScratchBufferSize = 32 * 1024 * 1024;
 		info.size = std::max<VkDeviceSize>(size, DefaultScratchBufferSize);
-		info.domain = Vulkan::BufferDomain::Device;
+		info.domain = data ? Vulkan::BufferDomain::LinkedDeviceHostPreferDevice : Vulkan::BufferDomain::Device;
 		info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 		             VK_BUFFER_USAGE_TRANSFER_DST_BIT |
 		             VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
@@ -600,13 +600,22 @@ VkDeviceSize GSRenderer::allocate_device_scratch(VkDeviceSize size, Scratch &scr
 
 	if (data)
 	{
-		// Fallback when sufficient ReBAR is not available.
-		// This also happens when capturing with RenderDoc since persistently mapped ReBAR is horrible for capture perf.
-		bool first_command = !async_transfer_cmd;
-		ensure_command_buffer(async_transfer_cmd, Vulkan::CommandBuffer::Type::AsyncTransfer);
-		if (first_command)
-			async_transfer_cmd->begin_region("AsyncTransfer");
-		memcpy(async_transfer_cmd->update_buffer(*scratch.buffer, offset, size), data, size);
+		auto *mapped = static_cast<uint8_t *>(device->map_host_buffer(*scratch.buffer, Vulkan::MEMORY_ACCESS_WRITE_BIT));
+
+		if (mapped)
+		{
+			memcpy(mapped + offset, data, size);
+		}
+		else
+		{
+			// Fallback when sufficient ReBAR is not available.
+			// This also happens when capturing with RenderDoc since persistently mapped ReBAR is horrible for capture perf.
+			bool first_command = !async_transfer_cmd;
+			ensure_command_buffer(async_transfer_cmd, Vulkan::CommandBuffer::Type::AsyncTransfer);
+			if (first_command)
+				async_transfer_cmd->begin_region("AsyncTransfer");
+			memcpy(async_transfer_cmd->update_buffer(*scratch.buffer, offset, size), data, size);
+		}
 	}
 
 	scratch.offset += size;
