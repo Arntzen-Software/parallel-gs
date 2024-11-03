@@ -160,6 +160,10 @@ static bool run_gs_dump(OSFilesystem &fs, Device &device, const std::string &pat
 		return false;
 	}
 
+	DebugMode debug_mode = {};
+	debug_mode.deterministic_timeline_query = true;
+	iface->set_debug_mode(debug_mode);
+
 	GSDumpParser parser;
 	if (!parser.open(path.c_str(), opts.vram_size, iface.get()))
 	{

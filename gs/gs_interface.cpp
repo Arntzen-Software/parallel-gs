@@ -2743,6 +2743,8 @@ void GSInterface::init_transfer()
 		{
 			host_timeline = tracker.mark_submission_timeline();
 			renderer.flush_submit(host_timeline);
+			if (debug_mode.deterministic_timeline_query)
+				renderer.wait_timeline(host_timeline);
 		}
 		renderer.wait_timeline(host_timeline);
 
@@ -3740,7 +3742,10 @@ const void *GSInterface::map_vram_read(size_t offset, size_t size)
 void GSInterface::flush()
 {
 	flush_pending_transfer(true);
-	renderer.flush_submit(tracker.mark_submission_timeline());
+	uint64_t value = tracker.mark_submission_timeline();
+	renderer.flush_submit(value);
+	if (debug_mode.deterministic_timeline_query)
+		renderer.wait_timeline(value);
 }
 
 void GSInterface::clobber_register_state()

@@ -132,6 +132,8 @@ struct DebugMode
 {
 	bool feedback_render_target = false;
 	bool timestamps = false;
+	// Makes sure the CPU upload heuristics does the same thing every run.
+	bool deterministic_timeline_query = false;
 
 	enum class DrawDebugMode
 	{
