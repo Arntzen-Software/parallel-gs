@@ -383,7 +383,8 @@ private:
 	                      uint32_t base_primitive, uint32_t num_primitives);
 	void dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const RenderPass &rp,
 	                            ShadingDescriptor push, uint32_t instance,
-	                            uint32_t base_primitive, uint32_t num_primitives);
+	                            uint32_t base_primitive, uint32_t num_primitives,
+	                            bool single_primitive_step);
 	void flush_palette_upload();
 
 	void bind_debug_resources(Vulkan::CommandBuffer &cmd, const RenderPass &rp, const RenderPass::Instance &instance);

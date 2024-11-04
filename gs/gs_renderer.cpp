@@ -1750,7 +1750,7 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 
 	if (rp.feedback_color)
 	{
-		dispatch_shading_debug(cmd, rp, push, instance, base_primitive, num_primitives);
+		dispatch_shading_debug(cmd, rp, push, instance, base_primitive, num_primitives, single_primitive_step);
 	}
 	else if (single_primitive_step)
 	{
@@ -1853,11 +1853,15 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 
 void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const RenderPass &rp,
                                         ShadingDescriptor push, uint32_t instance,
-                                        uint32_t base_primitive, uint32_t num_primitives)
+                                        uint32_t base_primitive, uint32_t num_primitives,
+                                        bool single_primitive_step)
 {
 	auto &inst = rp.instances[instance];
 
 	uint32_t stride = rp.debug_capture_stride ? rp.debug_capture_stride : num_primitives;
+	if (single_primitive_step)
+		stride = 1;
+
 	for (uint32_t i = 0; i < num_primitives; i += stride)
 	{
 		push.lo_primitive_index = i;
