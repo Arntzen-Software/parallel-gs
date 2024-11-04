@@ -401,8 +401,6 @@ void begin_tile()
 				uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
 				col = uint(vram16.data[tile.fb_index + vram_offset]);
 			}
-			else
-				fb_color_dirty = true;
 		}
 
 		fb_color = rgba16_to_rgba32(col, 0u, 0u, 0x80u);
@@ -436,15 +434,10 @@ void begin_tile()
 				uint ssaa_fb_color = vram32.data[tile.fb_index + vram_offset];
 				// In case alpha was clobbered by texture uploads, preserve that channel in single sampled form.
 				if (is_fb_24bit && ref != ~0u)
-				{
 					fb_color = bitfieldInsert(fb_color, ssaa_fb_color, 0, 24);
-					fb_color_dirty = true;
-				}
 				else
 					fb_color = ssaa_fb_color;
 			}
-			else
-				fb_color_dirty = true;
 		}
 	}
 
@@ -463,8 +456,6 @@ void begin_tile()
 					uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
 					fb_depth = uint(vram16.data[tile.fb_index_depth + vram_offset]);
 				}
-				else
-					fb_depth_dirty = true;
 			}
 		}
 		else
@@ -484,8 +475,6 @@ void begin_tile()
 					z_uint = vram32.data[tile.fb_index_depth + vram_offset];
 					fb_depth = z_uint & ref_mask;
 				}
-				else
-					fb_depth_dirty = true;
 			}
 		}
 	}
@@ -506,23 +495,6 @@ void begin_tile()
 	if (NUM_SAMPLES == 2 || NUM_SAMPLES == 8)
 		imageStore(FeedbackDepth, ivec3(tile.fb_pixel ^ ivec2(1, 0) - (constants.base_pixel << SAMPLING_RATE_DIM_LOG2), 1), uvec4(fb_depth));
 #endif
-}
-
-bool ballot_reduce_single(bool value)
-{
-	uvec4 b = subgroupBallot(value);
-
-	// No need to mask, we only care about valid ballot for the first sample we write-back.
-	if (NUM_SAMPLES >= 16)
-		b |= b >> 8u;
-	if (NUM_SAMPLES >= 8)
-		b |= b >> 4u;
-	if (NUM_SAMPLES >= 4)
-		b |= b >> 2u;
-
-	b |= b >> 1u;
-
-	return subgroupInverseBallot(b);
 }
 
 bool ballot_reduce_broadcast(bool value)
@@ -600,6 +572,8 @@ void end_tile()
 			super_sample_required_depth = ballot_reduce_broadcast(super_sample_required_depth);
 		}
 
+		fb_color_dirty = ballot_reduce_broadcast(fb_color_dirty);
+
 		// If we know that all samples are the same, doing SSAA reduction won't cause the pixel to change value,
 		// i.e., we don't have to consider updating dirty flags.
 		if (super_sample_required_color)
@@ -631,7 +605,8 @@ void end_tile()
 			fb_color = packUnorm4x8(fb_color_float);
 		}
 
-		fb_color_dirty = ballot_reduce_single(fb_color_dirty);
+		if (Z_SENSITIVE)
+			fb_depth_dirty = ballot_reduce_broadcast(fb_depth_dirty);
 
 		if (Z_SENSITIVE && super_sample_required_depth)
 		{
@@ -662,9 +637,6 @@ void end_tile()
 				fb_depth = min(fb_depth, subgroupShuffleXor(fb_depth, 2));
 			fb_depth = min(fb_depth, subgroupShuffleXor(fb_depth, 1));
 		}
-
-		if (Z_SENSITIVE)
-			fb_depth_dirty = ballot_reduce_single(fb_depth_dirty);
 	}
 
 	bool is_first_sample = !SUPER_SAMPLE || sample_index == 0;
