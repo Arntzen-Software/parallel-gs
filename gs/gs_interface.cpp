@@ -192,6 +192,15 @@ void GSInterface::flush_render_pass(FlushReason reason)
 				pass.sampling_rate_x_log2 = 0;
 				pass.sampling_rate_y_log2 = 0;
 			}
+			else if (inst.z_write && inst.zbuf.desc.ZBP == inst.frame.desc.FBP)
+			{
+				// If we're doing color/Z aliasing like this, we're not doing normal rendering,
+				// and any super sampling state is likely to get clobbered hard either way.
+				// There's no useful use case for rendering 3D with this configuration,
+				// so be careful and just disable SSAA.
+				pass.sampling_rate_x_log2 = 0;
+				pass.sampling_rate_y_log2 = 0;
+			}
 
 			pass.z_sensitive = inst.z_sensitive;
 			pass.z_write = inst.z_write;
