@@ -1,4 +1,4 @@
-From 57cd3af1bb48d9ab042aa36de3de6035234f91d9 Mon Sep 17 00:00:00 2001
+From ed52c1929e5d65f0c997441f21b0a2e5448626b9 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sun, 23 Jun 2024 14:54:43 +0200
 Subject: [PATCH] Early integration of parallel-GS.
@@ -27,14 +27,14 @@ Subject: [PATCH] Early integration of parallel-GS.
  .../GS/Renderers/parallel-gs/GSRendererPGS.h  |  85 ++
  pcsx2/ImGui/ImGuiFullscreen.cpp               |   2 +
  pcsx2/Pcsx2Config.cpp                         |   5 +-
- pcsx2/pcsx2.vcxproj                           |  51 +-
- 24 files changed, 1555 insertions(+), 164 deletions(-)
+ pcsx2/pcsx2.vcxproj                           |  52 +-
+ 24 files changed, 1556 insertions(+), 164 deletions(-)
  create mode 100644 pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
 
 diff --git a/.gitignore b/.gitignore
-index b59e873da7..aac77d3488 100644
+index b59e873da..aac77d348 100644
 --- a/.gitignore
 +++ b/.gitignore
 @@ -120,3 +120,5 @@ CMakeSettings.json
@@ -44,7 +44,7 @@ index b59e873da7..aac77d3488 100644
 +
 +/pcsx2/GS/parallel-gs
 diff --git a/3rdparty/vulkan/include/vulkan/vulkan_core.h b/3rdparty/vulkan/include/vulkan/vulkan_core.h
-index e6c16498af..b2973ffc88 100644
+index e6c16498a..b2973ffc8 100644
 --- a/3rdparty/vulkan/include/vulkan/vulkan_core.h
 +++ b/3rdparty/vulkan/include/vulkan/vulkan_core.h
 @@ -69,7 +69,7 @@ extern "C" {
@@ -507,7 +507,7 @@ index e6c16498af..b2973ffc88 100644
  #define VK_KHR_acceleration_structure 1
  #define VK_KHR_ACCELERATION_STRUCTURE_SPEC_VERSION 13
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 4036241b47..2f369adb3c 100644
+index 4036241b4..2f369adb3 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -33,6 +33,14 @@ check_no_parenthesis_in_path()
@@ -526,7 +526,7 @@ index 4036241b47..2f369adb3c 100644
  # Include specific module
  include(BuildParameters)
 diff --git a/pcsx2-gsrunner/Main.cpp b/pcsx2-gsrunner/Main.cpp
-index d3ad1e8182..0f41205736 100644
+index d3ad1e818..0f4120573 100644
 --- a/pcsx2-gsrunner/Main.cpp
 +++ b/pcsx2-gsrunner/Main.cpp
 @@ -519,6 +519,10 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
@@ -541,7 +541,7 @@ index d3ad1e8182..0f41205736 100644
  				else if (StringUtil::Strcasecmp(rname, "gl") == 0)
  					type = GSRendererType::OGL;
 diff --git a/pcsx2-qt/MainWindow.cpp b/pcsx2-qt/MainWindow.cpp
-index 616e9efa94..4fe7cfc8f6 100644
+index 616e9efa9..4fe7cfc8f 100644
 --- a/pcsx2-qt/MainWindow.cpp
 +++ b/pcsx2-qt/MainWindow.cpp
 @@ -462,6 +462,9 @@ void MainWindow::createRendererSwitchMenu()
@@ -555,7 +555,7 @@ index 616e9efa94..4fe7cfc8f6 100644
  		GSRendererType::DX11,
  		GSRendererType::DX12,
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
-index 311143fd46..faa0ab4e4e 100644
+index 311143fd4..faa0ab4e4 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 @@ -20,6 +20,9 @@ struct RendererInfo
@@ -650,7 +650,7 @@ index 311143fd46..faa0ab4e4e 100644
  
  	if (m_ui.useBlitSwapChain)
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.ui b/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
-index d1b6a9031d..a11828fda5 100644
+index d1b6a9031..a11828fda 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
 @@ -721,6 +721,59 @@
@@ -714,7 +714,7 @@ index d1b6a9031d..a11828fda5 100644
        <attribute name="title">
         <string>Hardware Fixes</string>
 diff --git a/pcsx2-qt/pcsx2-qt.vcxproj b/pcsx2-qt/pcsx2-qt.vcxproj
-index f77da95952..5c3536ce90 100644
+index f77da9595..5c3536ce9 100644
 --- a/pcsx2-qt/pcsx2-qt.vcxproj
 +++ b/pcsx2-qt/pcsx2-qt.vcxproj
 @@ -54,7 +54,7 @@
@@ -727,7 +727,7 @@ index f77da95952..5c3536ce90 100644
        <RuntimeTypeInfo Condition="$(Configuration.Contains(Debug))">true</RuntimeTypeInfo>
      </ClCompile>
 diff --git a/pcsx2/CMakeLists.txt b/pcsx2/CMakeLists.txt
-index 804ab2e406..9bb3b0af39 100644
+index 804ab2e40..9bb3b0af3 100644
 --- a/pcsx2/CMakeLists.txt
 +++ b/pcsx2/CMakeLists.txt
 @@ -638,6 +638,7 @@ if(USE_VULKAN)
@@ -763,7 +763,7 @@ index 804ab2e406..9bb3b0af39 100644
  	GS/Renderers/Metal/cas.metal
  	GS/Renderers/Metal/convert.metal
 diff --git a/pcsx2/Config.h b/pcsx2/Config.h
-index 88f4da719c..ce871d3b77 100644
+index 88f4da719..ce871d3b7 100644
 --- a/pcsx2/Config.h
 +++ b/pcsx2/Config.h
 @@ -276,6 +276,7 @@ enum class GSRendererType : s8
@@ -783,7 +783,7 @@ index 88f4da719c..ce871d3b77 100644
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
 diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
-index 84956d86a3..94af60d8a3 100644
+index 84956d86a..94af60d8a 100644
 --- a/pcsx2/GS/GS.cpp
 +++ b/pcsx2/GS/GS.cpp
 @@ -22,6 +22,11 @@
@@ -1419,7 +1419,7 @@ index 84956d86a3..94af60d8a3 100644
  	GSClampUpscaleMultiplier(GSConfig);
  
 diff --git a/pcsx2/GS/GS.h b/pcsx2/GS/GS.h
-index f2882c3a7f..433bdfb622 100644
+index f2882c3a7..433bdfb62 100644
 --- a/pcsx2/GS/GS.h
 +++ b/pcsx2/GS/GS.h
 @@ -20,6 +20,7 @@ enum class RenderAPI
@@ -1440,7 +1440,7 @@ index f2882c3a7f..433bdfb622 100644
  {
  	/// Called when the GS is creating a render device.
 diff --git a/pcsx2/GS/GSState.cpp b/pcsx2/GS/GSState.cpp
-index 83068f15db..045201926a 100644
+index 83068f15d..045201926 100644
 --- a/pcsx2/GS/GSState.cpp
 +++ b/pcsx2/GS/GSState.cpp
 @@ -32,7 +32,7 @@ static __fi bool IsFirstProvokingVertex()
@@ -1453,7 +1453,7 @@ index 83068f15db..045201926a 100644
  	int size = 0;
  
 diff --git a/pcsx2/GS/GSState.h b/pcsx2/GS/GSState.h
-index 94f9a5442b..5128a0043d 100644
+index 94f9a5442..5128a0043 100644
 --- a/pcsx2/GS/GSState.h
 +++ b/pcsx2/GS/GSState.h
 @@ -21,7 +21,7 @@ public:
@@ -1466,7 +1466,7 @@ index 94f9a5442b..5128a0043d 100644
  private:
  	// RESTRICT prevents multiple loads of the same part of the register when accessing its bitfields (the compiler is happy to know that memory writes in-between will not go there)
 diff --git a/pcsx2/GS/GSUtil.cpp b/pcsx2/GS/GSUtil.cpp
-index 63ae1db030..fdea62b2d1 100644
+index 63ae1db03..fdea62b2d 100644
 --- a/pcsx2/GS/GSUtil.cpp
 +++ b/pcsx2/GS/GSUtil.cpp
 @@ -204,7 +204,9 @@ GSRendererType GSUtil::GetPreferredRenderer()
@@ -1481,7 +1481,7 @@ index 63ae1db030..fdea62b2d1 100644
  		preferred_renderer = GSRendererType::Metal;
  #elif defined(_WIN32) && defined(_M_ARM64)
 diff --git a/pcsx2/GS/Renderers/Common/GSRenderer.cpp b/pcsx2/GS/Renderers/Common/GSRenderer.cpp
-index e564e0e6d2..e29148065b 100644
+index e564e0e6d..e29148065 100644
 --- a/pcsx2/GS/Renderers/Common/GSRenderer.cpp
 +++ b/pcsx2/GS/Renderers/Common/GSRenderer.cpp
 @@ -275,7 +275,7 @@ float GSRenderer::GetModXYOffset()
@@ -1494,7 +1494,7 @@ index e564e0e6d2..e29148065b 100644
  	static constexpr std::array<float, static_cast<size_t>(AspectRatioType::MaxCount) + 1> ars = {{4.0f / 3.0f, 4.0f / 3.0f, 4.0f / 3.0f, 16.0f / 9.0f, 10.0f / 7.0f, 3.0f / 2.0f}};
  	return ars[static_cast<u32>(GSConfig.AspectRatio) + (3u * (is_progressive && GSConfig.AspectRatio == AspectRatioType::RAuto4_3_3_2))];
 diff --git a/pcsx2/GS/Renderers/Vulkan/VKLoader.cpp b/pcsx2/GS/Renderers/Vulkan/VKLoader.cpp
-index e386e6fe53..c7d5381358 100644
+index e386e6fe5..c7d538135 100644
 --- a/pcsx2/GS/Renderers/Vulkan/VKLoader.cpp
 +++ b/pcsx2/GS/Renderers/Vulkan/VKLoader.cpp
 @@ -16,6 +16,8 @@
@@ -1553,7 +1553,7 @@ index e386e6fe53..c7d5381358 100644
  			std::fprintf(stderr, "Vulkan: Failed to load required instance function %s\n", name);
  			required_functions_missing = true;
 diff --git a/pcsx2/GS/Renderers/Vulkan/VKLoader.h b/pcsx2/GS/Renderers/Vulkan/VKLoader.h
-index 736723fca5..cfba3a7c9d 100644
+index 736723fca..cfba3a7c9 100644
 --- a/pcsx2/GS/Renderers/Vulkan/VKLoader.h
 +++ b/pcsx2/GS/Renderers/Vulkan/VKLoader.h
 @@ -7,24 +7,7 @@ class Error;
@@ -1584,7 +1584,7 @@ index 736723fca5..cfba3a7c9d 100644
  
 diff --git a/pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h b/pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
 new file mode 100644
-index 0000000000..d3447f6f7d
+index 000000000..d3447f6f7
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
 @@ -0,0 +1,23 @@
@@ -1613,7 +1613,7 @@ index 0000000000..d3447f6f7d
 +
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 new file mode 100644
-index 0000000000..a529ce9e74
+index 000000000..a529ce9e7
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 @@ -0,0 +1,772 @@
@@ -2391,7 +2391,7 @@ index 0000000000..a529ce9e74
 +}
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
 new file mode 100644
-index 0000000000..ae14e4b6ef
+index 000000000..ae14e4b6e
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
 @@ -0,0 +1,85 @@
@@ -2481,7 +2481,7 @@ index 0000000000..ae14e4b6ef
 +	uint32_t dump_frames = 0;
 +};
 diff --git a/pcsx2/ImGui/ImGuiFullscreen.cpp b/pcsx2/ImGui/ImGuiFullscreen.cpp
-index 8d9a8a07e0..d20b14963d 100644
+index 8d9a8a07e..d20b14963 100644
 --- a/pcsx2/ImGui/ImGuiFullscreen.cpp
 +++ b/pcsx2/ImGui/ImGuiFullscreen.cpp
 @@ -586,6 +586,8 @@ ImGuiFullscreen::FocusResetType ImGuiFullscreen::GetQueuedFocusResetType()
@@ -2494,7 +2494,7 @@ index 8d9a8a07e0..d20b14963d 100644
  	g.ActiveIdSource = (g.ActiveIdSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
  	g.NavInputSource = (g.NavInputSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
 diff --git a/pcsx2/Pcsx2Config.cpp b/pcsx2/Pcsx2Config.cpp
-index be60b540fe..2968b2a076 100644
+index be60b540f..2968b2a07 100644
 --- a/pcsx2/Pcsx2Config.cpp
 +++ b/pcsx2/Pcsx2Config.cpp
 @@ -683,6 +683,7 @@ const char* Pcsx2Config::GSOptions::GetRendererName(GSRendererType type)
@@ -2524,7 +2524,7 @@ index be60b540fe..2968b2a076 100644
  	SettingsWrapBitBoolEx(Mipmap, "mipmap");
  	SettingsWrapBitBoolEx(ManualUserHacks, "UserHacks");
 diff --git a/pcsx2/pcsx2.vcxproj b/pcsx2/pcsx2.vcxproj
-index 41ff04385a..7c1ad72952 100644
+index 41ff04385..b8816342c 100644
 --- a/pcsx2/pcsx2.vcxproj
 +++ b/pcsx2/pcsx2.vcxproj
 @@ -53,6 +53,15 @@
@@ -2552,7 +2552,7 @@ index 41ff04385a..7c1ad72952 100644
        <PreprocessorDefinitions Condition="'$(Platform)'!='ARM64'">ENABLE_RAINTEGRATION;ENABLE_OPENGL;ENABLE_VULKAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
        <PreprocessorDefinitions Condition="'$(Platform)'=='x64'">XBYAK_NO_EXCEPTION;ZYCORE_STATIC_DEFINE;ZYDIS_STATIC_DEFINE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
        <PreprocessorDefinitions Condition="'$(Platform)'=='ARM64'">VIXL_INCLUDE_TARGET_AARCH64;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-@@ -259,6 +268,46 @@
+@@ -259,6 +268,47 @@
      <ClCompile Include="Gif_Logger.cpp" />
      <ClCompile Include="Gif_Unit.cpp" />
      <ClCompile Include="GSDumpReplayer.cpp" />
@@ -2584,6 +2584,7 @@ index 41ff04385a..7c1ad72952 100644
 +    <ClCompile Include="GS\parallel-gs\Granite\vulkan\semaphore_manager.cpp" />
 +    <ClCompile Include="GS\parallel-gs\Granite\vulkan\shader.cpp" />
 +    <ClCompile Include="GS\parallel-gs\Granite\vulkan\wsi.cpp" />
++    <ClCompile Include="GS\parallel-gs\Granite\vulkan\pipeline_cache.cpp" />
 +    <ClCompile Include="GS\parallel-gs\Granite\vulkan\texture\memory_mapped_texture.cpp" />
 +    <ClCompile Include="GS\parallel-gs\Granite\vulkan\texture\texture_files.cpp" />
 +    <ClCompile Include="GS\parallel-gs\Granite\vulkan\texture\texture_format.cpp" />
