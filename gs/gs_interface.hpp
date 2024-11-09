@@ -176,6 +176,14 @@ struct VSyncInfo
 	// This can help games which don't scan out the full 224 lines for example.
 	// This will look funny if the game is constantly changing vertical scanout resolution.
 	bool raw_circuit_scanout;
+
+	// When using SSAA, attempt to scan out a higher resolution image based on the super samples.
+	// This only works well if the game is rendering 3D geometry directly to the frame buffer which is used to scanout.
+	// Some games blit the real framebuffer to scanout location using textures, which will lose the SSAA information necessary to scanout,
+	// and the result will look like pixelated nearest-neighbor upscaling instead.
+	// Requires a minimum of 4x SSAA to work. 8x SSAA and 16x SSAA adds some super-sampling over the double resolution scanout.
+	// For best results, force_progressive must also be used.
+	bool high_resolution_scanout;
 };
 
 struct GSOptions

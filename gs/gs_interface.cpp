@@ -3937,7 +3937,7 @@ void GSInterface::set_debug_mode(const DebugMode &mode)
 
 ScanoutResult GSInterface::vsync(const VSyncInfo &info)
 {
-	return renderer.vsync(priv_registers, info);
+	return renderer.vsync(priv_registers, info, sampling_rate_x_log2, sampling_rate_y_log2);
 }
 
 FlushStats GSInterface::consume_flush_stats()

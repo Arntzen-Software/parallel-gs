@@ -128,7 +128,7 @@ void GSDumpParser::read_register_state()
 	read_u32();
 }
 
-bool GSDumpParser::iterate_until_vsync()
+bool GSDumpParser::iterate_until_vsync(bool high_res_scanout)
 {
 	if (!file)
 		return false;
@@ -161,6 +161,7 @@ bool GSDumpParser::iterate_until_vsync()
 			vsync.dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			vsync.dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 			vsync.dst_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+			vsync.high_resolution_scanout = high_res_scanout;
 			vsync.force_progressive = true;
 			vsync.anti_blur = true;
 			vsync.overscan = false;

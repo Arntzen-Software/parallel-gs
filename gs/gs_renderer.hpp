@@ -23,6 +23,7 @@ namespace ParallelGS
 struct ScanoutResult
 {
 	Vulkan::ImageHandle image;
+	// Always reported in the single-sampled domain.
 	uint32_t internal_width;
 	uint32_t internal_height;
 	// This is relevant for aspect ratio correction.
@@ -31,6 +32,9 @@ struct ScanoutResult
 	// Mode width/height are used as reference for the target output aspect ratio.
 	uint32_t mode_width;
 	uint32_t mode_height;
+
+	// Set to true if we scanned out at a higher resolution.
+	bool high_resolution_scanout;
 };
 
 struct FlushStats
@@ -275,7 +279,8 @@ public:
 	void *begin_host_vram_access();
 	void end_host_write_vram_access();
 
-	ScanoutResult vsync(const PrivRegisterState &priv, const VSyncInfo &info);
+	ScanoutResult vsync(const PrivRegisterState &priv, const VSyncInfo &info,
+	                    uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2);
 
 	static TexRect compute_effective_texture_rect(const TextureDescriptor &desc);
 
@@ -403,7 +408,7 @@ private:
 	};
 
 	void sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::Image &img,
-	                         const DISPFBBits &dispfb, const SamplingRect &rect);
+	                         const DISPFBBits &dispfb, const SamplingRect &rect, uint32_t super_samples);
 
 	static SamplingRect compute_circuit_rect(const PrivRegisterState &priv, uint32_t phase,
 	                                         const DISPLAYBits &display, bool force_progressive);

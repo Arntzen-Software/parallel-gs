@@ -22,7 +22,7 @@ using namespace Util;
 
 static void print_help()
 {
-	LOGI("Usage: parallel-gs-replayer <dump.gs> [--ssaa <rate>] [--strided] [--full] [--iterations <count>]\n");
+	LOGI("Usage: parallel-gs-replayer <dump.gs> [--ssaa <rate>] [--strided] [--full] [--iterations <count>] [--high-res-scanout]\n");
 }
 
 int main(int argc, char **argv)
@@ -32,6 +32,7 @@ int main(int argc, char **argv)
 	debug_mode.feedback_render_target = true;
 	debug_mode.draw_mode = DebugMode::DrawDebugMode::None;
 	unsigned total_iterations = 1;
+	bool high_res_scanout = false;
 	GSOptions opts = {};
 
 	CLICallbacks cbs;
@@ -40,6 +41,7 @@ int main(int argc, char **argv)
 	cbs.add("--strided", [&](CLIParser &) { debug_mode.draw_mode = DebugMode::DrawDebugMode::Strided; });
 	cbs.add("--full", [&](CLIParser &) { debug_mode.draw_mode = DebugMode::DrawDebugMode::Full; });
 	cbs.add("--iterations", [&](CLIParser &parser) { total_iterations = parser.next_uint(); });
+	cbs.add("--high-res-scanout", [&](CLIParser &) { high_res_scanout = true; });
 	cbs.default_handler = [&](const char *arg) { dump_path = arg; };
 
 	CLIParser cli_parser(std::move(cbs), argc - 1, argv + 1);
@@ -97,7 +99,7 @@ int main(int argc, char **argv)
 			LOGI("Running frame ...\n");
 			if (iterations > 0)
 				vsyncs++;
-		} while (parser.iterate_until_vsync());
+		} while (parser.iterate_until_vsync(high_res_scanout));
 
 		if (!parser.restart())
 		{
