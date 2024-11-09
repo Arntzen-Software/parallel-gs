@@ -106,7 +106,8 @@ layout(set = 0, binding = BINDING_STATE_VECTORS, std140) uniform StateVectors
 #endif
 
 #ifdef BINDLESS
-layout(set = 0, binding = BINDING_SAMPLER_BASE) uniform sampler bindless_samplers[BINDING_SAMPLER_COUNT];
+layout(set = 0, binding = BINDING_SAMPLER_NEAREST) uniform sampler nearest_sampler;
+layout(set = 0, binding = BINDING_SAMPLER_LINEAR) uniform sampler linear_sampler;
 layout(set = DESCRIPTOR_SET_IMAGES, binding = 0) uniform texture2D bindless_textures[];
 #endif
 

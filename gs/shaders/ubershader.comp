@@ -1051,12 +1051,12 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 
 	vec4 color_1;
 
-	// The sampler may be divergent if we have MMIN != MMAG. Most likely it will not and this
-	// waterfall resolves in one iteration.
-	color_1 = vec4(textureLod(nonuniformEXT(sampler2D(
-		bindless_textures[tex_index],
-		bindless_samplers[sampler_index])),
-		uv_1, LOD_1));
+	// The sampler may be divergent if we have MMIN != MMAG. Most likely it will not.
+	// With newer Vulkan spec clarification, we don't need nonuniformEXT here as long as it's subgroup uniform :)
+	if (sampler_index != 0)
+		color_1 = textureLod(sampler2D(bindless_textures[tex_index], linear_sampler), uv_1, LOD_1);
+	else
+		color_1 = textureLod(sampler2D(bindless_textures[tex_index], nearest_sampler), uv_1, LOD_1);
 
 	vec4 color = roundEven(255.0 * color_1);
 
@@ -1075,10 +1075,10 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 
 		vec4 color_2;
 
-		color_2 = vec4(textureLod(nonuniformEXT(sampler2D(
-			bindless_textures[tex_index],
-			bindless_samplers[sampler_index])),
-			uv_2, LOD_2));
+		if (sampler_index != 0)
+			color_2 = textureLod(sampler2D(bindless_textures[tex_index], linear_sampler), uv_2, LOD_2);
+		else
+			color_2 = textureLod(sampler2D(bindless_textures[tex_index], nearest_sampler), uv_2, LOD_2);
 
 		color_2 = roundEven(255.0 * color_2);
 		float weight = floor(fract_LOD * 16.0);
