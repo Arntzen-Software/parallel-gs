@@ -127,15 +127,15 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			draw_mode = DebugMode::DrawDebugMode((uint32_t(draw_mode) + 1) % uint32_t(DebugMode::DrawDebugMode::Count));
 		}
 		else if (e.get_key() == Key::_1 && iface)
-			iface->set_super_sampling_rate(SuperSampling::X1);
+			iface->set_super_sampling_rate(SuperSampling::X1, true);
 		else if (e.get_key() == Key::_2 && iface)
-			iface->set_super_sampling_rate(SuperSampling::X2);
+			iface->set_super_sampling_rate(SuperSampling::X2, true);
 		else if (e.get_key() == Key::_3 && iface)
-			iface->set_super_sampling_rate(SuperSampling::X4);
+			iface->set_super_sampling_rate(SuperSampling::X4, true);
 		else if (e.get_key() == Key::_4 && iface)
-			iface->set_super_sampling_rate(SuperSampling::X8);
+			iface->set_super_sampling_rate(SuperSampling::X8, true);
 		else if (e.get_key() == Key::_5 && iface)
-			iface->set_super_sampling_rate(SuperSampling::X16);
+			iface->set_super_sampling_rate(SuperSampling::X16, true);
 		else if (e.get_key() == Key::M)
 			get_wsi().set_present_mode(get_wsi().get_present_mode() == PresentMode::SyncToVBlank ? PresentMode::UnlockedMaybeTear : PresentMode::SyncToVBlank);
 

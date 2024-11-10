@@ -43,7 +43,7 @@ bool GSInterface::init(Vulkan::Device *device, const GSOptions &options)
 	if (!renderer.init(device, options))
 		return false;
 
-	set_super_sampling_rate(options.super_sampling);
+	set_super_sampling_rate(options.super_sampling, options.ordered_super_sampling);
 
 	render_pass.positions.reserve(MaxPrimitivesPerFlush * 3);
 	render_pass.attributes.reserve(MaxPrimitivesPerFlush * 3);
@@ -51,7 +51,7 @@ bool GSInterface::init(Vulkan::Device *device, const GSOptions &options)
 	return true;
 }
 
-void GSInterface::set_super_sampling_rate(SuperSampling super_sampling)
+void GSInterface::set_super_sampling_rate(SuperSampling super_sampling, bool ordered_grid)
 {
 	super_sampling = SuperSampling(std::min<uint32_t>(
 			uint32_t(super_sampling), uint32_t(renderer.get_max_supported_super_sampling())));
@@ -69,8 +69,16 @@ void GSInterface::set_super_sampling_rate(SuperSampling super_sampling)
 		break;
 
 	case SuperSampling::X4:
-		sampling_rate_x_log2 = 1;
-		sampling_rate_y_log2 = 1;
+		if (ordered_grid)
+		{
+			sampling_rate_x_log2 = 1;
+			sampling_rate_y_log2 = 1;
+		}
+		else
+		{
+			sampling_rate_x_log2 = 0;
+			sampling_rate_y_log2 = 2;
+		}
 		break;
 
 	case SuperSampling::X8:
@@ -79,8 +87,16 @@ void GSInterface::set_super_sampling_rate(SuperSampling super_sampling)
 		break;
 
 	case SuperSampling::X16:
-		sampling_rate_x_log2 = 2;
-		sampling_rate_y_log2 = 2;
+		if (ordered_grid)
+		{
+			sampling_rate_x_log2 = 2;
+			sampling_rate_y_log2 = 2;
+		}
+		else
+		{
+			sampling_rate_x_log2 = 1;
+			sampling_rate_y_log2 = 3;
+		}
 		break;
 	}
 

@@ -191,6 +191,7 @@ struct GSOptions
 	SuperSampling super_sampling = SuperSampling::X1;
 	uint32_t vram_size = 4 * 1024 * 1024; // This should generally not be touched.
 	bool dynamic_super_sampling = false; // If super sampling rate can be toggled in-flight.
+	bool ordered_super_sampling = true; // Prefers ordered grid. Aids debugging.
 };
 
 class GSInterface final
@@ -200,7 +201,7 @@ public:
 	bool init(Vulkan::Device *device, const GSOptions &options);
 	void reset_context_state();
 
-	void set_super_sampling_rate(SuperSampling super_sampling);
+	void set_super_sampling_rate(SuperSampling super_sampling, bool ordered_grid);
 	void set_debug_mode(const DebugMode &mode);
 
 	// GIF payload format.

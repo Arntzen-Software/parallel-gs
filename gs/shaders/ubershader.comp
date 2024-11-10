@@ -36,6 +36,7 @@ const int SAMPLING_RATE_DIM = 1 << SAMPLING_RATE_DIM_LOG2;
 const uint VRAM_SIZE_16 = (VRAM_MASK + 1u) / 2u;
 const uint VRAM_SIZE_32 = (VRAM_MASK + 1u) / 4u;
 const bool SUPER_SAMPLE = NUM_SAMPLES > 1;
+const uint SPARSE_PATTERN_SIZE_LOG2 = NUM_SAMPLES_Y_LOG2 - NUM_SAMPLES_X_LOG2;
 
 //#include "inc/debug_channel.h"
 //#define DU(x) add_debug_message(0, uvec3(tile.fb_pixel, 0), uvec2(__LINE__, uint(x)))
@@ -143,27 +144,40 @@ TileInfo get_tile_info()
 	ivec2 tile_index;
 	ivec2 local_pixel;
 
+	// Quite complicated code to generate a sampling grid, but it all collapses to a branchless path
+	// due to specialization constants.
+	// Each workgroup needs to generate coordinates in the 8x8 grid.
+	// In single sampled mode, this is simple since we use InvocationID + SubgroupID to parcel out the 8x8 region.
+	// For super-sampling, this gets a bit hairier.
+	// If the raster grid is upsampled by e.g. 2x, we need to generate a 16x16 region, 4x -> 32x32, 8x -> 64x64.
+
 	if (gl_SubgroupSize == 4)
 	{
-		tile_size = ivec2(2);
 		tile_index.x = int(bitfieldExtract(gl_SubgroupID, 0, 2));
 		tile_index.y = int(bitfieldExtract(gl_SubgroupID, 2, 2));
 
-		if (NUM_SAMPLES > 1)
+		if (SPARSE_PATTERN_SIZE_LOG2 == 2)
 		{
-			tile_index.x += 4 * int(gl_WorkGroupID.x % NUM_SAMPLES_X);
-			tile_index.y += 4 * int(gl_WorkGroupID.x / NUM_SAMPLES_X);
+			tile_size = ivec2(1, 4); // Tile-size will be adjusted to 4x4.
+			tile_index.x += 4 * int(gl_WorkGroupID.x % (NUM_SAMPLES_X * 2));
+			tile_index.y += 4 * int(gl_WorkGroupID.x / (NUM_SAMPLES_X * 2));
 
-			// Need clustered ops to work well.
-			local_pixel.y =
-				int(bitfieldExtract(gl_SubgroupInvocationID, 0, 1));
-			local_pixel.x =
-				int(bitfieldExtract(gl_SubgroupInvocationID, 1, 1));
+			local_pixel.y = int(gl_SubgroupInvocationID);
+			local_pixel.x = 0;
 		}
 		else
 		{
-			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 1));
-			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 1, 1));
+			tile_size = ivec2(2);
+
+			if (NUM_SAMPLES > 1)
+			{
+				tile_index.x += 4 * int(gl_WorkGroupID.x % NUM_SAMPLES_X);
+				tile_index.y += 4 * int(gl_WorkGroupID.x / NUM_SAMPLES_X);
+			}
+
+			// Need clustered ops to work well.
+			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 1));
+			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 1, 1));
 		}
 	}
 	else if (gl_SubgroupSize == 8)
@@ -172,7 +186,14 @@ TileInfo get_tile_info()
 		tile_index.x = int(bitfieldExtract(gl_SubgroupID, 0, 2));
 		tile_index.y = int(bitfieldExtract(gl_SubgroupID, 2, 1));
 
-		if (NUM_SAMPLES > 1)
+		if (SPARSE_PATTERN_SIZE_LOG2 == 2)
+		{
+			tile_index.x += 4 * int(gl_WorkGroupID.x % NUM_SAMPLES_X);
+			tile_index.y += 2 * int(gl_WorkGroupID.x / NUM_SAMPLES_X);
+			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 2));
+			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 2, 1));
+		}
+		else if (NUM_SAMPLES > 1)
 		{
 			tile_index.x += 4 * int(gl_WorkGroupID.x % NUM_SAMPLES_X);
 			tile_index.y += 2 * int(gl_WorkGroupID.x / NUM_SAMPLES_X);
@@ -187,34 +208,45 @@ TileInfo get_tile_info()
 		}
 		else
 		{
-			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 1));
-			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 1, 1));
+			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 2));
+			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 2, 1));
 		}
 	}
 	else if (gl_SubgroupSize == 16)
 	{
-		tile_size = ivec2(4);
-		tile_index.x = int(bitfieldExtract(gl_SubgroupID, 0, 1));
-		tile_index.y = int(bitfieldExtract(gl_SubgroupID, 1, 1));
-
-		if (NUM_SAMPLES > 1)
+		if (SPARSE_PATTERN_SIZE_LOG2 == 2)
 		{
-			tile_index.x += 2 * int(gl_WorkGroupID.x % NUM_SAMPLES_X);
-			tile_index.y += 2 * int(gl_WorkGroupID.x / NUM_SAMPLES_X);
-
-			// Need clustered ops to work well.
-			local_pixel.y =
-				int(bitfieldExtract(gl_SubgroupInvocationID, 0, 1)) +
-				int(bitfieldExtract(gl_SubgroupInvocationID, 2, 1)) * 2;
-
-			local_pixel.x =
-				int(bitfieldExtract(gl_SubgroupInvocationID, 1, 1)) +
-				int(bitfieldExtract(gl_SubgroupInvocationID, 3, 1)) * 2;
+			tile_size = ivec2(2, 8);
+			tile_index.x += 2 * int(gl_WorkGroupID.x % (NUM_SAMPLES_X * 2));
+			tile_index.y += 2 * int(gl_WorkGroupID.x / (NUM_SAMPLES_X * 2));
+			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 3));
+			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 3, 1));
 		}
 		else
 		{
-			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 2));
-			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 2, 2));
+			tile_size = ivec2(4);
+			tile_index.x = int(bitfieldExtract(gl_SubgroupID, 0, 1));
+			tile_index.y = int(bitfieldExtract(gl_SubgroupID, 1, 1));
+
+			if (NUM_SAMPLES > 1)
+			{
+				tile_index.x += 2 * int(gl_WorkGroupID.x % NUM_SAMPLES_X);
+				tile_index.y += 2 * int(gl_WorkGroupID.x / NUM_SAMPLES_X);
+
+				// Need clustered ops to work well.
+				local_pixel.y =
+					int(bitfieldExtract(gl_SubgroupInvocationID, 0, 1)) +
+					int(bitfieldExtract(gl_SubgroupInvocationID, 2, 1)) * 2;
+
+				local_pixel.x =
+					int(bitfieldExtract(gl_SubgroupInvocationID, 1, 1)) +
+					int(bitfieldExtract(gl_SubgroupInvocationID, 3, 1)) * 2;
+			}
+			else
+			{
+				local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 2));
+				local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 2, 2));
+			}
 		}
 	}
 	else if (gl_SubgroupSize == 32)
@@ -223,7 +255,14 @@ TileInfo get_tile_info()
 		tile_index.x = int(bitfieldExtract(gl_SubgroupID, 0, 1));
 		tile_index.y = 0;
 
-		if (NUM_SAMPLES > 1)
+		if (SPARSE_PATTERN_SIZE_LOG2 == 2)
+		{
+			tile_index.x += 2 * int(gl_WorkGroupID.x % NUM_SAMPLES_X);
+			tile_index.y += int(gl_WorkGroupID.x / NUM_SAMPLES_X);
+			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 3));
+			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 3, 2));
+		}
+		else if (NUM_SAMPLES > 1)
 		{
 			tile_index.x += 2 * int(gl_WorkGroupID.x % NUM_SAMPLES_X);
 			tile_index.y += int(gl_WorkGroupID.x / NUM_SAMPLES_X);
@@ -246,41 +285,68 @@ TileInfo get_tile_info()
 	}
 	else
 	{
-		tile_size = ivec2(8, 8);
 		tile_index = ivec2(0);
 
-		if (NUM_SAMPLES > 1)
+		if (SPARSE_PATTERN_SIZE_LOG2 == 2)
 		{
-			tile_index.x += int(gl_WorkGroupID.x % NUM_SAMPLES_X);
-			tile_index.y += int(gl_WorkGroupID.x / NUM_SAMPLES_X);
-
-			// Need clustered ops to work well.
+			tile_size = ivec2(4, 16);
+			tile_index.x += int(gl_WorkGroupID.x % (NUM_SAMPLES_X * 2));
+			tile_index.y += int(gl_WorkGroupID.x / (NUM_SAMPLES_X * 2));
 			local_pixel.y =
-				int(bitfieldExtract(gl_SubgroupInvocationID, 0, 1)) +
-				int(bitfieldExtract(gl_SubgroupInvocationID, 2, 1)) * 2 +
-				int(bitfieldExtract(gl_SubgroupInvocationID, 4, 1)) * 4;
-
+				int(bitfieldExtract(gl_SubgroupInvocationID, 0, 3)) +
+				int(bitfieldExtract(gl_SubgroupInvocationID, 4, 1)) * 8;
 			local_pixel.x =
-				int(bitfieldExtract(gl_SubgroupInvocationID, 1, 1)) +
-				int(bitfieldExtract(gl_SubgroupInvocationID, 3, 1)) * 2 +
-				int(bitfieldExtract(gl_SubgroupInvocationID, 5, 1)) * 4;
+				int(bitfieldExtract(gl_SubgroupInvocationID, 3, 1)) +
+				int(bitfieldExtract(gl_SubgroupInvocationID, 5, 1)) * 2;
 		}
 		else
 		{
-			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 3));
-			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 3, 3));
+			tile_size = ivec2(8);
+
+			if (NUM_SAMPLES > 1)
+			{
+				tile_index.x += int(gl_WorkGroupID.x % NUM_SAMPLES_X);
+				tile_index.y += int(gl_WorkGroupID.x / NUM_SAMPLES_X);
+
+				// Need clustered ops to work well.
+				local_pixel.y =
+					int(bitfieldExtract(gl_SubgroupInvocationID, 0, 1)) +
+					int(bitfieldExtract(gl_SubgroupInvocationID, 2, 1)) * 2 +
+					int(bitfieldExtract(gl_SubgroupInvocationID, 4, 1)) * 4;
+
+				local_pixel.x =
+					int(bitfieldExtract(gl_SubgroupInvocationID, 1, 1)) +
+					int(bitfieldExtract(gl_SubgroupInvocationID, 3, 1)) * 2 +
+					int(bitfieldExtract(gl_SubgroupInvocationID, 5, 1)) * 4;
+			}
+			else
+			{
+				local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 3));
+				local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 3, 3));
+			}
 		}
 	}
 
 	// If NUM_SAMPLES_X < NUM_SAMPLES_Y, we do X-offsets to compensate and create a checkerboard. Similar as N64 8x coverage.
 	fb_tile_base *= int(NUM_SAMPLES_Y);
 
-	if (NUM_SAMPLES_X < NUM_SAMPLES_Y)
+	if (SPARSE_PATTERN_SIZE_LOG2 != 0)
 	{
-		// Checkerboard.
-		tile_size.x *= 2;
-		local_pixel.x *= 2;
-		local_pixel.x += local_pixel.y & 1;
+		// Sparse patterns.
+		tile_size.x <<= SPARSE_PATTERN_SIZE_LOG2;
+		local_pixel.x <<= SPARSE_PATTERN_SIZE_LOG2;
+
+		if (SPARSE_PATTERN_SIZE_LOG2 == 1)
+		{
+			// Simple checkerboard.
+			local_pixel.x += local_pixel.y & 1;
+		}
+		else if (SPARSE_PATTERN_SIZE_LOG2 == 2)
+		{
+			// (0, 0), (0.5, 0.25), (0.75, 0.5), (0.25, 0.75).
+			// Decent pattern. Covers all 4 subpixels in X and Y with only one 45-deg diagonal.
+			local_pixel.x += int(bitfieldExtract(0x78u, (local_pixel.y & 3) * 2, 2));
+		}
 	}
 
 	// This is in high-res domain.

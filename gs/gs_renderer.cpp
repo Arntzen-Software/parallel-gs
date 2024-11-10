@@ -217,8 +217,10 @@ void GSRenderer::kick_compilation_tasks()
 			{ 0, 0 },
 			{ 0, 1 },
 			{ 1, 1 },
+			{ 0, 2 },
 			{ 1, 2 },
 			{ 2, 2 },
+			{ 1, 3 },
 		};
 
 		static const uint32_t variant_flags[] = {
@@ -1730,7 +1732,7 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	cmd.set_specialization_constant(5, variant_flags);
 
 	assert(inst.sampling_rate_x_log2 <= 2);
-	assert(inst.sampling_rate_y_log2 <= 2);
+	assert(inst.sampling_rate_y_log2 <= 3);
 
 	// Only way to make this work is to cache VRAM into a shadow copy.
 	uint32_t fb_index_depth_offset = 0;
@@ -3185,8 +3187,13 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	const bool overscan = info.overscan;
 	// Tries to counteract field blending. It's just a blur that is overkill.
 	const bool anti_blur = info.anti_blur;
-
 	bool high_resolution_scanout = info.high_resolution_scanout;
+
+	bool is_interlaced = priv.smode2.INT;
+	bool alternative_sampling = is_interlaced && !priv.smode2.FFMD;
+	bool force_deinterlace = priv.smode2.FFMD && priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
+	if (alternative_sampling && force_progressive)
+		is_interlaced = false;
 
 	if (!force_progressive)
 	{
@@ -3206,19 +3213,20 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	if (!sampling_rate_x_log2 || !sampling_rate_y_log2)
 	{
 		if (high_resolution_scanout)
-			LOGW("Disabling high-res scanout due to < 4x SSAA.\n");
+			LOGW("Disabling high-res scanout due to < 4x SSAA (ordered).\n");
+		high_resolution_scanout = false;
+	}
+
+	if (is_interlaced || force_deinterlace)
+	{
+		if (high_resolution_scanout)
+			LOGW("Disabling high-res scanout due to deinterlacing.\n");
 		high_resolution_scanout = false;
 	}
 
 	uint32_t super_samples = 1;
 	if (high_resolution_scanout)
 		super_samples = 1 << (sampling_rate_x_log2 + sampling_rate_y_log2);
-
-	bool is_interlaced = priv.smode2.INT;
-	bool alternative_sampling = is_interlaced && !priv.smode2.FFMD;
-	bool force_deinterlace = priv.smode2.FFMD && priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
-	if (alternative_sampling && force_progressive)
-		is_interlaced = false;
 
 	uint32_t phase = 0;
 	uint32_t clock_divider = 1;
