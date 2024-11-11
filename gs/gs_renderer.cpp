@@ -3195,32 +3195,11 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	if (alternative_sampling && force_progressive)
 		is_interlaced = false;
 
-	if (!force_progressive)
+	// We have to scan out tightly packed fields or upscaling breaks.
+	if (!force_progressive || priv.extwrite.WRITE ||
+	    !sampling_rate_x_log2 || !sampling_rate_y_log2 ||
+	    is_interlaced || force_deinterlace)
 	{
-		// We have to scan out tightly packed fields or upscaling breaks.
-		if (high_resolution_scanout)
-			LOGW("Disabling high-res scanout due to missing force_progressive.\n");
-		high_resolution_scanout = false;
-	}
-
-	if (priv.extwrite.WRITE)
-	{
-		if (high_resolution_scanout)
-			LOGW("Disabling high-res scanout due to EXTWRITE.\n");
-		high_resolution_scanout = false;
-	}
-
-	if (!sampling_rate_x_log2 || !sampling_rate_y_log2)
-	{
-		if (high_resolution_scanout)
-			LOGW("Disabling high-res scanout due to < 4x SSAA (ordered).\n");
-		high_resolution_scanout = false;
-	}
-
-	if (is_interlaced || force_deinterlace)
-	{
-		if (high_resolution_scanout)
-			LOGW("Disabling high-res scanout due to deinterlacing.\n");
 		high_resolution_scanout = false;
 	}
 
