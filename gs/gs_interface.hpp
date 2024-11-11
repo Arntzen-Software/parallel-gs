@@ -194,6 +194,15 @@ struct GSOptions
 	bool ordered_super_sampling = true; // Prefers ordered grid. Aids debugging.
 };
 
+// Pragmatic hacks which may or may not be useful.
+// Not accurate. Use at your own risk.
+struct Hacks
+{
+	// Forces LOD0 to be read. Can break games which don't populate LOD0 with meaningful data.
+	// Can be useful when up-scaling to retain more texture detail.
+	bool disable_mipmaps = false;
+};
+
 class GSInterface final
 {
 public:
@@ -203,6 +212,7 @@ public:
 
 	void set_super_sampling_rate(SuperSampling super_sampling, bool ordered_grid);
 	void set_debug_mode(const DebugMode &mode);
+	void set_hacks(const Hacks &hacks);
 
 	// GIF payload format.
 	void gif_transfer(uint32_t path, const void *data, size_t size);
@@ -263,6 +273,7 @@ private:
 	GSRenderer renderer;
 	uint32_t vram_size = 0;
 	DebugMode debug_mode;
+	Hacks hacks;
 
 	std::vector<uint32_t> sync_host_vram_pages;
 	std::vector<uint32_t> sync_vram_host_pages;

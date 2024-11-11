@@ -1397,7 +1397,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	}
 
 	// No point in uploading mips if we never access it.
-	if (!desc.tex1.desc.mmin_has_mipmap())
+	if (!desc.tex1.desc.mmin_has_mipmap() || hacks.disable_mipmaps)
 		desc.tex1.desc.MXL = 0;
 
 	// Memoize this computation.
@@ -1619,30 +1619,30 @@ void GSInterface::drawing_kick_update_state(FBFeedbackMode feedback_mode, const 
 		p.tex |= ctx.clamp.desc.has_horizontal_clamp() ? TEX_SAMPLER_CLAMP_S_BIT : 0;
 		p.tex |= ctx.clamp.desc.has_vertical_clamp() ? TEX_SAMPLER_CLAMP_T_BIT : 0;
 
-		switch (ctx.tex1.desc.MMIN)
-		{
-		case TEX1Bits::LINEAR:
-			p.tex |= TEX_SAMPLER_MIN_LINEAR_BIT;
-			break;
-		case TEX1Bits::NEAREST_MIPMAP_LINEAR:
-			p.tex |= TEX_SAMPLER_MIPMAP_LINEAR_BIT;
-			break;
-		case TEX1Bits::LINEAR_MIPMAP_NEAREST:
-			p.tex |= TEX_SAMPLER_MIN_LINEAR_BIT;
-			break;
-		case TEX1Bits::LINEAR_MIPMAP_LINEAR:
-			p.tex |= TEX_SAMPLER_MIN_LINEAR_BIT | TEX_SAMPLER_MIPMAP_LINEAR_BIT;
-			break;
-		default:
-			break;
-		}
-
-		if (ctx.tex1.desc.mmin_has_mipmap())
+		if (ctx.tex1.desc.mmin_has_mipmap() && !hacks.disable_mipmaps)
 		{
 			p.tex2 = ctx.tex1.desc.LCM << TEX2_FIXED_LOD_OFFSET;
 			p.tex2 |= ctx.tex1.desc.L << TEX2_L_OFFSET;
 			p.tex2 |= ctx.tex1.desc.K << TEX2_K_OFFSET;
 			p.tex |= ctx.tex1.desc.MXL << TEX_MAX_MIP_LEVEL_OFFSET;
+
+			switch (ctx.tex1.desc.MMIN)
+			{
+			case TEX1Bits::LINEAR:
+				p.tex |= TEX_SAMPLER_MIN_LINEAR_BIT;
+				break;
+			case TEX1Bits::NEAREST_MIPMAP_LINEAR:
+				p.tex |= TEX_SAMPLER_MIPMAP_LINEAR_BIT;
+				break;
+			case TEX1Bits::LINEAR_MIPMAP_NEAREST:
+				p.tex |= TEX_SAMPLER_MIN_LINEAR_BIT;
+				break;
+			case TEX1Bits::LINEAR_MIPMAP_LINEAR:
+				p.tex |= TEX_SAMPLER_MIN_LINEAR_BIT | TEX_SAMPLER_MIPMAP_LINEAR_BIT;
+				break;
+			default:
+				break;
+			}
 		}
 		else
 		{
@@ -1859,7 +1859,7 @@ void GSInterface::update_color_feedback_state()
 		return;
 
 	// Mip-mapping is too weird to deal with.
-	if (ctx.tex1.desc.has_mipmap())
+	if (ctx.tex1.desc.has_mipmap() && !hacks.disable_mipmaps)
 		return;
 
 	auto tbp0 = uint32_t(ctx.tex0.desc.TBP0);
@@ -3949,6 +3949,11 @@ void GSInterface::set_debug_mode(const DebugMode &mode)
 {
 	debug_mode = mode;
 	renderer.set_enable_timestamps(mode.timestamps);
+}
+
+void GSInterface::set_hacks(const Hacks &hacks_)
+{
+	hacks = hacks_;
 }
 
 ScanoutResult GSInterface::vsync(const VSyncInfo &info)
