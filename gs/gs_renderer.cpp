@@ -570,9 +570,6 @@ void GSRenderer::check_flush_stats()
 		flush_cache_upload();
 		// Calls next_frame_context and does garbage collection.
 		flush_submit(0);
-
-		// Notify that we have flushed without being triggered to do so by page tracker.
-		tracker.notify_pressure_flush();
 	}
 }
 
@@ -2074,7 +2071,7 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd,
 		cmd.dispatch(num_wgs, 1, 1);
 }
 
-void GSRenderer::copy_vram(const CopyDescriptor &desc)
+void GSRenderer::copy_vram(const CopyDescriptor &desc, const PageRect &damage_rect)
 {
 	Vulkan::BufferBlockAllocation alloc = {};
 	stats.num_copy_threads += desc.trxreg.desc.RRW * desc.trxreg.desc.RRH;
@@ -2089,6 +2086,16 @@ void GSRenderer::copy_vram(const CopyDescriptor &desc)
 		memcpy(alloc.host, desc.host_data, desc.host_data_size);
 	}
 	pending_copies.push_back({ desc, std::move(alloc) });
+
+	for (uint32_t y = 0; y < damage_rect.page_height; y++)
+	{
+		for (uint32_t x = 0; x < damage_rect.page_width; x++)
+		{
+			uint32_t effective_page = damage_rect.base_page + y * damage_rect.page_stride + x;
+			effective_page &= vram_size / PageSize - 1;
+			vram_copy_write_pages[effective_page / 32] |= 1u << (effective_page & 31);
+		}
+	}
 
 	stats.num_copies++;
 	check_flush_stats();
@@ -2834,6 +2841,8 @@ void GSRenderer::flush_palette_upload()
 
 void GSRenderer::flush_cache_upload()
 {
+	tracker.clear_cache_pages();
+
 	ensure_command_buffer(direct_cmd, Vulkan::CommandBuffer::Type::Generic);
 	flush_palette_upload();
 	if (texture_uploads.empty())
@@ -2870,11 +2879,6 @@ void GSRenderer::flush_cache_upload()
 	post_image_barriers.clear();
 }
 
-void GSRenderer::mark_copy_write_page(uint32_t page_index)
-{
-	vram_copy_write_pages[page_index / 32u] |= 1u << (page_index & 31u);
-}
-
 void GSRenderer::mark_shadow_page_sync(uint32_t page_index)
 {
 	sync_vram_shadow_pages[page_index / 32u] |= 1u << (page_index & 31u);
@@ -2882,6 +2886,8 @@ void GSRenderer::mark_shadow_page_sync(uint32_t page_index)
 
 void GSRenderer::flush_transfer()
 {
+	tracker.clear_copy_pages();
+
 	if (pending_copies.empty())
 		return;
 

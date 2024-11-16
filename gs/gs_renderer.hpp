@@ -253,13 +253,12 @@ public:
 	void flush_cache_upload();
 
 	// Copy stage.
-	void copy_vram(const CopyDescriptor &desc);
+	void copy_vram(const CopyDescriptor &desc, const PageRect &damage_rect);
 	void flush_transfer();
 	void transfer_overlap_barrier();
 
 	// To deal with local -> local hazards.
 	void mark_shadow_page_sync(uint32_t page_index);
-	void mark_copy_write_page(uint32_t page_index);
 
 	// FB stage.
 	void flush_rendering(const RenderPass &rp);

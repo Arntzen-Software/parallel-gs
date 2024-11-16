@@ -369,11 +369,6 @@ void GSInterface::sync_shadow_page(uint32_t page_index)
 	renderer.mark_shadow_page_sync(page_index);
 }
 
-void GSInterface::mark_copy_write_page(uint32_t page_index)
-{
-	renderer.mark_copy_write_page(page_index);
-}
-
 void GSInterface::rewrite_forwarded_clut_upload(
 		const ContextState &ctx, PaletteUploadDescriptor &upload,
 		uint32_t &palette_width, uint32_t &palette_height)
@@ -2672,7 +2667,7 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 		if (!copy_cpu)
 		{
 			tracker.mark_transfer_write(dst_rect);
-			renderer.copy_vram(transfer_state.copy);
+			renderer.copy_vram(transfer_state.copy, dst_rect);
 		}
 
 		// Very possible we just have to flush early and we never receive more image data until
@@ -2749,7 +2744,7 @@ void GSInterface::init_transfer()
 			mark_texture_state_dirty();
 			state_tracker.texflush_counter++;
 		}
-		renderer.copy_vram(transfer_state.copy);
+		renderer.copy_vram(transfer_state.copy, dst_rect);
 	}
 	else if (XDIR == HOST_TO_LOCAL)
 	{

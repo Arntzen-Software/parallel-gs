@@ -197,8 +197,6 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 				accessed_readback_pages.push_back(page);
 			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT |
 			               PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT;
-			if (state.copy_write_block_mask == 0)
-				cb.mark_copy_write_page(page);
 			if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
 				accessed_copy_pages.push_back(page);
 			state.copy_write_block_mask |= dst_rect.block_mask;
@@ -433,16 +431,11 @@ PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t levels
 	return promote_to_cpu ? UploadStrategy::CPU : UploadStrategy::GPU;
 }
 
-void PageTracker::notify_pressure_flush()
-{
-	clear_cache_pages();
-	clear_copy_pages();
-}
-
 void PageTracker::flush_render_pass(FlushReason reason)
 {
 	cb.flush(PAGE_TRACKER_FLUSH_FB_ALL, reason);
-	notify_pressure_flush();
+	clear_cache_pages();
+	clear_copy_pages();
 	clear_fb_pages();
 	// While TEXFLUSH is necessary, plenty of content do not do this properly.
 	invalidate_texture_cache(UINT32_MAX);
@@ -572,8 +565,6 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 				accessed_readback_pages.push_back(page);
 			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT |
 			               PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
-			if (state.copy_write_block_mask == 0)
-				cb.mark_copy_write_page(page);
 			if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
 				accessed_copy_pages.push_back(page);
 			state.copy_write_block_mask |= rect.block_mask;

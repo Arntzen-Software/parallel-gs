@@ -260,7 +260,6 @@ private:
 	void sync_host_vram_page(uint32_t page_index);
 	void sync_vram_host_page(uint32_t page_index);
 	void sync_shadow_page(uint32_t page_index);
-	void mark_copy_write_page(uint32_t page_index);
 	void invalidate_texture_hash(Util::Hash hash, bool clut);
 	void forget_in_render_pass_memoization();
 	void recycle_image_handle(Vulkan::ImageHandle image);

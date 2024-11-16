@@ -136,9 +136,12 @@ public:
 	explicit PageTracker(GSInterface &cb);
 	void set_num_pages(unsigned num_pages);
 
-	void mark_external_write(const PageRect &rect);
+	// If renderer flushes itself due to external memory pressure,
+	// need to call these.
+	void clear_cache_pages();
+	void clear_copy_pages();
 
-	void notify_pressure_flush();
+	void mark_external_write(const PageRect &rect);
 
 	void mark_fb_write(const PageRect &rect);
 	// For read-only depth.
@@ -212,8 +215,6 @@ private:
 	std::vector<uint32_t> accessed_shadow_pages;
 	std::vector<uint32_t> short_term_cache_pages;
 
-	void clear_cache_pages();
-	void clear_copy_pages();
 	void clear_fb_pages();
 
 	bool invalidate_cached_textures(std::vector<CachedTextureMasked> &textures,
