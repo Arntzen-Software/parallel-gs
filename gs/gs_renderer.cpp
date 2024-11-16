@@ -170,8 +170,10 @@ void GSRenderer::init_vram(const GSOptions &options)
 	buffers.vram_copy_payloads = device->create_buffer(info);
 	device->set_name(*buffers.vram_copy_payloads, "vram-copy-payloads");
 
-	sync_vram_shadow_pages.resize(vram_size / PageSize);
-	vram_copy_write_pages.resize(vram_size / PageSize);
+	uint32_t num_pages = vram_size / PageSize;
+	uint32_t num_pages_u32 = (num_pages + 31) / 32;
+	sync_vram_shadow_pages.resize(num_pages_u32);
+	vram_copy_write_pages.resize(num_pages_u32);
 }
 
 void GSRenderer::drain_compilation_tasks()
