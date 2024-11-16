@@ -2437,7 +2437,8 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 				}
 
 				for (uint32_t i = 0; i < rp.num_instances; i++)
-					flush_rendering(rp, i, prim_lo[i], prim_hi[i] - prim_lo[i] + 1);
+					if (prim_lo[i] != UINT32_MAX)
+						flush_rendering(rp, i, prim_lo[i], prim_hi[i] - prim_lo[i] + 1);
 			}
 		}
 
