@@ -435,6 +435,9 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		if (mode == IterationMode::Step && !capture_count)
 			mode = IterationMode::Pause;
+
+		// Just in case.
+		iface->flush();
 	}
 
 	template <typename... Ts>
