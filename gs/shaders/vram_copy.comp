@@ -110,7 +110,7 @@ bool get_effective_write_mask(uint word_addr, uint base_mask, out uint write_mas
 
 	bool has_exclusive = true;
 	uint link = linked_list[word_addr];
-	while (link != ~0u)
+	while (link != ~0u && base_mask != 0u)
 	{
 		uint pending_dispatch_order = bitfieldExtract(link,
 			LINKED_VRAM_COPY_DISPATCH_ORDER_OFFSET,
