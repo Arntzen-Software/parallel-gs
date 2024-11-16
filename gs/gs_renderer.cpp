@@ -2087,13 +2087,23 @@ void GSRenderer::copy_vram(const CopyDescriptor &desc, const PageRect &damage_re
 	}
 	pending_copies.push_back({ desc, std::move(alloc) });
 
-	for (uint32_t y = 0; y < damage_rect.page_height; y++)
+	if (desc.trxreg.desc.RRW + desc.trxpos.desc.DSAX > 2048 || desc.trxreg.desc.RRH + desc.trxpos.desc.DSAY > 2048)
 	{
-		for (uint32_t x = 0; x < damage_rect.page_width; x++)
+		// When there's copy wraparound, we don't get exact page tracking atm, so be conservative
+		// since the writes will be scattered all over the place.
+		for (auto &v : vram_copy_write_pages)
+			v = UINT32_MAX;
+	}
+	else
+	{
+		for (uint32_t y = 0; y < damage_rect.page_height; y++)
 		{
-			uint32_t effective_page = damage_rect.base_page + y * damage_rect.page_stride + x;
-			effective_page &= vram_size / PageSize - 1;
-			vram_copy_write_pages[effective_page / 32] |= 1u << (effective_page & 31);
+			for (uint32_t x = 0; x < damage_rect.page_width; x++)
+			{
+				uint32_t effective_page = damage_rect.base_page + y * damage_rect.page_stride + x;
+				effective_page &= vram_size / PageSize - 1;
+				vram_copy_write_pages[effective_page / 32] |= 1u << (effective_page & 31);
+			}
 		}
 	}
 
