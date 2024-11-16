@@ -2657,7 +2657,9 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 			PSM_DISPATCH(PSMZ24);
 #undef PSM_DISPATCH
 			default:
+#ifdef PARALLEL_GS_DEBUG
 				LOGW("Unsupported CPU upload format %u, falling back.\n", transfer_state.copy.bitbltbuf.desc.DPSM);
+#endif
 				copy_cpu = false;
 				break;
 			}

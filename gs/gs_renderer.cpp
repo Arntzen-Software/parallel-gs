@@ -2470,8 +2470,10 @@ void GSRenderer::move_image_handles_to_slab()
 
 	if (total_image_slab_size > image_slab_high_water_mark)
 	{
+#ifdef PARALLEL_GS_DEBUG
 		LOGW("New high watermark for image slab: %llu MiB.\n",
 		     static_cast<unsigned long long>(total_image_slab_size / (1024 * 1024)));
+#endif
 		image_slab_high_water_mark = total_image_slab_size;
 	}
 
@@ -2483,7 +2485,9 @@ void GSRenderer::move_image_handles_to_slab()
 			for (auto &x : y)
 				x.clear();
 		total_image_slab_size = 0;
+#ifdef PARALLEL_GS_DEBUG
 		LOGW("Image slab pool was exhausted, flushing it ...\n");
+#endif
 	}
 }
 
@@ -2775,12 +2779,14 @@ void GSRenderer::flush_palette_upload()
 			clut_desc.co_uv = 0;
 			clut_desc.cbw = 0;
 		}
+#ifdef PARALLEL_GS_DEBUG
 		else
 		{
 			// CSM2
 			if (clut_desc.csa != 0)
 				LOGW("CSM2: CSA is not 0.\n");
 		}
+#endif
 
 		instance = (instance + 1) % CLUTInstances;
 		*desc++ = clut_desc;
