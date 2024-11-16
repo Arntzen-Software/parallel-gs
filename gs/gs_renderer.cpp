@@ -2414,8 +2414,30 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 			}
 			else
 			{
+				// This really matters if we need to deal with workarounds of any kind like Color/Z aliasing.
+				// Compute effective stepping range.
+
+				uint32_t prim_lo[MaxRenderPassInstances];
+				uint32_t prim_hi[MaxRenderPassInstances];
+
 				for (uint32_t i = 0; i < rp.num_instances; i++)
-					flush_rendering(rp, i, 0, rp.num_primitives);
+				{
+					prim_lo[i] = UINT32_MAX;
+					prim_hi[i] = 0;
+				}
+
+				for (uint32_t prim = 0; prim < rp.num_primitives; prim++)
+				{
+					uint32_t instance = (rp.prims[prim].state >> STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET) &
+					                    ((1u << STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) - 1u);
+
+					if (prim_lo[instance] == UINT32_MAX)
+						prim_lo[instance] = prim;
+					prim_hi[instance] = prim;
+				}
+
+				for (uint32_t i = 0; i < rp.num_instances; i++)
+					flush_rendering(rp, i, prim_lo[i], prim_hi[i] - prim_lo[i] + 1);
 			}
 		}
 
