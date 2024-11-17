@@ -1953,6 +1953,14 @@ static bool copy_is_fused_nibble(const CopyDescriptor &desc)
 	                         desc.trxreg.desc.RRW | desc.trxreg.desc.RRH) & 7) != 0)
 		is_fused_nibble = false;
 
+	// If we need to handle broken case of different BPP in local copies,
+	// have to deal with it in the fallback path.
+	if (is_fused_nibble && desc.trxdir.desc.XDIR == LOCAL_TO_LOCAL &&
+	    get_bits_per_pixel(desc.bitbltbuf.desc.SPSM) != 4)
+	{
+		is_fused_nibble = false;
+	}
+
 	return is_fused_nibble;
 }
 

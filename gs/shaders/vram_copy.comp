@@ -24,11 +24,15 @@ layout(constant_id = 6) const bool PREPARE_ONLY = false;
 #include "swizzle_utils.h"
 #include "data_structures.h"
 
-const bool is_tex_32bit = STORAGE_FMT == PSMCT32 || STORAGE_FMT == PSMZ32;
-const bool is_tex_24bit = STORAGE_FMT == PSMCT24 || STORAGE_FMT == PSMZ24;
-const bool is_tex_16bit = STORAGE_FMT == PSMCT16 || STORAGE_FMT == PSMCT16S ||
+const bool is_storage_tex_32bit = STORAGE_FMT == PSMCT32 || STORAGE_FMT == PSMZ32;
+const bool is_storage_tex_24bit = STORAGE_FMT == PSMCT24 || STORAGE_FMT == PSMZ24;
+const bool is_storage_tex_16bit = STORAGE_FMT == PSMCT16 || STORAGE_FMT == PSMCT16S ||
 	STORAGE_FMT == PSMZ16 || STORAGE_FMT == PSMZ16S;
-const bool is_tex_8bit = STORAGE_FMT == PSMT8 || STORAGE_FMT == PSMT8H;
+const bool is_storage_tex_8bit = STORAGE_FMT == PSMT8 || STORAGE_FMT == PSMT8H;
+const bool is_storage_tex_4bit = STORAGE_FMT == PSMT4 || STORAGE_FMT == PSMT4HL || STORAGE_FMT == PSMT4HH;
+
+const bool is_source_tex_16bit = SOURCE_FMT == PSMCT16 || SOURCE_FMT == PSMCT16S ||
+	SOURCE_FMT == PSMZ16 || SOURCE_FMT == PSMZ16S;
 
 layout(std430, set = 0, binding = 0) buffer VRAM32
 {
@@ -161,6 +165,68 @@ void register_vram_write(uint word_addr, uint write_mask)
 	linked_writes[link_index] = LinkedVRAMCopyWrite(write_mask, next_link);
 }
 
+uint read_source_data(uvec2 bda, uint addr)
+{
+	uint data;
+
+	if (TRANSFER_DIR == LOCAL_TO_LOCAL)
+	{
+		if (is_source_tex_16bit)
+		{
+			data = uint(TRANSFER16(bda).data[addr]);
+		}
+		else if (SOURCE_FMT == PSMT8)
+		{
+			data = uint(TRANSFER8(bda).data[addr]);
+		}
+		else if (SOURCE_FMT == PSMT8H)
+		{
+			data = uint(TRANSFER8(bda).data[4 * addr + 3]);
+		}
+		else if (SOURCE_FMT == PSMT4)
+		{
+			data = uint(TRANSFER8(bda).data[addr >> 1]);
+			data = bitfieldExtract(data, 4 * int(addr & 1u), 4);
+		}
+		else if (SOURCE_FMT == PSMT4HL || SOURCE_FMT == PSMT4HH)
+		{
+			int source_offset = SOURCE_FMT == PSMT4HL ? 24 : 28;
+			data = bitfieldExtract(TRANSFER32(bda).data[addr], source_offset, 4);
+		}
+		else
+		{
+			data = TRANSFER32(bda).data[addr];
+		}
+	}
+	else
+	{
+		if (is_storage_tex_24bit)
+		{
+			uvec3 bytes = uvec3(TRANSFER24(bda).data[addr]);
+			data = bytes.x | (bytes.y << 8) | (bytes.z << 16);
+		}
+		else if (is_storage_tex_16bit)
+		{
+			data = uint(TRANSFER16(bda).data[addr]);
+		}
+		else if (is_storage_tex_8bit)
+		{
+			data = uint(TRANSFER8(bda).data[addr]);
+		}
+		else if (is_storage_tex_4bit)
+		{
+			data = uint(TRANSFER8(bda).data[addr >> 1]);
+			data = bitfieldExtract(data, 4 * int(addr & 1u), 4);
+		}
+		else
+		{
+			data = TRANSFER32(bda).data[addr];
+		}
+	}
+
+	return data;
+}
+
 void main()
 {
 	uvec4 wgs = workgroups[gl_WorkGroupID.x];
@@ -228,7 +294,7 @@ void main()
 
 	uint dest_addr = swizzle_PS2(dest_x, dest_y, transfer.dest_addr, transfer.dest_stride, STORAGE_FMT, VRAM_MASK);
 
-	if (is_tex_24bit)
+	if (is_storage_tex_24bit)
 	{
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 2 < transfer.host_offset_qwords)
 			return;
@@ -241,16 +307,7 @@ void main()
 		}
 		else
 		{
-			uint tex_data;
-			if (TRANSFER_DIR == HOST_TO_LOCAL)
-			{
-				uvec3 bytes = uvec3(TRANSFER24(transfer.source_bda).data[source_addr]);
-				tex_data = bytes.x | (bytes.y << 8) | (bytes.z << 16);
-			}
-			else
-			{
-				tex_data = TRANSFER32(transfer.source_bda).data[source_addr];
-			}
+			uint tex_data = read_source_data(transfer.source_bda, source_addr);
 
 			// If we have exclusive access over the dword, we don't need atomics.
 			// All threads need to agree how to deal with a write to a dword.
@@ -272,7 +329,7 @@ void main()
 			}
 		}
 	}
-	else if (is_tex_16bit)
+	else if (is_storage_tex_16bit)
 	{
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 4 < transfer.host_offset_qwords)
 			return;
@@ -289,7 +346,7 @@ void main()
 		}
 		else
 		{
-			uint write_word = uint(TRANSFER16(transfer.source_bda).data[source_addr]);
+			uint write_word = read_source_data(transfer.source_bda, source_addr);
 			uint mask;
 			bool has_exclusive = get_effective_write_mask(word_addr, target_write_mask, mask);
 
@@ -309,21 +366,14 @@ void main()
 			}
 		}
 	}
-	else if (is_tex_8bit)
+	else if (is_storage_tex_8bit)
 	{
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 8 < transfer.host_offset_qwords)
 			return;
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr >= transfer.source_size)
 			return;
 
-		uint source_offset = 0;
 		uint dest_offset = 0;
-
-		if (TRANSFER_DIR == LOCAL_TO_LOCAL && SOURCE_FMT == PSMT8H)
-		{
-			source_addr <<= 2;
-			source_offset = 3;
-		}
 
 		if (STORAGE_FMT == PSMT8H)
 		{
@@ -342,7 +392,7 @@ void main()
 		}
 		else
 		{
-			uint write_word = uint(TRANSFER8(transfer.source_bda).data[source_addr + source_offset]);
+			uint write_word = read_source_data(transfer.source_bda, source_addr);
 			uint mask;
 			bool has_exclusive = get_effective_write_mask(word_addr, target_write_mask, mask);
 
@@ -364,7 +414,7 @@ void main()
 	}
 	else if (STORAGE_FMT == PSMT4 && gl_WorkGroupSize.x == 32)
 	{
-		// Fused nibble approach
+		// Fused nibble approach. Only supported for LOCAL_TO_LOCAL when SPSM is compliant.
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr * 16 < transfer.host_offset_qwords)
 			return;
 		if (TRANSFER_DIR == HOST_TO_LOCAL && source_addr >= 2 * transfer.source_size)
@@ -459,18 +509,7 @@ void main()
 
 			if (mask != 0u)
 			{
-				uint source_data;
-				if (SOURCE_FMT == PSMT4 || TRANSFER_DIR == HOST_TO_LOCAL)
-				{
-					source_data = uint(TRANSFER8(transfer.source_bda).data[source_addr >> 1]);
-					source_data = bitfieldExtract(source_data, 4 * int(source_addr & 1u), 4);
-				}
-				else
-				{
-					int source_offset = SOURCE_FMT == PSMT4HL ? 24 : 28;
-					source_data = bitfieldExtract(TRANSFER32(transfer.source_bda).data[source_addr], source_offset, 4);
-				}
-
+				uint source_data = read_source_data(transfer.source_bda, source_addr);
 				source_data <<= shamt;
 				atomicAnd(vram32.data[word_addr], ~mask);
 				atomicOr(vram32.data[word_addr], source_data & mask);
@@ -500,25 +539,7 @@ void main()
 
 			if (mask != 0u)
 			{
-				uint source_data;
-				if (TRANSFER_DIR == HOST_TO_LOCAL)
-				{
-					source_data = bitfieldExtract(uint(TRANSFER8(transfer.source_bda).data[source_addr >> 1u]), int(source_addr & 1u) * 4, 4);
-				}
-				else if (TRANSFER_DIR == LOCAL_TO_LOCAL)
-				{
-					if (SOURCE_FMT == PSMT4)
-					{
-						int source_offset = int(source_addr & 1u) << 2;
-						source_data = bitfieldExtract(uint(TRANSFER8(transfer.source_bda).data[source_addr >> 1]), source_offset, 4);
-					}
-					else
-					{
-						int source_offset = SOURCE_FMT == PSMT4HL ? 24 : 28;
-						source_data = bitfieldExtract(TRANSFER32(transfer.source_bda).data[source_addr], source_offset, 4);
-					}
-				}
-
+				uint source_data = read_source_data(transfer.source_bda, source_addr);
 				source_data <<= dest_offset;
 				atomicAnd(vram32.data[dest_addr], ~mask);
 				atomicOr(vram32.data[dest_addr], source_data & mask);
@@ -542,7 +563,7 @@ void main()
 		{
 			uint mask;
 			bool exclusive_write = get_effective_write_mask(dest_addr, ~0u, mask);
-			uint tex_word = TRANSFER32(transfer.source_bda).data[source_addr];
+			uint tex_word = read_source_data(transfer.source_bda, source_addr);
 
 			if (exclusive_write)
 			{
