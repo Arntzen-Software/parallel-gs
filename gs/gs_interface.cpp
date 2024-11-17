@@ -16,7 +16,7 @@ GSInterface::GSInterface()
 	: tracker(*this), renderer(tracker)
 {
 	setup_handlers();
-	reset_context_state();
+	reset_context_state_registers();
 
 	// Ensure that default states will trigger a dirty flag.
 	render_pass.instances[0].frame.desc.PSM = 0x3f;
@@ -25,8 +25,16 @@ GSInterface::GSInterface()
 
 void GSInterface::reset_context_state()
 {
+	flush();
+	reset_context_state_registers();
+}
+
+void GSInterface::reset_context_state_registers()
+{
 	registers = {};
-	registers.prmodecont.desc.AC = PRMODECONTBits::AC_DEFAULT;
+	for (auto &p : paths)
+		p = {};
+	reset_vertex_queue();
 	clobber_register_state();
 }
 

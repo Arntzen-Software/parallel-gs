@@ -549,5 +549,7 @@ private:
 
 	uint32_t sampling_rate_x_log2 = 0;
 	uint32_t sampling_rate_y_log2 = 0;
+
+	void reset_context_state_registers();
 };
 }
