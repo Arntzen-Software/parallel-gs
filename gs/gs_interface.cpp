@@ -2663,7 +2663,9 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 				copy_cpu = false;
 				break;
 			}
-			tracker.commit_host_write(dst_rect);
+
+			if (copy_cpu)
+				tracker.commit_host_write(dst_rect);
 		}
 
 		if (!copy_cpu)
