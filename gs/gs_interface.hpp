@@ -394,6 +394,8 @@ private:
 
 		ivec2 scissor_lo;
 		ivec2 scissor_hi;
+		int scissor_hi_x_fb;
+		bool can_fb_wraparound;
 	} render_pass;
 
 	// Register handlers

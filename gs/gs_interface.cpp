@@ -2235,10 +2235,11 @@ void GSInterface::drawing_kick_append()
 		ivec2 sci_hi = ivec2(ctx.scissor.desc.SCAX1, ctx.scissor.desc.SCAY1);
 		// This is somewhat dubious, but there's no logical reason to render outside one page's worth of width
 		// when using FBW = 0 for whatever reason. Duplicating page writes would wreak havoc.
-		int fbw_deduced_width = std::max<int>(1, int(ctx.frame.desc.FBW)) * PGS_BUFFER_WIDTH_SCALE;
-		sci_hi.x = std::min<int>(sci_hi.x, fbw_deduced_width - 1);
 		render_pass.scissor_lo = sci_lo;
 		render_pass.scissor_hi = sci_hi;
+		int fbw_deduced_width = std::max<int>(1, int(ctx.frame.desc.FBW)) * PGS_BUFFER_WIDTH_SCALE;
+		render_pass.scissor_hi_x_fb = std::min<int>(sci_hi.x, fbw_deduced_width);
+		render_pass.can_fb_wraparound = ctx.frame.desc.FBW != 0 && render_pass.scissor_hi_x_fb < render_pass.scissor_hi.x;
 	}
 
 	lo_pos = muglm::max(lo_pos, render_pass.scissor_lo);
@@ -2342,8 +2343,6 @@ void GSInterface::drawing_kick_append()
 	drawing_kick_update_state(feedback_mode, uv_bb, bb);
 
 	auto &fb_instance = render_pass.instances[render_pass.current_instance];
-	assert(bb.z < int(std::max<int>(1, fb_instance.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE));
-	assert(bb.z < int(std::max<int>(1, ctx.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE));
 
 	const auto &prim_state = state_tracker.prim_template;
 
@@ -2412,6 +2411,48 @@ void GSInterface::drawing_kick_append()
 	}
 
 	auto &current_bb = fb_instance.bb;
+
+	if (render_pass.can_fb_wraparound && bb.x > render_pass.scissor_hi_x_fb && bb.y >= 0)
+	{
+		// Esoteric edge case where a game is attempting to render beyond the width of the frame buffer.
+		// What would happen in this case is a wraparound effect where it appears
+		// as-if the primitives render on the next page in Y direction instead.
+		// The simplest possible fix is to just fix-up the coordinates here.
+		// This isn't technically correct in scenarios where there is partial wraparound on the framebuffer's edge,
+		// but that would lead to absolute nonsense outcomes and there are no known cases of that happening.
+
+		// Shift the primitive in place, and hope for the best.
+		int x_offset = -int(ctx.frame.desc.FBW << fb_instance.fb_page_width_log2);
+		int y_offset = int(1u << fb_instance.fb_page_height_log2);
+
+		// It's overwhelmingly likely to resolve in one iteration,
+		// so don't bother trying to be cute with integer divisions.
+		while (bb.x > render_pass.scissor_hi_x_fb)
+		{
+			bb.x += x_offset;
+			bb.y += y_offset;
+			bb.z += x_offset;
+			bb.w += y_offset;
+
+			for (uint32_t i = 0; i < num_vertices; i++)
+			{
+				pos[i].pos.x += x_offset << PGS_SUBPIXEL_BITS;
+				pos[i].pos.y += y_offset << PGS_SUBPIXEL_BITS;
+			}
+		}
+
+		bb.z = std::min<int>(bb.z, render_pass.scissor_hi_x_fb);
+		bb.x = std::max<int>(bb.x, 0);
+
+		if (bb.z < bb.x)
+		{
+			TRACE("Degenerate BB", bb);
+			return;
+		}
+	}
+
+	assert(bb.z < int(std::max<int>(1, fb_instance.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE));
+	assert(bb.z < int(std::max<int>(1, ctx.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE));
 
 	// Expand render pass BB.
 	// If we expand, damage pages.
