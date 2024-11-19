@@ -1226,10 +1226,12 @@ vec4 compute_combined_color(
 	if (fog_enable)
 	{
 		float fog_coeff = roundEven(stqf0.w + stqf1.w * i + stqf2.w * j);
-		vec3 fogcol = round(unpackUnorm4x8(primitive_attr.data[primitive_index].fogcol).rgb * 255.0);
+		vec3 fog_col = unpackUnorm4x8(primitive_attr.data[primitive_index].fogcol).rgb * 255.0;
+		// Rather than a floor, it seems to be required that fog is interpreted like a more proper rounded lerp.
+		// There is evidence to suggest that F = 255, FogCol = 128,
+		// RGB = 128 should result in 128 rather than the expected 127.
 		combined_color.rgb =
-			floor((combined_color.rgb * fog_coeff) * (1.0 / 256.0)) +
-			floor(((255.0 - fog_coeff) * fogcol) * (1.0 / 256.0));
+			floor(fog_col + ((combined_color.rgb - fog_col) * fog_coeff) * (1.0 / 256.0) + 0.5);
 	}
 
 	return combined_color;
