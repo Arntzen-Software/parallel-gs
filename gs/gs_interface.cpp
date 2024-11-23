@@ -1287,6 +1287,27 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 			}
 
 			long_term_cache_texture = !is_assumed_channel_shuffle;
+
+			// Very crude heuristic. Some games have full-screen warping effects where
+			// they intend to render small sprites at a bias. If we force hazards in this case, performance collapses.
+			// Very strange not to use triangles here, but this heuristic should pick up these cases.
+			// For geniune mip-mapping scenarios, FBW will likely not be large (>= 256 pixels),
+			// and tiny primitives are likely not used.
+			if (long_term_cache_texture &&
+			    ctx.frame.desc.FBW >= 4 &&
+			    uv_bb.z - uv_bb.x < 16 && uv_bb.w - uv_bb.y < 16 &&
+			    bb.z - bb.x < 16 && bb.w - bb.y < 16)
+			{
+				// If the BB and UV_BB are very far part, over a page's worth, we are probably relying on proper feedback
+				// and not a simple warp effect.
+				ivec4 hazard_bb(
+						std::max<int>(uv_bb.x, bb.x),
+						std::max<int>(uv_bb.y, bb.y),
+						std::min<int>(uv_bb.z, bb.z),
+						std::min<int>(uv_bb.w, bb.w));
+
+				long_term_cache_texture = (hazard_bb.z + 64 < hazard_bb.x) || (hazard_bb.w + 64 < hazard_bb.y);
+			}
 		}
 		else if (desc.clamp.desc.WMS == CLAMPBits::REGION_CLAMP && desc.clamp.desc.WMT == CLAMPBits::REGION_CLAMP)
 		{
