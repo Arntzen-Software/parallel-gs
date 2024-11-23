@@ -3661,12 +3661,21 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	    info.adapt_to_internal_horizontal_resolution &&
 	    !force_deinterlace && !is_interlaced)
 	{
+		auto effective_mode_width = mode_width;
+		auto effective_mode_height = mode_height;
+
+		if (high_resolution_scanout)
+		{
+			effective_mode_width *= 2;
+			effective_mode_height *= 2;
+		}
+
 		bool is_raw_circuit1 =
 				circuit1 && !circuit2 && MMOD == PMODEBits::MMOD_ALPHA_ALP && ALP == 0xff &&
-				circuit1->get_width() <= mode_width && circuit1->get_height() <= mode_height;
+				circuit1->get_width() <= effective_mode_width && circuit1->get_height() <= effective_mode_height;
 		bool is_raw_circuit2 =
 				circuit2 && !circuit1 && SLBG == PMODEBits::SLBG_ALPHA_BLEND_CIRCUIT2 &&
-				circuit2->get_width() <= mode_width && circuit2->get_height() <= mode_height;
+				circuit2->get_width() <= effective_mode_width && circuit2->get_height() <= effective_mode_height;
 
 		if (is_raw_circuit1)
 			result.image = std::move(circuit1);
