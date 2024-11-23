@@ -1086,7 +1086,6 @@ void GSInterface::texture_page_rects_read_region(const ivec4 &uv_bb)
 	auto &feedback = render_pass.potential_feedback;
 
 	assert(tex.rect.levels == 1);
-	auto &rect = tex.page_rects[0];
 	auto tex_base_page = uint32_t(ctx.tex0.desc.TBP0) / PGS_BLOCKS_PER_PAGE;
 
 	assert(uv_bb.z >= 0);
@@ -1104,7 +1103,7 @@ void GSInterface::texture_page_rects_read_region(const ivec4 &uv_bb)
 	}
 
 	// Clamp the hazard region so we don't falsely invalidate the texture.
-	rect = {};
+	PageRect rect = {};
 	rect.base_page = tex_base_page;
 	rect.page_width = max_page_x + 1 + feedback.width_bias;
 	rect.page_height = max_page_y + 1;
