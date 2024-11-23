@@ -1079,13 +1079,12 @@ void GSInterface::texture_page_rects_read_safe_region()
 void GSInterface::texture_page_rects_read_region(const ivec4 &uv_bb)
 {
 	auto &prim = registers.prim;
-	auto &tex = state_tracker.tex;
 	auto &ctx = registers.ctx[prim.desc.CTXT];
 
 	assert(render_pass.is_potential_feedback);
 	auto &feedback = render_pass.potential_feedback;
 
-	assert(tex.rect.levels == 1);
+	assert(state_tracker.tex.rect.levels == 1);
 	auto tex_base_page = uint32_t(ctx.tex0.desc.TBP0) / PGS_BLOCKS_PER_PAGE;
 
 	assert(uv_bb.z >= 0);
@@ -1451,7 +1450,6 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	desc.tex1.desc.L = 0;
 	desc.tex1.desc.K = 0;
 
-	// May flush render pass if there is a hazard.
 	update_texture_page_rects();
 
 	Util::Hasher hasher;

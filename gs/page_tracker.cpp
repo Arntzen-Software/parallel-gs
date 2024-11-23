@@ -208,7 +208,8 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 			      page,
 			      dst_rect.block_mask, state.copy_write_block_mask);
 
-			invalidate_cached_textures(state.short_term_cached_textures, dst_rect.block_mask, dst_rect.write_mask, UINT32_MAX);
+			if (invalidate_cached_textures(state.short_term_cached_textures, dst_rect.block_mask, dst_rect.write_mask, UINT32_MAX))
+				flush_cached();
 		}
 	}
 
@@ -577,7 +578,8 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 			      page,
 			      rect.block_mask, state.copy_write_block_mask);
 
-			invalidate_cached_textures(state.short_term_cached_textures, rect.block_mask, rect.write_mask, UINT32_MAX);
+			if (invalidate_cached_textures(state.short_term_cached_textures, rect.block_mask, rect.write_mask, UINT32_MAX))
+				flush_cached();
 		}
 	}
 
