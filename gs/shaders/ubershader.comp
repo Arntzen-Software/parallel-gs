@@ -1040,13 +1040,17 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 		{
 			int L = int(bitfieldExtract(filtering, TEX2_L_OFFSET, TEX2_L_BITS));
 			float LOD_formula = ldexp(-log2(abs(q)), L) + float(K) * 0.0625;
+			// Unknown how to deal with non-normal values of Q.
+			// Just flushing to zero seems to work.
+			if (isinf(LOD_formula) || isnan(LOD_formula))
+				LOD_formula = 0.0;
 			LOD = floor(LOD_formula * 16.0) * 0.0625; // 4-bit LOD precision
-			bilinear = LOD_formula >= 0.0 ? min_linear : mag_linear;
+			bilinear = LOD_formula > 0.0 ? min_linear : mag_linear;
 		}
 		else
 		{
 			LOD = float(bitfieldExtract(K, 4, 8)); // K >> 4
-			bilinear = LOD >= 0.0 ? min_linear : mag_linear;
+			bilinear = LOD > 0.0 ? min_linear : mag_linear;
 		}
 	}
 
