@@ -2977,10 +2977,8 @@ void GSRenderer::flush_transfer()
 
 		// For safety reasons, make absolutely sure it's safe to traverse the linked list.
 		assert(PGS_VALID_PAGE_COPY_WRITE_OFFSET + vram_copy_write_pages.size() * sizeof(uint32_t) <= PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET);
-		memcpy(cmd.update_buffer(*buffers.vram_copy_atomics, PGS_VALID_PAGE_COPY_WRITE_OFFSET,
-		                         vram_copy_write_pages.size() * sizeof(uint32_t)),
-		       vram_copy_write_pages.data(),
-		       vram_copy_write_pages.size() * sizeof(uint32_t));
+		cmd.update_buffer_inline(*buffers.vram_copy_atomics, PGS_VALID_PAGE_COPY_WRITE_OFFSET,
+		                         vram_copy_write_pages.size() * sizeof(uint32_t), vram_copy_write_pages.data());
 
 		for (size_t i = 0, n = vram_copy_write_pages.size(); i < n; i++)
 		{
