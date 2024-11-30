@@ -349,6 +349,8 @@ private:
 		Vulkan::BufferViewHandle fixed_rcp_lut_view;
 		Vulkan::BufferHandle float_rcp_lut;
 		Vulkan::BufferViewHandle float_rcp_lut_view;
+
+		Vulkan::BufferHandle bug_feedback;
 	} buffers;
 
 	Scratch indirect_single_sample_heuristic;
@@ -470,5 +472,7 @@ private:
 	std::vector<uint32_t> sync_vram_shadow_pages;
 
 	bool can_potentially_super_sample() const;
+
+	void check_bug_feedback();
 };
 }

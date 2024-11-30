@@ -74,9 +74,14 @@ layout(buffer_reference, buffer_reference_align = 16, std430) readonly buffer TR
 	uint8_t data[];
 };
 
+#define SANITY_CHECK_LINKED_LIST
+
 layout(std430, set = 0, binding = 1) buffer AtomicCounterBuffer
 {
 	uint link_count;
+#ifdef SANITY_CHECK_LINKED_LIST
+	layout(offset = PGS_VALID_PAGE_COPY_WRITE_OFFSET) uint page_valid_mask[256];
+#endif
 	layout(offset = PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET) uint linked_list[];
 };
 
@@ -89,6 +94,13 @@ layout(std140, set = 0, binding = 3) uniform TransferDesc
 {
 	TransferDescriptor transfers[1024];
 };
+
+#ifdef SANITY_CHECK_LINKED_LIST
+layout(std430, set = 0, binding = 4) buffer AtomicCounterBufferFeedback
+{
+	uint bug_feedback;
+};
+#endif
 
 layout(std140, set = 1, binding = 0) uniform TransferIndices
 {
@@ -106,6 +118,16 @@ layout(constant_id = 7) const uint CONSTANT_ZERO = 0;
 // there are no races.
 bool get_effective_write_mask(uint word_addr, uint base_mask, out uint write_mask)
 {
+#ifdef SANITY_CHECK_LINKED_LIST
+	uint page_index = word_addr / 2048u;
+	if ((page_valid_mask[page_index / 32u] & (1u << (page_index & 31u))) == 0)
+	{
+		write_mask = 0;
+		atomicExchange(bug_feedback, 1u);
+		return false;
+	}
+#endif
+
 	if (bitfieldExtract(linked_list[word_addr / 32u + (VRAM_MASK + 1) / 4], int(word_addr & 31u), 1) == 0u)
 	{
 		write_mask = base_mask;
@@ -143,6 +165,15 @@ bool get_effective_write_mask(uint word_addr, uint base_mask, out uint write_mas
 
 void register_vram_write(uint word_addr, uint write_mask)
 {
+#ifdef SANITY_CHECK_LINKED_LIST
+	uint page_index = word_addr / 2048u;
+	if ((page_valid_mask[page_index / 32u] & (1u << (page_index & 31u))) == 0)
+	{
+		atomicExchange(bug_feedback, 1u);
+		return;
+	}
+#endif
+
 	// Simple atomic linked list.
 	// We make sure not to dispatch enough threads in one go that this can overflow buffers.
 	uint link_index = atomicAdd(link_count, 1u);

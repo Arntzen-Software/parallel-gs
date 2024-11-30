@@ -174,6 +174,12 @@ void GSRenderer::init_vram(const GSOptions &options)
 	uint32_t num_pages_u32 = (num_pages + 31) / 32;
 	sync_vram_shadow_pages.resize(num_pages_u32);
 	vram_copy_write_pages.resize(num_pages_u32);
+
+	info.size = sizeof(uint32_t);
+	info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+	info.domain = Vulkan::BufferDomain::CachedHost;
+	info.misc = Vulkan::BUFFER_MISC_ZERO_INITIALIZE_BIT;
+	buffers.bug_feedback = device->create_buffer(info);
 }
 
 void GSRenderer::drain_compilation_tasks()
@@ -637,6 +643,8 @@ GSRenderer::~GSRenderer()
 
 	if (timeline_thread.joinable())
 		timeline_thread.join();
+
+	check_bug_feedback();
 }
 
 void GSRenderer::wait_timeline(uint64_t value)
@@ -776,6 +784,21 @@ void GSRenderer::flush_submit(uint64_t value)
 	drain_compilation_tasks_nonblock();
 	device->next_frame_context();
 	log_timestamps();
+	check_bug_feedback();
+}
+
+void GSRenderer::check_bug_feedback()
+{
+	if (!buffers.bug_feedback)
+		return;
+
+	uint32_t bug_value = *static_cast<const uint32_t *>(
+			device->map_host_buffer(*buffers.bug_feedback, Vulkan::MEMORY_ACCESS_READ_BIT));
+	if (bug_value != 0)
+	{
+		LOGE("Fatal bug detected in shaders.\n");
+		abort();
+	}
 }
 
 void GSRenderer::log_timestamps()
@@ -2001,6 +2024,7 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd,
 	cmd.set_storage_buffer(0, 0, *buffers.gpu);
 	cmd.set_storage_buffer(0, 1, *buffers.vram_copy_atomics);
 	cmd.set_storage_buffer(0, 2, *buffers.vram_copy_payloads);
+	cmd.set_storage_buffer(0, 4, *buffers.bug_feedback);
 
 	uint32_t max_wgs = 0;
 	for (uint32_t i = 0; i < num_dispatches; i++)
@@ -2947,9 +2971,16 @@ void GSRenderer::flush_transfer()
 
 		cmd.begin_region("reset-vram-copy-state");
 		// Reset atomic counter.
-		cmd.fill_buffer(*buffers.vram_copy_atomics, 0, 0, PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET);
+		cmd.fill_buffer(*buffers.vram_copy_atomics, 0, 0, PGS_VALID_PAGE_COPY_WRITE_OFFSET);
 		// Reset hazard exist bitfield.
 		cmd.fill_buffer(*buffers.vram_copy_atomics, 0, PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET + vram_size, vram_size / 32);
+
+		// For safety reasons, make absolutely sure it's safe to traverse the linked list.
+		assert(PGS_VALID_PAGE_COPY_WRITE_OFFSET + vram_copy_write_pages.size() * sizeof(uint32_t) <= PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET);
+		memcpy(cmd.update_buffer(*buffers.vram_copy_atomics, PGS_VALID_PAGE_COPY_WRITE_OFFSET,
+		                         vram_copy_write_pages.size() * sizeof(uint32_t)),
+		       vram_copy_write_pages.data(),
+		       vram_copy_write_pages.size() * sizeof(uint32_t));
 
 		for (size_t i = 0, n = vram_copy_write_pages.size(); i < n; i++)
 		{
