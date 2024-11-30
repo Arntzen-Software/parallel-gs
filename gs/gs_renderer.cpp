@@ -845,7 +845,7 @@ void GSRenderer::recycle_image_handle(Vulkan::ImageHandle image)
 	// Have to defer this until render pass is flushed, since an invalidate doesn't mean the texture is
 	// immune from reuse.
 	if (Util::is_pow2(image->get_width()) && Util::is_pow2(image->get_height()) &&
-	    image->get_width() <= 1024 && image->get_height() <= 1024 && image->get_create_info().levels == 1)
+	    image->get_width() <= 1024 && image->get_height() <= 1024)
 	{
 		recycled_image_handles.push_back(std::move(image));
 	}
@@ -868,6 +868,7 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 		info.levels = desc.rect.levels;
 		info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		info.misc |= Vulkan::IMAGE_MISC_CREATE_PER_MIP_LEVEL_VIEWS_BIT;
 
 		// Ignore mips. This is just a crude heuristic.
 		stats.allocated_image_memory += info.width * info.height * sizeof(uint32_t);
@@ -2481,12 +2482,14 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 
 Vulkan::ImageHandle GSRenderer::pull_image_handle_from_slab(uint32_t width, uint32_t height, uint32_t levels)
 {
-	if (!Util::is_pow2(width) || !Util::is_pow2(height) || levels > 1 || width > 1024 || height > 1024)
+	if (!Util::is_pow2(width) || !Util::is_pow2(height) || levels > 7 || width > 1024 || height > 1024)
 		return {};
+
+	assert(levels > 0);
 
 	uint32_t W = Util::floor_log2(width);
 	uint32_t H = Util::floor_log2(height);
-	auto &pool = recycled_image_pool[H][W];
+	auto &pool = recycled_image_pool[levels - 1][H][W];
 	if (pool.empty())
 		return {};
 
@@ -2503,9 +2506,10 @@ void GSRenderer::move_image_handles_to_slab()
 	{
 		uint32_t W = Util::floor_log2(handle->get_width());
 		uint32_t H = Util::floor_log2(handle->get_height());
-		assert(W <= 10 && H <= 10 && handle->get_create_info().levels == 1);
+		uint32_t levels = handle->get_create_info().levels;
+		assert(W <= 10 && H <= 10 && levels <= 7);
 		total_image_slab_size += sizeof(uint32_t) << (W + H);
-		recycled_image_pool[H][W].push_back(std::move(handle));
+		recycled_image_pool[levels - 1][H][W].push_back(std::move(handle));
 	}
 	recycled_image_handles.clear();
 
@@ -2522,9 +2526,10 @@ void GSRenderer::move_image_handles_to_slab()
 	// Shouldn't happen in normal use.
 	if (total_image_slab_size > max_image_slab_size)
 	{
-		for (auto &y : recycled_image_pool)
-			for (auto &x : y)
-				x.clear();
+		for (auto &l : recycled_image_pool)
+			for (auto &y : l)
+				for (auto &x : y)
+					x.clear();
 		total_image_slab_size = 0;
 #ifdef PARALLEL_GS_DEBUG
 		LOGW("Image slab pool was exhausted, flushing it ...\n");
@@ -2674,26 +2679,7 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 			insert_label(cmd, "  AEM: %u, TA0: 0x%x, TA1: 0x%x", info.aem, info.ta0, info.ta1);
 		}
 
-		if (level == 0 && levels == 1)
-		{
-			// Common case by far. Mip-mapping seems to be rare.
-			cmd.set_storage_texture(0, 1, img.get_view());
-		}
-		else
-		{
-			Vulkan::ImageViewCreateInfo view_info = {};
-			view_info.image = &img;
-			view_info.levels = 1;
-			view_info.layers = 1;
-			view_info.view_type = VK_IMAGE_VIEW_TYPE_2D;
-			view_info.format = img.get_format();
-			view_info.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-			view_info.base_level = level;
-
-			auto view = device->create_image_view(view_info);
-			cmd.set_storage_texture(0, 1, *view);
-		}
-
+		cmd.set_storage_texture_level(0, 1, img.get_view(), level);
 		cmd.push_constants(&info, 0, sizeof(info));
 		cmd.dispatch((info.width + 7) / 8, (info.height + 7) / 8, 1);
 

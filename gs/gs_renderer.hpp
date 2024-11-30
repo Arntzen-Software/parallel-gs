@@ -459,7 +459,7 @@ private:
 	std::vector<Vulkan::ImageHandle> recycled_image_handles;
 	// Only cache textures with reasonable POT size.
 	// Small slab allocator basically.
-	std::vector<Vulkan::ImageHandle> recycled_image_pool[11][11];
+	std::vector<Vulkan::ImageHandle> recycled_image_pool[7][11][11];
 	void move_image_handles_to_slab();
 	Vulkan::ImageHandle pull_image_handle_from_slab(uint32_t width, uint32_t height, uint32_t levels);
 	VkDeviceSize total_image_slab_size = 0;
