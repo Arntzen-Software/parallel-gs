@@ -974,7 +974,7 @@ void GSRenderer::promote_cached_texture_upload_cpu(const PageRect &rect)
 	scratch_size *= PGS_BLOCK_ALIGNMENT_BYTES;
 
 	upload.scratch.offset = allocate_device_scratch(scratch_size, buffers.rebar_scratch, vram);
-	upload.scratch.size = PageSize;
+	upload.scratch.size = scratch_size;
 	upload.scratch.buffer = buffers.rebar_scratch.buffer;
 }
 
