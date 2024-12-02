@@ -97,6 +97,8 @@ uint get_clut_color(uint index, uint offset)
 void main()
 {
 	ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(coord, registers.resolution)))
+		return;
 
 	// Offset is done at this deliberate location (after mask, before OR)
 	// so that REGION_REPEAT does not apply a double offset.
@@ -143,9 +145,6 @@ void main()
 	else
 		payload = vram32.data[addr];
 
-	if (all(lessThan(coord, registers.resolution)))
-	{
-		vec4 color = unpackUnorm4x8(payload);
-		imageStore(uImage, coord, color);
-	}
+	vec4 color = unpackUnorm4x8(payload);
+	imageStore(uImage, coord, color);
 }
