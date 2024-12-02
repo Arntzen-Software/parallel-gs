@@ -175,11 +175,13 @@ void GSRenderer::init_vram(const GSOptions &options)
 	sync_vram_shadow_pages.resize(num_pages_u32);
 	vram_copy_write_pages.resize(num_pages_u32);
 
+#if 0
 	info.size = sizeof(uint32_t);
 	info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 	info.domain = Vulkan::BufferDomain::CachedHost;
 	info.misc = Vulkan::BUFFER_MISC_ZERO_INITIALIZE_BIT;
 	buffers.bug_feedback = device->create_buffer(info);
+#endif
 }
 
 void GSRenderer::drain_compilation_tasks()
@@ -789,6 +791,7 @@ void GSRenderer::flush_submit(uint64_t value)
 
 void GSRenderer::check_bug_feedback()
 {
+#if 0
 	if (!buffers.bug_feedback)
 		return;
 
@@ -799,6 +802,7 @@ void GSRenderer::check_bug_feedback()
 		LOGE("Fatal bug detected in shaders.\n");
 		abort();
 	}
+#endif
 }
 
 void GSRenderer::log_timestamps()
@@ -2024,7 +2028,9 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd,
 	cmd.set_storage_buffer(0, 0, *buffers.gpu);
 	cmd.set_storage_buffer(0, 1, *buffers.vram_copy_atomics);
 	cmd.set_storage_buffer(0, 2, *buffers.vram_copy_payloads);
+#if 0
 	cmd.set_storage_buffer(0, 4, *buffers.bug_feedback);
+#endif
 
 	uint32_t max_wgs = 0;
 	for (uint32_t i = 0; i < num_dispatches; i++)
@@ -2975,10 +2981,12 @@ void GSRenderer::flush_transfer()
 		// Reset hazard exist bitfield.
 		cmd.fill_buffer(*buffers.vram_copy_atomics, 0, PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET + vram_size, vram_size / 32);
 
+#if 0
 		// For safety reasons, make absolutely sure it's safe to traverse the linked list.
 		assert(PGS_VALID_PAGE_COPY_WRITE_OFFSET + vram_copy_write_pages.size() * sizeof(uint32_t) <= PGS_LINKED_VRAM_COPY_WRITE_LIST_OFFSET);
 		cmd.update_buffer_inline(*buffers.vram_copy_atomics, PGS_VALID_PAGE_COPY_WRITE_OFFSET,
 		                         vram_copy_write_pages.size() * sizeof(uint32_t), vram_copy_write_pages.data());
+#endif
 
 		for (size_t i = 0, n = vram_copy_write_pages.size(); i < n; i++)
 		{

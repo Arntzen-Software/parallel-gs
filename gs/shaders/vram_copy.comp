@@ -74,7 +74,7 @@ layout(buffer_reference, buffer_reference_align = 16, std430) readonly buffer TR
 	uint8_t data[];
 };
 
-#define SANITY_CHECK_LINKED_LIST
+//#define SANITY_CHECK_LINKED_LIST
 
 layout(std430, set = 0, binding = 1) buffer AtomicCounterBuffer
 {
