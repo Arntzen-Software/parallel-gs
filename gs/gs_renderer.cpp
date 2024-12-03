@@ -142,17 +142,26 @@ void GSRenderer::init_vram(const GSOptions &options)
 	// Simpler to reuse the same buffer.
 	info.size *= 2;
 
-	info.domain = Vulkan::BufferDomain::Device;
-	// For convenience.
+	// Ideally we just have one big memory pool.
+	// On iGPU there should be no need to copy memory around.
+	info.domain = Vulkan::BufferDomain::UMACachedCoherentPreferDevice;
 	info.misc = Vulkan::BUFFER_MISC_ZERO_INITIALIZE_BIT;
 	buffers.gpu = device->create_buffer(info);
 	device->set_name(*buffers.gpu, "vram-gpu");
 
-	// Could elide this on iGPU, perhaps?
-	info.domain = Vulkan::BufferDomain::CachedHost;
-	buffers.cpu = device->create_buffer(info);
-	info.size = vram_size;
-	device->set_name(*buffers.cpu, "vram-cpu");
+	if (!device->map_host_buffer(*buffers.gpu, 0))
+	{
+		info.domain = Vulkan::BufferDomain::CachedHost;
+		buffers.cpu = device->create_buffer(info);
+		info.size = vram_size;
+		device->set_name(*buffers.cpu, "vram-cpu");
+		LOGI("Discrete GPU detected. Opting in for PCI-e copies to keep CPU/GPU in sync.\n");
+	}
+	else
+	{
+		LOGI("UMA-style device detected. Avoiding redundant readback copies.\n");
+		buffers.cpu = buffers.gpu;
+	}
 
 	info.domain = Vulkan::BufferDomain::Device;
 	info.size = CLUTInstances * CLUTSize;
@@ -1014,6 +1023,9 @@ void GSRenderer::copy_pages(Vulkan::CommandBuffer &cmd, const Vulkan::Buffer &ds
 
 void GSRenderer::flush_host_vram_copy(const uint32_t *page_indices, uint32_t num_indices)
 {
+	if (buffers.gpu == buffers.cpu)
+		return;
+
 	bool first_command = !async_transfer_cmd;
 	ensure_command_buffer(async_transfer_cmd, Vulkan::CommandBuffer::Type::AsyncTransfer);
 	auto &cmd = *async_transfer_cmd;
@@ -1052,6 +1064,9 @@ void GSRenderer::flush_host_vram_copy(const uint32_t *page_indices, uint32_t num
 
 void GSRenderer::flush_readback(const uint32_t *page_indices, uint32_t num_indices)
 {
+	if (buffers.gpu == buffers.cpu)
+		return;
+
 	ensure_command_buffer(direct_cmd, Vulkan::CommandBuffer::Type::Generic);
 	auto &cmd = *direct_cmd;
 
