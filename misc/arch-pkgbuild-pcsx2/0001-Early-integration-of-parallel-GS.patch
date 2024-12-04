@@ -1,4 +1,4 @@
-From f1a8406ea4c98d374cc900b54c64c2402c8cadc4 Mon Sep 17 00:00:00 2001
+From 9c9519d0b1042ba54d947674f2d2b279c0f2dccb Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sun, 23 Jun 2024 14:54:43 +0200
 Subject: [PATCH] Early integration of parallel-GS.
@@ -23,12 +23,12 @@ Subject: [PATCH] Early integration of parallel-GS.
  pcsx2/GS/Renderers/Vulkan/VKLoader.cpp        |  18 +-
  pcsx2/GS/Renderers/Vulkan/VKLoader.h          |  19 +-
  .../Vulkan/VKLoaderPlatformDefines.h          |  23 +
- .../Renderers/parallel-gs/GSRendererPGS.cpp   | 807 ++++++++++++++++++
+ .../Renderers/parallel-gs/GSRendererPGS.cpp   | 818 ++++++++++++++++++
  .../GS/Renderers/parallel-gs/GSRendererPGS.h  |  86 ++
  pcsx2/ImGui/ImGuiFullscreen.cpp               |   2 +
  pcsx2/Pcsx2Config.cpp                         |   9 +-
  pcsx2/pcsx2.vcxproj                           |  52 +-
- 24 files changed, 1628 insertions(+), 164 deletions(-)
+ 24 files changed, 1639 insertions(+), 164 deletions(-)
  create mode 100644 pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
@@ -1645,10 +1645,10 @@ index 000000000..d3447f6f7
 +
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 new file mode 100644
-index 000000000..e46ec9c2f
+index 000000000..906baf88c
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
-@@ -0,0 +1,807 @@
+@@ -0,0 +1,818 @@
 +// SPDX-FileCopyrightText: 2024 Hans-Kristian Arntzen
 +// SPDX-License-Identifier: LGPL-3.0+
 +
@@ -1853,6 +1853,7 @@ index 000000000..e46ec9c2f
 +		return false;
 +
 +	wsi.set_platform(this);
++	wsi.set_frame_duplication_aware(true);
 +	bool ret = wsi.init_simple(1, {});
 +	if (!ret)
 +		return false;
@@ -2140,8 +2141,18 @@ index 000000000..e46ec9c2f
 +	auto vsync = iface.vsync(info);
 +
 +	auto stats = iface.consume_flush_stats();
-+	if (GSConfig.SkipDuplicateFrames && has_presented_in_current_swapchain &&
-+	    !registers_written && stats.num_render_passes == 0 && stats.num_copies == 0)
++
++	bool frame_is_duped = !registers_written && stats.num_render_passes == 0 && stats.num_copies == 0;
++
++	// Experimental heuristic. If running on an iGPU / APU, we're quite wary about draining the GPU for work
++	// in GPU bound scenarios. This should keep the GPU better fed at the cost of a little more latency.
++	if (wsi.get_device().get_gpu_properties().deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU &&
++	    frame_is_duped && !GSConfig.SkipDuplicateFrames)
++	{
++		wsi.set_next_present_is_duplicated();
++	}
++
++	if (GSConfig.SkipDuplicateFrames && has_presented_in_current_swapchain && frame_is_duped)
 +	{
 +		PerformanceMetrics::Update(false, false, true);
 +		return;
@@ -2673,5 +2684,5 @@ index 41ff04385..b8816342c 100644
      <ClCompile Include="GS\Renderers\DX12\GSDevice12.cpp" />
      <ClCompile Include="GS\Renderers\DX12\GSTexture12.cpp" />
 -- 
-2.47.0
+2.47.1
 
