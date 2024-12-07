@@ -3298,7 +3298,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	bool high_resolution_scanout = info.high_resolution_scanout;
 	bool is_interlaced = scanout_is_interlaced(priv, info);
 	bool force_deinterlace = priv.smode2.FFMD && priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
-	bool alternative_sampling = is_interlaced && !priv.smode2.FFMD;
+	bool alternative_sampling = priv.smode2.INT && !priv.smode2.FFMD;
 
 	// We have to scan out tightly packed fields or upscaling breaks.
 	if (!force_progressive || priv.extwrite.WRITE ||
