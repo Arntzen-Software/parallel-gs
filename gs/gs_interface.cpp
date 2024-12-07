@@ -629,13 +629,28 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 
 	// Try to find a memoized palette. In case game constantly uploads CLUT redundantly.
 	// This is very common, and this optimization is extremely important.
+	uint32_t punchthrough_candidate = UINT32_MAX;
+
 	for (uint32_t i = render_pass.num_memoized_palettes; i; i--)
 	{
 		auto &memoized = render_pass.memoized_palettes[i - 1];
+
+		// Try to optimize for a certain pattern where a game is doing
+		// 256 color, 16 color, 256 color, 16 color, etc.
+
 		// If a later update wrote something that this update did not write, we have diverging history.
 		// Normally, games don't seem to use CSA offsets much, so this should be okay?
 		if ((memoized.csa_mask & ~page.csa_mask) != 0)
-			break;
+		{
+			// More than one candidate, ignore.
+			// Also, if the 256 color entry doesn't clobber the full CSA bank, we cannot know for sure there
+			// aren't any secondary CLUT updates that need to be preserved somehow.
+			if (punchthrough_candidate != UINT32_MAX || memoized.csa_mask != UINT32_MAX)
+				break;
+
+			punchthrough_candidate = memoized.clut_instance;
+			continue;
+		}
 
 		if (memoized.csa_mask == page.csa_mask &&
 		    memoized.upload.texclut.bits == palette_desc.texclut.bits &&
@@ -645,6 +660,11 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 		    memoized.upload.csm1_mask == palette_desc.csm1_mask &&
 		    memoized.upload.csm1_reference_base == palette_desc.csm1_reference_base)
 		{
+			// We found the candidate, but we must be appending our 16 color write on top of the same CLUT
+			// state we used to have at the time of CLUT commit.
+			if (punchthrough_candidate != UINT32_MAX && punchthrough_candidate + 1 != memoized.clut_instance)
+				break;
+
 			if (memoized.clut_instance != render_pass.clut_instance)
 				mark_texture_state_dirty();
 			render_pass.clut_instance = memoized.clut_instance;
