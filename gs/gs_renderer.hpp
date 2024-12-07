@@ -161,6 +161,7 @@ struct RenderPass
 		uint32_t base_x, base_y;
 		uint32_t coarse_tiles_width;
 		uint32_t coarse_tiles_height;
+		uint32_t opaque_fbmask;
 
 		// 0, 1 or 2.
 		uint32_t sampling_rate_x_log2;

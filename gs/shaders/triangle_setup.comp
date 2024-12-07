@@ -6,6 +6,7 @@
 // SPDX-License-Identifier: LGPL-3.0+
 
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_scalar_block_layout : require
 
 //#extension GL_EXT_spirv_intrinsics : require
 //spirv_execution_mode(extensions = ["SPV_KHR_float_controls"], capabilities = [4467], 4462, 32);
@@ -41,6 +42,11 @@ layout(set = 0, binding = BINDING_SINGLE_SAMPLE_HEURISTIC, std430) buffer Single
 {
     SingleSampleHeuristic data;
 } heuristic;
+
+layout(set = 0, binding = BINDING_OPAQUE_FBMASKS, std430) uniform FBMasks
+{
+    uint opaque_fbmasks[8];
+};
 
 bool tie_break_rule(ivec2 edge)
 {
@@ -116,6 +122,9 @@ void main_inner(uint index)
     bool line = bitfieldExtract(state_word, STATE_BIT_LINE, 1) != 0;
     bool multisample = state_is_multisample(state_word);
     uint provoking = bitfieldExtract(state_word, STATE_PARALLELOGRAM_PROVOKING_OFFSET, STATE_PARALLELOGRAM_PROVOKING_COUNT);
+
+    uint instance = bitfieldExtract(state_word, STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET, STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT);
+    uint opaque_fbmask = opaque_fbmasks[instance];
 
     VertexPosition v0 = vertex_position.data[3u * index + 0u];
     VertexPosition v1 = vertex_position.data[3u * index + 1u];
@@ -496,6 +505,11 @@ void main_inner(uint index)
         if (half_texel_offset && no_effective_interpolation)
             primitive_attr.data[index].tex &= ~TEX_SAMPLER_MAG_LINEAR_BIT;
     }
+
+    // We don't overwrite all active bits in the render pass. This is not an opaque primitive after all.
+    uint state = primitive_attr.data[index].state;
+    if (primitive_attr.data[index].fbmsk != opaque_fbmask && (state & (1u << STATE_BIT_OPAQUE)) != 0)
+        primitive_attr.data[index].state = state & ~(1u << STATE_BIT_OPAQUE);
 
     if (SAMPLING_RATE_LOG2 != 0 && !sprite)
     {

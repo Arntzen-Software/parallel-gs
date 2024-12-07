@@ -66,6 +66,8 @@ void main()
     int write_offset = 0;
 
     bool requires_super_sample = false;
+    bool requires_super_sample_when_z_writes = false;
+    bool has_z_write = false;
 
     for (int i = registers.base_primitive; i < registers.end_primitives; i += int(gl_SubgroupSize))
     {
@@ -94,12 +96,28 @@ void main()
                         (1u << STATE_BIT_Z_TEST) |
                         (1u << STATE_BIT_OPAQUE);
 
+                    const uint COLOR_OPAQUE_MASK =
+                        (1u << STATE_BIT_SNAP_RASTER) |
+                        (1u << STATE_BIT_OPAQUE);
+
                     const uint FULLY_OPAQUE =
                         (1u << STATE_BIT_SNAP_RASTER) |
                         (1u << STATE_BIT_OPAQUE);
 
+                    // If Z is in no danger of being falsely decayed into single-sample,
+                    // we can be a little looser in algorithm.
+                    // Common for fog resolve passes where we test Z, but only intend to update alpha or something.
+                    // Technically we risk weird Z testing here, but this heuristic
+                    // fixes far more SSAA problem than it creates.
+                    // Also a speed increase since more passes can run at single sampled without
+                    // unnecessary pixel duplication.
+
                     if ((s & FULLY_OPAQUE_MASK) != FULLY_OPAQUE)
+                        requires_super_sample_when_z_writes = true;
+                    if ((s & COLOR_OPAQUE_MASK) != COLOR_OPAQUE_MASK)
                         requires_super_sample = true;
+                    if ((s & (1u << STATE_BIT_Z_WRITE)) != 0)
+                        has_z_write = true;
                 }
             }
         }
@@ -112,6 +130,8 @@ void main()
     }
 
     requires_super_sample = subgroupAny(requires_super_sample);
+    requires_super_sample_when_z_writes = subgroupAny(requires_super_sample_when_z_writes);
+    has_z_write = subgroupAny(has_z_write);
 
     if (subgroupElect())
     {
@@ -131,6 +151,8 @@ void main()
 
         if (write_offset != 0 || FEEDBACK_FORCE_WORK)
         {
+            requires_super_sample = requires_super_sample || (requires_super_sample_when_z_writes && has_z_write);
+
             if (SUPER_SAMPLED && requires_super_sample)
             {
                 uint offset = atomicAdd(super_sampled.dispatch[2], 1u);

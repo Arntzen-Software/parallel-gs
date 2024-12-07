@@ -111,7 +111,7 @@ void GSInterface::set_super_sampling_rate(SuperSampling super_sampling, bool ord
 	renderer.invalidate_super_sampling_state();
 }
 
-static bool write_mask_is_channel_slice(uint32_t psm, uint32_t color_mask)
+static bool write_mask_is_16bit_channel_slice(uint32_t psm, uint32_t color_mask)
 {
 	// Only accept all or nothing masking, which is probably a case where game does not intend channel shuffle.
 	if (psm != PSMCT32 && psm != PSMCT24 && psm != PSMZ32 && psm != PSMZ24)
@@ -195,6 +195,9 @@ void GSInterface::flush_render_pass(FlushReason reason)
 			pass.sampling_rate_x_log2 = sampling_rate_x_log2;
 			pass.sampling_rate_y_log2 = sampling_rate_y_log2;
 
+			// Any FBMASK that masks more than the global mask must be demoted from OPAQUE.
+			pass.opaque_fbmask = ~inst.color_write_mask;
+
 			// This case is to handle certain channel shuffling effects which render with 16-bit over a 32-bit FB
 			// using 0x3fff FBMSK. This ends up slicing the green channel and trying to resolve super-sampling in 16-bit
 			// domain leads to bogus results.
@@ -203,7 +206,7 @@ void GSInterface::flush_render_pass(FlushReason reason)
 			// that operate on those bit-depths. Try to avoid false positives.
 			if ((sampling_rate_x_log2 || sampling_rate_y_log2) &&
 			    (inst.has_channel_shuffle ||
-			     write_mask_is_channel_slice(inst.frame.desc.PSM, inst.color_write_mask)))
+			     write_mask_is_16bit_channel_slice(inst.frame.desc.PSM, inst.color_write_mask)))
 			{
 				pass.sampling_rate_x_log2 = 0;
 				pass.sampling_rate_y_log2 = 0;
@@ -1720,11 +1723,11 @@ void GSInterface::drawing_kick_update_state(FBFeedbackMode feedback_mode, const 
 		}
 	}
 
-	if ((ctx.test.desc.ATE && ctx.test.desc.ATST != ATST_ALWAYS) ||
-	    ctx.test.desc.DATE || ctx.frame.desc.FBMSK != 0)
-	{
+	if ((ctx.test.desc.ATE && ctx.test.desc.ATST != ATST_ALWAYS) || ctx.test.desc.DATE)
 		color_write_needs_previous_pixels = true;
-	}
+
+	// FBMASK is in a similar situation where we might not be considered OPAQUE, but if all primitives
+	// in a pass use the same FBMASK, we can be considered opaque. Need to defer this decision until triangle setup time.
 
 	// If we're in a feedback situation,
 	// we cannot be opaque since sampling a texture essentially becomes blending.

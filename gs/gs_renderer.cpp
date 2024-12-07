@@ -1331,9 +1331,13 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 	push.num_primitives = rp.num_primitives;
 	uint32_t sampling_rate_y_log2 = 0;
 
+	auto *opaque_fbmasks = cmd.allocate_typed_constant_data<uint32_t>(0, BINDING_OPAQUE_FBMASKS, MaxRenderPassInstances);
+
 	for (uint32_t i = 0; i < rp.num_instances; i++)
 	{
 		auto &inst = rp.instances[i];
+
+		opaque_fbmasks[i] = inst.opaque_fbmask;
 
 		switch (inst.fb.z.desc.PSM | ZBUFBits::PSM_MSB)
 		{

@@ -1,3 +1,3 @@
 #!/bin/bash
 
-slangmosh -O --namespace ParallelGS shaders/slangmosh.json --output shaders/slangmosh.hpp --output-interface shaders/slangmosh_iface.hpp --strip
+slangmosh --namespace ParallelGS shaders/slangmosh.json --output shaders/slangmosh.hpp --output-interface shaders/slangmosh_iface.hpp -O --strip
