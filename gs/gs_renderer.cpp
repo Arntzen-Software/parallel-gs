@@ -509,10 +509,11 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 	const auto &ext = device_->get_device_features();
 	if (!ext.vk12_features.descriptorIndexing ||
 	    !ext.vk12_features.timelineSemaphore ||
-		!ext.vk12_features.bufferDeviceAddress ||
+	    !ext.vk12_features.bufferDeviceAddress ||
 	    !ext.vk12_features.storageBuffer8BitAccess ||
 	    !ext.vk11_features.storageBuffer16BitAccess ||
 	    !ext.enabled_features.shaderInt16 ||
+	    !ext.vk12_features.scalarBlockLayout ||
 	    (ext.vk11_props.subgroupSupportedOperations & required_subgroup_flags) != required_subgroup_flags ||
 	    !device_->supports_subgroup_size_log2(true, 2, 6))
 	{
@@ -523,6 +524,7 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 		LOGE("  - storageBuffer8BitAccess\n");
 		LOGE("  - storageBuffer16BitAccess\n");
 		LOGE("  - shaderInt16\n");
+		LOGE("  - scalarBlockLayout\n");
 		LOGE("  - Arithmetic / Shuffle / Vote / Ballot / Basic subgroup operations\n");
 		LOGE("  - SubgroupSize control for [4, 64] invocations per subgroup\n");
 		return false;
