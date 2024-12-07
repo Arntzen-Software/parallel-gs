@@ -280,6 +280,7 @@ public:
 
 	ScanoutResult vsync(const PrivRegisterState &priv, const VSyncInfo &info,
 	                    uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2);
+	bool vsync_can_skip(const PrivRegisterState &priv, const VSyncInfo &info) const;
 
 	static TexRect compute_effective_texture_rect(const TextureDescriptor &desc);
 
@@ -474,5 +475,7 @@ private:
 	bool can_potentially_super_sample() const;
 
 	void check_bug_feedback();
+
+	bool scanout_is_interlaced(const PrivRegisterState &priv, const VSyncInfo &info) const;
 };
 }

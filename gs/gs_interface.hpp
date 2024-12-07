@@ -248,6 +248,7 @@ public:
 	const GIFPath &get_gif_path(uint32_t path) const;
 
 	ScanoutResult vsync(const VSyncInfo &info);
+	bool vsync_can_skip(const VSyncInfo &info) const;
 
 	FlushStats consume_flush_stats();
 	double get_accumulated_timestamps(TimestampType type) const;

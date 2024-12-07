@@ -4031,6 +4031,11 @@ ScanoutResult GSInterface::vsync(const VSyncInfo &info)
 	return renderer.vsync(priv_registers, info, sampling_rate_x_log2, sampling_rate_y_log2);
 }
 
+bool GSInterface::vsync_can_skip(const VSyncInfo &info) const
+{
+	return renderer.vsync_can_skip(priv_registers, info);
+}
+
 FlushStats GSInterface::consume_flush_stats()
 {
 	return renderer.consume_flush_stats();

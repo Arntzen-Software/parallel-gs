@@ -3256,6 +3256,21 @@ GSRenderer::SamplingRect GSRenderer::compute_circuit_rect(const PrivRegisterStat
 	return rect;
 }
 
+bool GSRenderer::scanout_is_interlaced(const PrivRegisterState &priv, const VSyncInfo &info) const
+{
+	bool force_progressive = info.force_progressive;
+	bool is_interlaced = priv.smode2.INT;
+	bool alternative_sampling = is_interlaced && !priv.smode2.FFMD;
+	if (alternative_sampling && force_progressive)
+		is_interlaced = false;
+	return is_interlaced;
+}
+
+bool GSRenderer::vsync_can_skip(const PrivRegisterState &priv, const VSyncInfo &info) const
+{
+	return !scanout_is_interlaced(priv, info);
+}
+
 ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &info,
                                 uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2)
 {
@@ -3281,12 +3296,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	// Tries to counteract field blending. It's just a blur that is overkill.
 	const bool anti_blur = info.anti_blur;
 	bool high_resolution_scanout = info.high_resolution_scanout;
-
-	bool is_interlaced = priv.smode2.INT;
-	bool alternative_sampling = is_interlaced && !priv.smode2.FFMD;
+	bool is_interlaced = scanout_is_interlaced(priv, info);
 	bool force_deinterlace = priv.smode2.FFMD && priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
-	if (alternative_sampling && force_progressive)
-		is_interlaced = false;
+	bool alternative_sampling = is_interlaced && !priv.smode2.FFMD;
 
 	// We have to scan out tightly packed fields or upscaling breaks.
 	if (!force_progressive || priv.extwrite.WRITE ||
@@ -3978,8 +3990,8 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	}
 	else
 	{
-		vsync_last_fields[0].reset();
-		vsync_last_fields[1].reset();
+		for (auto &field : vsync_last_fields)
+			field.reset();
 	}
 
 	cmd.end_region();
