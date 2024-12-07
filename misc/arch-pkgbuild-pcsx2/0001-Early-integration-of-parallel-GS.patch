@@ -1,4 +1,4 @@
-From 9c9519d0b1042ba54d947674f2d2b279c0f2dccb Mon Sep 17 00:00:00 2001
+From 67fe4457c4d83d3b664448958350df4f1e54c819 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sun, 23 Jun 2024 14:54:43 +0200
 Subject: [PATCH] Early integration of parallel-GS.
@@ -23,12 +23,12 @@ Subject: [PATCH] Early integration of parallel-GS.
  pcsx2/GS/Renderers/Vulkan/VKLoader.cpp        |  18 +-
  pcsx2/GS/Renderers/Vulkan/VKLoader.h          |  19 +-
  .../Vulkan/VKLoaderPlatformDefines.h          |  23 +
- .../Renderers/parallel-gs/GSRendererPGS.cpp   | 818 ++++++++++++++++++
- .../GS/Renderers/parallel-gs/GSRendererPGS.h  |  86 ++
+ .../Renderers/parallel-gs/GSRendererPGS.cpp   | 835 ++++++++++++++++++
+ .../GS/Renderers/parallel-gs/GSRendererPGS.h  |  87 ++
  pcsx2/ImGui/ImGuiFullscreen.cpp               |   2 +
  pcsx2/Pcsx2Config.cpp                         |   9 +-
  pcsx2/pcsx2.vcxproj                           |  52 +-
- 24 files changed, 1639 insertions(+), 164 deletions(-)
+ 24 files changed, 1657 insertions(+), 164 deletions(-)
  create mode 100644 pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
@@ -1645,10 +1645,10 @@ index 000000000..d3447f6f7
 +
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 new file mode 100644
-index 000000000..906baf88c
+index 000000000..dbfba191e
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
-@@ -0,0 +1,818 @@
+@@ -0,0 +1,835 @@
 +// SPDX-FileCopyrightText: 2024 Hans-Kristian Arntzen
 +// SPDX-License-Identifier: LGPL-3.0+
 +
@@ -1732,10 +1732,6 @@ index 000000000..906baf88c
 +			float params[4][4];
 +		} constants;
 +
-+		struct Push
-+		{
-+			float width, height;
-+		} push;
 +
 +		auto width = float(view.get_image().get_width());
 +		auto height = float(view.get_image().get_height());
@@ -1743,6 +1739,11 @@ index 000000000..906baf88c
 +		FsrEasuCon(constants.params[0], constants.params[1], constants.params[2], constants.params[3],
 +			width, height, width, height, cmd.get_viewport().width, cmd.get_viewport().height);
 +		*params = constants;
++
++		struct Push
++		{
++			float width, height;
++		} push;
 +
 +		push.width = cmd.get_viewport().width;
 +		push.height = cmd.get_viewport().height;
@@ -1793,6 +1794,15 @@ index 000000000..906baf88c
 +	cmd.set_opaque_state();
 +	cmd.set_depth_test(false, false);
 +	cmd.set_program(sharpen_program);
++
++	struct Push
++	{
++		float width, height;
++	} push;
++
++	push.width = width;
++	push.height = height;
++	cmd.push_constants(&push, 0, sizeof(push));
 +
 +	cmd.set_viewport({ offset_x, offset_y, width, height, 0.0f, 1.0f });
 +	cmd.draw(3);
@@ -2138,11 +2148,13 @@ index 000000000..906baf88c
 +	info.adapt_to_internal_horizontal_resolution = GSConfig.PCRTCAntiBlur;
 +	info.raw_circuit_scanout = true;
 +	info.high_resolution_scanout = GSConfig.PGSHighResScanout != 0;
-+	auto vsync = iface.vsync(info);
 +
 +	auto stats = iface.consume_flush_stats();
-+
 +	bool frame_is_duped = !registers_written && stats.num_render_passes == 0 && stats.num_copies == 0;
++
++	// Don't waste GPU time scanning out the same thing twice.
++	if (!frame_is_duped || !vsync.image || !iface.vsync_can_skip(info))
++		vsync = iface.vsync(info);
 +
 +	// Experimental heuristic. If running on an iGPU / APU, we're quite wary about draining the GPU for work
 +	// in GPU bound scenarios. This should keep the GPU better fed at the cost of a little more latency.
@@ -2182,8 +2194,10 @@ index 000000000..906baf88c
 +	float vp_width = 0.0f;
 +	float vp_height = 0.0f;
 +
-+	if (GSConfig.LinearPresent != GSPostBilinearMode::BilinearSharp)
++	if (GSConfig.LinearPresent != GSPostBilinearMode::BilinearSharp || !vsync.image)
 +		fsr_render_target.reset();
++
++	bool fsr_render_is_valid = frame_is_duped && bool(fsr_render_target);
 +
 +	if (vsync.image)
 +	{
@@ -2238,16 +2252,19 @@ index 000000000..906baf88c
 +				fsr_info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
 +				fsr_info.misc |= IMAGE_MISC_MUTABLE_SRGB_BIT;
 +				fsr_render_target = dev.create_image(fsr_info);
++				fsr_render_is_valid = false;
 +			}
 +		}
 +	}
 +
 +	auto cmd = dev.request_command_buffer();
-+	if (vsync.image && fsr_render_target)
++	// No need to do the upscaling twice when duping frames.
++	if (vsync.image && fsr_render_target && !fsr_render_is_valid)
 +		render_fsr(*cmd, vsync.image->get_view());
 +	cmd->begin_render_pass(dev.get_swapchain_render_pass(SwapchainRenderPass::ColorOnly));
 +	if (vsync.image)
 +	{
++		// The RCAS pass is basically free.
 +		if (fsr_render_target)
 +			render_rcas(*cmd, fsr_render_target->get_view(), vp_offset_x, vp_offset_y, vp_width, vp_height);
 +		else
@@ -2469,10 +2486,10 @@ index 000000000..906baf88c
 +}
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
 new file mode 100644
-index 000000000..8271a37bb
+index 000000000..35b263be3
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,87 @@
 +// SPDX-FileCopyrightText: 2024 Hans-Kristian Arntzen
 +// SPDX-License-Identifier: LGPL-3.0+
 +
@@ -2546,6 +2563,7 @@ index 000000000..8271a37bb
 +	                 float width, float height);
 +	void event_swapchain_destroyed() override;
 +	Vulkan::ImageHandle fsr_render_target;
++	ParallelGS::ScanoutResult vsync;
 +
 +	ParallelGS::SuperSampling current_super_sampling = ParallelGS::SuperSampling::X1;
 +	bool current_ordered_super_sampling = false;
