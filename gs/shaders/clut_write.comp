@@ -36,6 +36,7 @@ layout(push_constant) uniform Registers
 {
 	uint clut_count;
 	uint read_index;
+	uint wg_offset;
 } registers;
 
 shared uint tmp_clut[512];
@@ -44,15 +45,18 @@ const uint PGS_CLUT_SIZE_16 = PGS_CLUT_SIZE / 2;
 
 void main()
 {
-	// Copy from previous instance to allow a CLUT entry to be partially overwritten and used later
-	uint read_index = registers.read_index * PGS_CLUT_SIZE_16 + gl_LocalInvocationIndex;
-	tmp_clut[gl_LocalInvocationIndex] = uint(clut16.data[read_index]);
-	tmp_clut[gl_LocalInvocationIndex + 256u] = uint(clut16.data[read_index + 256u]);
-	barrier();
+	if (registers.read_index != ~0u)
+	{
+		// Copy from previous instance to allow a CLUT entry to be partially overwritten and used later
+		uint read_index = registers.read_index * PGS_CLUT_SIZE_16 + gl_LocalInvocationIndex;
+		tmp_clut[gl_LocalInvocationIndex] = uint(clut16.data[read_index]);
+		tmp_clut[gl_LocalInvocationIndex + 256u] = uint(clut16.data[read_index + 256u]);
+		barrier();
+	}
 
 	for (uint i = 0; i < registers.clut_count; i++)
 	{
-		CLUTDescriptor clut = cluts.data[i];
+		CLUTDescriptor clut = cluts.data[i + registers.wg_offset];
 
 		bool index4 = clut.tex_format == PSMT4 || clut.tex_format == PSMT4HH || clut.tex_format == PSMT4HL;
 

@@ -2874,12 +2874,8 @@ void GSRenderer::flush_palette_upload()
 	{
 		uint32_t count;
 		uint32_t read_index;
+		uint32_t wg_offset;
 	};
-
-	Push push = {};
-	push.count = palette_uploads.size();
-	push.read_index = base_clut_instance;
-	cmd.push_constants(&push, 0, sizeof(push));
 
 	cmd.begin_region("flush-palette-upload");
 
@@ -2905,9 +2901,42 @@ void GSRenderer::flush_palette_upload()
 	Vulkan::QueryPoolHandle start_ts, end_ts;
 	if (enable_timestamps)
 		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	// One workgroup iterates through every CLUT updates and snapshots current palette memory state to a 1 KiB slice.
-	// The palette is large enough to hold 32-bit with 256 colors.
+
+	Push push = {};
+	push.read_index = base_clut_instance;
+
+	size_t next_begin_index = 0;
+
+	for (size_t i = 0, n = palette_uploads.size(); i < n; i++)
+	{
+		auto &clut = palette_uploads[i].tex0.desc;
+		if (clut.CSA == 0 && clut.CPSM == PSMCT32 && get_bits_per_pixel(clut.PSM) == 8)
+		{
+			// This will overwrite the full CLUT, so can split dispatch.
+			if (i != next_begin_index)
+			{
+				// Flush all pending work.
+				push.count = uint32_t(i - next_begin_index);
+				push.wg_offset = next_begin_index;
+				cmd.push_constants(&push, 0, sizeof(push));
+				if (device->consumes_debug_markers())
+					insert_label(cmd, "Split [%u, %u)", push.wg_offset, push.wg_offset + push.count);
+				cmd.dispatch(1, 1, 1);
+			}
+
+			// The next batch will start with a full CLUT clear, so no need to read from CLUT.
+			push.read_index = UINT32_MAX;
+			next_begin_index = i;
+		}
+	}
+
+	push.count = uint32_t(palette_uploads.size() - next_begin_index);
+	push.wg_offset = next_begin_index;
+	cmd.push_constants(&push, 0, sizeof(push));
+	if (device->consumes_debug_markers())
+		insert_label(cmd, "Split [%u, %u)", push.wg_offset, push.wg_offset + push.count);
 	cmd.dispatch(1, 1, 1);
+
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
