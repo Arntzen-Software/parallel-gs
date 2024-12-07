@@ -202,7 +202,8 @@ void GSInterface::flush_render_pass(FlushReason reason)
 			// Don't apply this fixup for 24/32-bit bpp, since there are no reasonable shuffle effects
 			// that operate on those bit-depths. Try to avoid false positives.
 			if ((sampling_rate_x_log2 || sampling_rate_y_log2) &&
-			    write_mask_is_channel_slice(inst.frame.desc.PSM, inst.color_write_mask))
+			    (inst.has_channel_shuffle ||
+			     write_mask_is_channel_slice(inst.frame.desc.PSM, inst.color_write_mask)))
 			{
 				pass.sampling_rate_x_log2 = 0;
 				pass.sampling_rate_y_log2 = 0;
@@ -1283,7 +1284,10 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 				// If all pixels land within the same 8-pixel column, this is a clear channel shuffle case.
 				// Also sanity check that uv_bb is horizontally XOR 8 pixels to be even more safe.
 				if ((bb.x & ~7) == (bb.z & ~7) && (uv_bb.x ^ 8) == bb.x && uv_bb.y == bb.y)
+				{
 					is_assumed_channel_shuffle = true;
+					render_pass.instances[render_pass.current_instance].has_channel_shuffle = true;
+				}
 			}
 
 			long_term_cache_texture = !is_assumed_channel_shuffle;
