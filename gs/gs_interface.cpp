@@ -662,7 +662,7 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 		{
 			// We found the candidate, but we must be appending our 16 color write on top of the same CLUT
 			// state we used to have at the time of CLUT commit.
-			if (punchthrough_candidate != UINT32_MAX && punchthrough_candidate + 1 != memoized.clut_instance)
+			if (punchthrough_candidate != UINT32_MAX && (punchthrough_candidate + 1) % CLUTInstances != memoized.clut_instance)
 				break;
 
 			if (memoized.clut_instance != render_pass.clut_instance)
