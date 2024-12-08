@@ -308,7 +308,8 @@ static int main_inner(const std::string &path, bool update)
 		return EXIT_FAILURE;
 	Context ctx;
 	Device dev;
-	if (!ctx.init_instance_and_device(nullptr, 0, nullptr, 0))
+	if (!ctx.init_instance_and_device(nullptr, 0, nullptr, 0,
+	                                  CONTEXT_CREATION_ENABLE_PUSH_DESCRIPTOR_BIT))
 		return EXIT_FAILURE;
 	dev.set_context(ctx);
 

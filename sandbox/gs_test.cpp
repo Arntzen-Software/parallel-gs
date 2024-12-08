@@ -191,7 +191,8 @@ int main()
 
 	Context ctx;
 	ctx.set_num_thread_indices(1);
-	if (!ctx.init_instance_and_device(nullptr, 0, nullptr, 0))
+	if (!ctx.init_instance_and_device(nullptr, 0, nullptr, 0,
+	                                  CONTEXT_CREATION_ENABLE_PUSH_DESCRIPTOR_BIT))
 		return EXIT_FAILURE;
 
 	Device device;
