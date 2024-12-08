@@ -494,6 +494,11 @@ private:
 				uint32_t stride;
 			} levels[7];
 		} tex = {};
+
+		uint32_t last_transfer_DBP = UINT32_MAX;
+		uint32_t last_cpu_compatible_cache_TBP0 = UINT32_MAX;
+		uint32_t max_copy_cache_hazard_counter = 0;
+		uint32_t current_copy_cache_hazard_counter = 0;
 	} state_tracker;
 
 	void update_internal_register(uint64_t &reg, uint64_t value, StateDirtyFlags flags);

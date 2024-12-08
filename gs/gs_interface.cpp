@@ -302,6 +302,7 @@ void GSInterface::flush_render_pass(FlushReason reason)
 	render_pass.has_scanmsk = false;
 	render_pass.has_short_term_texture_caching = false;
 	state_tracker.dirty_flags = STATE_DIRTY_ALL_BITS;
+	state_tracker.current_copy_cache_hazard_counter = 0;
 }
 
 void GSInterface::flush(PageTrackerFlushFlags flags, FlushReason reason)
@@ -1578,6 +1579,15 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 			// They will generally be invalidated when it's overwritten by a copy or FB write.
 			if (long_term_cache_texture)
 			{
+				if (desc.rect.levels == 1 &&
+				    state_tracker.tex.page_rects[0].page_width == 1 &&
+				    state_tracker.tex.page_rects[0].page_height == 1)
+				{
+					state_tracker.last_cpu_compatible_cache_TBP0 = desc.tex0.desc.TBP0;
+				}
+				else
+					state_tracker.last_cpu_compatible_cache_TBP0 = UINT32_MAX;
+
 				if (tracker.register_cached_texture(state_tracker.tex.page_rects, desc.rect.levels,
 				                                    csa_mask, render_pass.clut_instance,
 				                                    hasher.get(), image) == PageTracker::UploadStrategy::CPU)
@@ -2719,8 +2729,52 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 		    transfer_state.copy.host_data_size_offset == 0 &&
 		    transfer_state.copy.host_data_size == transfer_state.copy.host_data_size_required)
 		{
+			if (transfer_state.copy.bitbltbuf.desc.DBP == state_tracker.last_cpu_compatible_cache_TBP0)
+			{
+				state_tracker.current_copy_cache_hazard_counter++;
+
+				if (state_tracker.max_copy_cache_hazard_counter < 32 &&
+				    state_tracker.current_copy_cache_hazard_counter == 32)
+				{
+					LOGI("Detected bad copy -> cache -> copy -> cache pattern. Injecting CPU wait workaround.\n");
+				}
+
+				state_tracker.max_copy_cache_hazard_counter = std::max<uint32_t>(
+						state_tracker.max_copy_cache_hazard_counter,
+						state_tracker.current_copy_cache_hazard_counter);
+			}
+			else
+				state_tracker.current_copy_cache_hazard_counter = 0;
+
 			// Attempt a non-blocking write.
 			copy_cpu = tracker.acquire_host_write(dst_rect, renderer.query_timeline());
+
+			// Be conservative, we only want to do this for games that really need it.
+			// We must have seen at least a case of 32 back-to-back copies which all triggered a hazard.
+			// This is a hint that the game is doing something questionable.
+			// 32 barriers isn't all that bad on first frame (we want to avoid 1000 barriers).
+			// Once we've observed this case, we will start to stall in order to ensure fixed performance.
+			bool heuristic_force_cpu_wait = state_tracker.max_copy_cache_hazard_counter >= 32 &&
+			                                state_tracker.current_copy_cache_hazard_counter > 4;
+
+			if (!copy_cpu && heuristic_force_cpu_wait)
+			{
+				// If we've observed the same upload -> cache pattern over and over again,
+				// we assume it's best to stall and do CPU forwarded uploads instead.
+				uint64_t host_timeline = tracker.get_host_write_timeline(dst_rect);
+				if (host_timeline == UINT64_MAX)
+				{
+					host_timeline = tracker.mark_submission_timeline();
+					renderer.flush_submit(host_timeline);
+				}
+				renderer.wait_timeline(host_timeline);
+				copy_cpu = tracker.acquire_host_write(dst_rect, renderer.query_timeline());
+				assert(copy_cpu);
+			}
+		}
+		else
+		{
+			state_tracker.current_copy_cache_hazard_counter = 0;
 		}
 
 		if (copy_cpu)
