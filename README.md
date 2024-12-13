@@ -39,13 +39,14 @@ This is best left to blog posts.
 
 ## Tested GPU / driver combos.
 
-- RADV on RX 7600.
-- AMDVLK on RX 7600.
-- amdgpu-pro on RX 7600.
-- Steam Deck on SteamOS 3.6.6.
+- RADV on RX 7600/6800.
+- AMDVLK on RX 7600/6800.
+- amdgpu-pro on RX 7600/6800.
+- Steam Deck on SteamOS 3.6.6 / 3.7.
 - RTX 4070 on Linux and Windows.
 - RTX 3060 mobile on a Windows 11 laptop.
 - Intel UHD 620 on Windows 11 (but obviously too slow for it to be practical).
+- Arc A770 on Mesa 24.3.1.
 
 ## Required driver features
 
@@ -54,6 +55,7 @@ This is best left to blog posts.
 - `storageBuffer8BitAccess`
 - `storageBuffer16BitAccess`
 - `shaderInt16`
+- `scalarBlockLayout`
 - Full subgroup support (minus clustered)
 - Subgroup size control with full groups between 16 and 64 threads per subgroup
 
