@@ -208,8 +208,8 @@ TileInfo get_tile_info()
 		}
 		else
 		{
-			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 2));
-			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 2, 1));
+			local_pixel.y = int(bitfieldExtract(gl_SubgroupInvocationID, 0, 2));
+			local_pixel.x = int(bitfieldExtract(gl_SubgroupInvocationID, 2, 1));
 		}
 	}
 	else if (gl_SubgroupSize == 16)

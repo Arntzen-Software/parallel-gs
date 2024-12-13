@@ -284,57 +284,70 @@ void GSRenderer::kick_compilation_tasks()
 
 		cmd->set_specialization_constant_mask(0xff);
 		cmd->enable_subgroup_size_control(true);
-		// Prefer Wave64 if we can get away with it.
-		if (device->supports_subgroup_size_log2(true, 6, 6))
-			cmd->set_subgroup_size_log2(true, 6, 6);
-		else if (device->supports_subgroup_size_log2(true, 4, 6))
-			cmd->set_subgroup_size_log2(true, 4, 6);
-		else if (device->supports_subgroup_size_log2(true, 3, 6))
-			cmd->set_subgroup_size_log2(true, 3, 6);
-		else
-			cmd->set_subgroup_size_log2(true, 2, 6);
 
-		for (auto &format : formats)
+		static const struct
 		{
-			for (auto &flags : variant_flags)
+			uint32_t lo, hi;
+		} subgroup_configs[] = {
+			{ 6, 6 },
+			{ 4, 6 },
+			{ 3, 6 },
+			{ 2, 6 },
+		};
+
+		for (auto &subgroup_config : subgroup_configs)
+		{
+			if (device->supports_subgroup_size_log2(true, subgroup_config.lo, subgroup_config.hi))
+				cmd->set_subgroup_size_log2(true, subgroup_config.lo, subgroup_config.hi);
+			else
+				continue;
+
+			for (auto &format : formats)
 			{
-				for (auto &rates : sampling_rates)
+				for (auto &flags : variant_flags)
 				{
-					for (auto &feedback : feedbacks)
+					for (auto &rates : sampling_rates)
 					{
-						if ((flags & VARIANT_FLAG_FEEDBACK_BIT) != 0)
+						for (auto &feedback : feedbacks)
 						{
-							if (swizzle_compat_key(feedback.feedback_psm) != swizzle_compat_key(format.color_psm))
-								continue;
-						}
-						else if (feedback.feedback_psm != 0 || feedback.feedback_cpsm != 0)
-							continue;
-
-						cmd->set_specialization_constant(0, rates.sample_x);
-						cmd->set_specialization_constant(1, rates.sample_y);
-						cmd->set_specialization_constant(2, format.color_psm);
-						cmd->set_specialization_constant(3, format.depth_psm);
-						cmd->set_specialization_constant(4, vram_size - 1);
-						cmd->set_specialization_constant(
-								5, flags | (rates.sample_y ? VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT : 0));
-						cmd->set_specialization_constant(6, feedback.feedback_psm);
-						cmd->set_specialization_constant(7, feedback.feedback_cpsm);
-						cmd->extract_pipeline_state(deferred);
-						tasks.push_back(deferred);
-
-						if (rates.sample_x == 0 && rates.sample_y == 0)
-						{
-							if (can_potentially_super_sample())
+							if ((flags & VARIANT_FLAG_FEEDBACK_BIT) != 0)
 							{
-								cmd->set_specialization_constant(
-										5, flags | VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT);
-								cmd->extract_pipeline_state(deferred);
-								tasks.push_back(deferred);
+								if (swizzle_compat_key(feedback.feedback_psm) != swizzle_compat_key(format.color_psm))
+									continue;
+							}
+							else if (feedback.feedback_psm != 0 || feedback.feedback_cpsm != 0)
+								continue;
+
+							cmd->set_specialization_constant(0, rates.sample_x);
+							cmd->set_specialization_constant(1, rates.sample_y);
+							cmd->set_specialization_constant(2, format.color_psm);
+							cmd->set_specialization_constant(3, format.depth_psm);
+							cmd->set_specialization_constant(4, vram_size - 1);
+							cmd->set_specialization_constant(
+									5, flags | (rates.sample_y ? VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT : 0));
+							cmd->set_specialization_constant(6, feedback.feedback_psm);
+							cmd->set_specialization_constant(7, feedback.feedback_cpsm);
+							cmd->extract_pipeline_state(deferred);
+							tasks.push_back(deferred);
+
+							if (rates.sample_x == 0 && rates.sample_y == 0)
+							{
+								if (can_potentially_super_sample())
+								{
+									cmd->set_specialization_constant(
+											5, flags | VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT);
+									cmd->extract_pipeline_state(deferred);
+									tasks.push_back(deferred);
+								}
 							}
 						}
 					}
 				}
 			}
+
+			// If device has wave64, we always use it.
+			if (device->supports_subgroup_size_log2(true, 6, 6))
+				break;
 		}
 
 		device->submit_discard(cmd);
@@ -1696,15 +1709,13 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 
 	cmd.enable_subgroup_size_control(true);
 
+	uint32_t minimum_subgroup_size_log2 = inst.sampling_rate_x_log2 + inst.sampling_rate_y_log2;
+
 	// Prefer Wave64 if we can get away with it.
 	if (device->supports_subgroup_size_log2(true, 6, 6))
 		cmd.set_subgroup_size_log2(true, 6, 6);
-	else if (device->supports_subgroup_size_log2(true, 4, 6))
-		cmd.set_subgroup_size_log2(true, 4, 6);
-	else if (device->supports_subgroup_size_log2(true, 3, 6))
-		cmd.set_subgroup_size_log2(true, 3, 6);
-	else
-		cmd.set_subgroup_size_log2(true, 2, 6);
+	else if (device->supports_subgroup_size_log2(true, minimum_subgroup_size_log2, 6))
+		cmd.set_subgroup_size_log2(true, minimum_subgroup_size_log2, 6);
 
 	uint32_t color_psm = inst.fb.frame.desc.PSM;
 	uint32_t depth_psm = inst.fb.z.desc.PSM | ZBUFBits::PSM_MSB;
