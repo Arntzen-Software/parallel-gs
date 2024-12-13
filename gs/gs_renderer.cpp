@@ -1488,6 +1488,7 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 		{
 			cmd.set_subgroup_size_log2(true, attempt.lo, attempt.hi);
 			cmd.set_specialization_constant(0, attempt.wg_size);
+			break;
 		}
 	}
 
