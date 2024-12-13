@@ -96,7 +96,7 @@ void PageTracker::mark_external_write(const PageRect &rect)
 void PageTracker::mark_fb_write(const PageRect &rect)
 {
 	assert(rect.page_width <= 2048 / 64);
-	assert(rect.page_height <= 2048 / 64);
+	assert(rect.page_height <= 2048 / 32);
 
 	for (unsigned y = 0; y < rect.page_height; y++)
 	{
