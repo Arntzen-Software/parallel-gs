@@ -214,6 +214,9 @@ TileInfo get_tile_info()
 	}
 	else if (gl_SubgroupSize == 16)
 	{
+		tile_index.x = int(bitfieldExtract(gl_SubgroupID, 0, 1));
+		tile_index.y = int(bitfieldExtract(gl_SubgroupID, 1, 1));
+
 		if (SPARSE_PATTERN_SIZE_LOG2 == 2)
 		{
 			tile_size = ivec2(2, 8);
@@ -225,8 +228,6 @@ TileInfo get_tile_info()
 		else
 		{
 			tile_size = ivec2(4);
-			tile_index.x = int(bitfieldExtract(gl_SubgroupID, 0, 1));
-			tile_index.y = int(bitfieldExtract(gl_SubgroupID, 1, 1));
 
 			if (NUM_SAMPLES > 1)
 			{
