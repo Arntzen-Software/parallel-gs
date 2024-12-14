@@ -478,5 +478,7 @@ private:
 	void check_bug_feedback();
 
 	bool scanout_is_interlaced(const PrivRegisterState &priv, const VSyncInfo &info) const;
+	uint32_t get_target_hierarchical_binning(uint32_t num_primitives, uint32_t coarse_tiles_width, uint32_t coarse_tiles_height) const;
+	void set_hierarchical_binning_subgroup_config(Vulkan::CommandBuffer &cmd, uint32_t hier_factor) const;
 };
 }

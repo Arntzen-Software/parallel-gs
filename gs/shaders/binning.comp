@@ -48,94 +48,224 @@ layout(std430, set = 1, binding = 1) buffer SuperSampledWork
 
 layout(constant_id = 1) const bool FEEDBACK_FORCE_WORK = false;
 layout(constant_id = 2) const bool SUPER_SAMPLED = false;
+layout(constant_id = 3) const int HIER_CULLING_SIZE = 1;
+layout(constant_id = 4) const int MAX_NUM_PRIMITIVES_1024 = 1;
+
+// Up to 8 KiB. 1 bit per possible primitive.
+shared uint shared_primitive_active_mask[MAX_NUM_PRIMITIVES_1024 * (1024u / 32u)];
+// Allows us to snappily scan through the list of bitfields that are interesting.
+shared uint shared_hier_active_mask[MAX_NUM_PRIMITIVES_1024];
+
+void init_shared()
+{
+    uint num_primitives_u32 = (registers.end_primitives - registers.base_primitive + 31u) / 32u;
+
+    for (uint i = gl_LocalInvocationIndex; i < MAX_NUM_PRIMITIVES_1024 * (1024u / 32u); i += gl_WorkGroupSize.x)
+        shared_primitive_active_mask[i] = 0u;
+    for (uint i = gl_LocalInvocationIndex; i < MAX_NUM_PRIMITIVES_1024; i += gl_WorkGroupSize.x)
+        shared_hier_active_mask[i] = 0u;
+
+    barrier();
+}
+
+bool bin_primitive(ivec2 lo, ivec2 hi, uint primitive_index)
+{
+    ivec3 a = primitive_setup.data[primitive_index].a;
+    ivec3 b = primitive_setup.data[primitive_index].b;
+    ivec3 c = primitive_setup.data[primitive_index].c;
+    ivec4 bb = ivec4(primitive_setup.data[primitive_index].bb);
+    bb = clip_bounding_box(bb, ivec4(lo, hi));
+    return triangle_setup_intersects_tile(a, b, c, bb);
+}
+
+void update_heuristics(
+    uint primitive_index,
+    inout bool requires_super_sample,
+    inout bool requires_super_sample_when_z_writes,
+    inout bool has_z_write)
+{
+    const uint FULLY_OPAQUE_MASK =
+        (1u << STATE_BIT_SNAP_RASTER) |
+        (1u << STATE_BIT_Z_TEST) |
+        (1u << STATE_BIT_OPAQUE);
+
+    const uint COLOR_OPAQUE_MASK =
+        (1u << STATE_BIT_SNAP_RASTER) |
+        (1u << STATE_BIT_OPAQUE);
+
+    const uint FULLY_OPAQUE =
+        (1u << STATE_BIT_SNAP_RASTER) |
+        (1u << STATE_BIT_OPAQUE);
+
+    // If Z is in no danger of being falsely decayed into single-sample,
+    // we can be a little looser in algorithm.
+    // Common for fog resolve passes where we test Z, but only intend to update alpha or something.
+    // Technically we risk weird Z testing here, but this heuristic
+    // fixes far more SSAA problem than it creates.
+    // Also a speed increase since more passes can run at single sampled without
+    // unnecessary pixel duplication.
+
+    uint s = primitive_attr.data[primitive_index].state;
+    if ((s & FULLY_OPAQUE_MASK) != FULLY_OPAQUE)
+        requires_super_sample_when_z_writes = true;
+    if ((s & COLOR_OPAQUE_MASK) != COLOR_OPAQUE_MASK)
+        requires_super_sample = true;
+    if ((s & (1u << STATE_BIT_Z_WRITE)) != 0)
+        has_z_write = true;
+}
 
 void main()
 {
-    // Only relevant on AMD Windows if we have to use varying size and driver selects wave32 on RDNA.
-    // This is fine for performance. The algorithm is much nicer if we can iterate inside one wave.
-    if (gl_SubgroupID != 0)
-        return;
-
-    ivec2 coarse_tile = ivec2(gl_WorkGroupID.xy);
+    // Every workgroup works on 4x4 coarse tiles to amortize binning cost.
+    ivec2 coarse_tile = ivec2(gl_WorkGroupID.xy) * ivec2(HIER_CULLING_SIZE);
     ivec2 coarse_tile_base = coarse_tile << constants.coarse_tile_size_log2;
-    int coarse_tile_linear = coarse_tile.y * constants.coarse_fb_width + coarse_tile.x;
-    int coarse_primitive_list_offset = coarse_tile_linear * constants.coarse_primitive_list_stride;
 
-    ivec2 tile_lo = coarse_tile_base + registers.pixel_offset;
-    ivec2 tile_hi = tile_lo + ((1 << constants.coarse_tile_size_log2) - 1);
-    int write_offset = 0;
+    // Bounds for the jumbo tile.
+    ivec2 full_tile_lo = coarse_tile_base + registers.pixel_offset;
+    ivec2 full_tile_hi = full_tile_lo + ivec2(HIER_CULLING_SIZE) * (1 << constants.coarse_tile_size_log2) - 1;
 
-    bool requires_super_sample = false;
-    bool requires_super_sample_when_z_writes = false;
-    bool has_z_write = false;
-
-    for (int i = registers.base_primitive; i < registers.end_primitives; i += int(gl_SubgroupSize))
+    if (HIER_CULLING_SIZE > 1)
     {
-        int primitive_index = i + int(gl_SubgroupInvocationID);
-        bool binned = false;
+        init_shared();
 
-        if (primitive_index < registers.end_primitives)
+        // Coarse bin everything, and mark which parts of the primitive list are interesting to look at for fine binning.
+        for (int i = registers.base_primitive + int(gl_LocalInvocationIndex);
+            i < registers.end_primitives;
+            i += int(gl_WorkGroupSize.x))
         {
-            uint s = primitive_attr.data[primitive_index].state;
+            uint s = primitive_attr.data[i].state;
             if (bitfieldExtract(s,
-                    STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET,
-                    STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) == registers.instance)
+                STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET,
+                STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) == registers.instance)
             {
-                ivec3 a = primitive_setup.data[primitive_index].a;
-                ivec3 b = primitive_setup.data[primitive_index].b;
-                ivec3 c = primitive_setup.data[primitive_index].c;
-
-                ivec4 bb = ivec4(primitive_setup.data[primitive_index].bb);
-                bb = clip_bounding_box(bb, ivec4(tile_lo, tile_hi));
-                binned = triangle_setup_intersects_tile(a, b, c, bb);
-
-                if (SUPER_SAMPLED && binned)
+                if (bin_primitive(full_tile_lo, full_tile_hi, i))
                 {
-                    const uint FULLY_OPAQUE_MASK =
-                        (1u << STATE_BIT_SNAP_RASTER) |
-                        (1u << STATE_BIT_Z_TEST) |
-                        (1u << STATE_BIT_OPAQUE);
-
-                    const uint COLOR_OPAQUE_MASK =
-                        (1u << STATE_BIT_SNAP_RASTER) |
-                        (1u << STATE_BIT_OPAQUE);
-
-                    const uint FULLY_OPAQUE =
-                        (1u << STATE_BIT_SNAP_RASTER) |
-                        (1u << STATE_BIT_OPAQUE);
-
-                    // If Z is in no danger of being falsely decayed into single-sample,
-                    // we can be a little looser in algorithm.
-                    // Common for fog resolve passes where we test Z, but only intend to update alpha or something.
-                    // Technically we risk weird Z testing here, but this heuristic
-                    // fixes far more SSAA problem than it creates.
-                    // Also a speed increase since more passes can run at single sampled without
-                    // unnecessary pixel duplication.
-
-                    if ((s & FULLY_OPAQUE_MASK) != FULLY_OPAQUE)
-                        requires_super_sample_when_z_writes = true;
-                    if ((s & COLOR_OPAQUE_MASK) != COLOR_OPAQUE_MASK)
-                        requires_super_sample = true;
-                    if ((s & (1u << STATE_BIT_Z_WRITE)) != 0)
-                        has_z_write = true;
+                    uint offset = i - registers.base_primitive;
+                    uint offset_hier = offset / 32u;
+                    uint mask = 1u << (offset & 31u);
+                    uint hier_mask = 1u << (offset_hier & 31u);
+                    atomicOr(shared_primitive_active_mask[offset_hier], mask);
+                    atomicOr(shared_hier_active_mask[offset_hier / 32u], hier_mask);
                 }
             }
         }
 
-        uvec4 bin_mask = subgroupBallot(binned);
-        int offset = int(subgroupBallotExclusiveBitCount(bin_mask));
-        if (binned)
-            coarse_primitive_list.data[coarse_primitive_list_offset + write_offset + offset] = uint16_t(primitive_index);
-        write_offset += int(subgroupBallotBitCount(bin_mask));
+        barrier();
     }
 
-    requires_super_sample = subgroupAny(requires_super_sample);
+    // This can happen if we cannot control the subgroup size properly.
+    if (gl_SubgroupID >= HIER_CULLING_SIZE * HIER_CULLING_SIZE)
+        return;
+
+    ivec2 fine_tile_lo, fine_tile_hi;
+    int local_tile_x, local_tile_y;
+
+    if (HIER_CULLING_SIZE > 1)
+    {
+        local_tile_x = int(gl_SubgroupID) % HIER_CULLING_SIZE;
+        local_tile_y = int(gl_SubgroupID) / HIER_CULLING_SIZE;
+
+        // Bounds for the fine tile that we output at the end.
+        fine_tile_lo = full_tile_lo + ivec2(local_tile_x, local_tile_y) * (1 << constants.coarse_tile_size_log2);
+        fine_tile_hi = fine_tile_lo + (1 << constants.coarse_tile_size_log2) - 1;
+    }
+    else
+    {
+        local_tile_x = 0;
+        local_tile_y = 0;
+        fine_tile_lo = full_tile_lo;
+        fine_tile_hi = full_tile_hi;
+    }
+
+    ivec2 coarse_tile_fine = coarse_tile + ivec2(local_tile_x, local_tile_y);
+    int coarse_tile_linear = coarse_tile_fine.y * constants.coarse_fb_width + coarse_tile_fine.x;
+    int coarse_primitive_list_offset = coarse_tile_linear * constants.coarse_primitive_list_stride;
+
+    uint write_offset = 0;
+    bool requires_super_sample = false;
+    bool requires_super_sample_when_z_writes = false;
+    bool has_z_write = false;
+
+    if (HIER_CULLING_SIZE > 1)
+    {
+        // Quickly scan through the hier buffer to see what we need to work on.
+        // Primitives that land on a tile tend to be clumped together, so we don't expect heavily divergent execution.
+        for (uint hier_index = 0; hier_index < MAX_NUM_PRIMITIVES_1024; hier_index++)
+        {
+            uint hier_mask = shared_hier_active_mask[hier_index];
+            while (hier_mask != 0u)
+            {
+                uint bit_offset = findLSB(hier_mask);
+                hier_mask &= hier_mask - 1u;
+
+                uint u32_offset = hier_index * 32u + bit_offset;
+                uint u32_mask = shared_primitive_active_mask[u32_offset];
+                uint base_primitive_index = 32u * u32_offset + registers.base_primitive;
+
+                // Ensure wave uniform loop to make subgroup ops valid without maximal reconvergence.
+                // Deal with sub-wave32.
+                for (uint base_invocation = 0; base_invocation < 32u; base_invocation += gl_SubgroupSize)
+                {
+                    uint invocation = gl_SubgroupInvocationID + base_invocation;
+                    uint primitive_index = base_primitive_index + invocation;
+                    bool binned = false;
+
+                    // Anything larger than wave32 will take a penalty here. This should be fine.
+                    if (invocation < 32u && (u32_mask & (1u << invocation)) != 0u)
+                    {
+                        binned = bin_primitive(fine_tile_lo, fine_tile_hi, primitive_index);
+                        if (SUPER_SAMPLED && binned)
+                            update_heuristics(primitive_index, requires_super_sample, requires_super_sample_when_z_writes, has_z_write);
+                    }
+
+                    uvec4 ballot = subgroupBallot(binned);
+                    uint ballot_bit = subgroupBallotExclusiveBitCount(ballot);
+                    uint total = subgroupBallotBitCount(ballot);
+                    if (binned)
+                        coarse_primitive_list.data[coarse_primitive_list_offset + write_offset + ballot_bit] = uint16_t(primitive_index);
+                    write_offset += total;
+                }
+            }
+        }
+    }
+    else
+    {
+        // Simple non-hierarchical path.
+        // Ensure wave uniform loop to make subgroup ops valid without maximal reconvergence.
+        for (int i = registers.base_primitive; i < registers.end_primitives; i += int(gl_SubgroupSize))
+        {
+            int primitive_index = i + int(gl_SubgroupInvocationID);
+            bool binned = false;
+
+            if (primitive_index < registers.end_primitives)
+            {
+                uint s = primitive_attr.data[primitive_index].state;
+                if (bitfieldExtract(s,
+                    STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET,
+                    STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) == registers.instance)
+                {
+                    binned = bin_primitive(fine_tile_lo, fine_tile_hi, primitive_index);
+                    if (SUPER_SAMPLED && binned)
+                        update_heuristics(primitive_index, requires_super_sample, requires_super_sample_when_z_writes, has_z_write);
+                }
+            }
+
+            uvec4 ballot = subgroupBallot(binned);
+            uint ballot_bit = subgroupBallotExclusiveBitCount(ballot);
+            uint total = subgroupBallotBitCount(ballot);
+            if (binned)
+                coarse_primitive_list.data[coarse_primitive_list_offset + write_offset + ballot_bit] = uint16_t(primitive_index);
+            write_offset += total;
+        }
+    }
+
     requires_super_sample_when_z_writes = subgroupAny(requires_super_sample_when_z_writes);
+    requires_super_sample = subgroupAny(requires_super_sample);
     has_z_write = subgroupAny(has_z_write);
 
     if (subgroupElect())
     {
-        coarse_primitive_counts.data[coarse_tile_linear] = write_offset;
+        coarse_primitive_counts.data[coarse_tile_linear] = int(write_offset);
 
         if (all(equal(gl_WorkGroupID.xy, uvec2(0))))
         {
@@ -151,17 +281,17 @@ void main()
 
         if (write_offset != 0 || FEEDBACK_FORCE_WORK)
         {
-            requires_super_sample = requires_super_sample || (requires_super_sample_when_z_writes && has_z_write);
+            bool requires_super_sample = requires_super_sample || (requires_super_sample_when_z_writes && has_z_write);
 
             if (SUPER_SAMPLED && requires_super_sample)
             {
                 uint offset = atomicAdd(super_sampled.dispatch[2], 1u);
-                super_sampled.work_items[offset] = uvec2((tile_lo.x & 0xffff) | (tile_lo.y << 16), coarse_tile_linear);
+                super_sampled.work_items[offset] = uvec2((fine_tile_lo.x & 0xffff) | (fine_tile_lo.y << 16), coarse_tile_linear);
             }
             else
             {
                 uint offset = atomicAdd(single_sampled.dispatch[2], 1u);
-                single_sampled.work_items[offset] = uvec2((tile_lo.x & 0xffff) | (tile_lo.y << 16), coarse_tile_linear);
+                single_sampled.work_items[offset] = uvec2((fine_tile_lo.x & 0xffff) | (fine_tile_lo.y << 16), coarse_tile_linear);
             }
         }
     }
