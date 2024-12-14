@@ -1232,10 +1232,13 @@ void GSRenderer::bind_frame_resources_instanced(const RenderPass &rp, uint32_t i
 	GlobalConstants constants = {};
 
 	auto &inst = rp.instances[instance];
+
+	uint32_t hier_binning = get_target_hier_binning(num_primitives, inst.coarse_tiles_width, inst.coarse_tiles_height);
+
 	constants.base_pixel.x = int(inst.base_x);
 	constants.base_pixel.y = int(inst.base_y);
 	constants.coarse_tile_size_log2 = int(rp.coarse_tile_size_log2);
-	constants.coarse_fb_width = int(inst.coarse_tiles_width);
+	constants.coarse_fb_width = int((inst.coarse_tiles_width + hier_binning - 1) & ~(hier_binning - 1));
 	constants.coarse_primitive_list_stride = int(num_primitives);
 	constants.fb_color_page = int(inst.fb.frame.desc.FBP);
 	constants.fb_depth_page = int(inst.fb.z.desc.ZBP);
@@ -1289,12 +1292,37 @@ void GSRenderer::allocate_scratch_buffers(Vulkan::CommandBuffer &cmd, const Rend
 	}
 }
 
+uint32_t GSRenderer::get_target_hier_binning(
+		uint32_t num_primitives, uint32_t coarse_tiles_width, uint32_t coarse_tiles_height) const
+{
+	// Only bother for large number of primitives.
+	// Simpler full-screen blit passes and similar should just use the simplified flat binner.
+	if (num_primitives < 256)
+		return 1;
+
+	// Small resolution, we won't really be able to go wide anyway.
+	if (coarse_tiles_width <= 4 || coarse_tiles_height <= 4)
+		return 1;
+
+	// Make sure that we can support the worst case size of the workgroup.
+	uint32_t target_binning = num_primitives < 4096 ? 2 : 4;
+	uint32_t maximum_invocations = device->get_device_features().vk11_props.subgroupSize * target_binning * target_binning;
+	if (maximum_invocations > device->get_gpu_properties().limits.maxComputeWorkGroupInvocations)
+		return 1;
+
+	return target_binning;
+}
+
 void GSRenderer::allocate_scratch_buffers_instanced(Vulkan::CommandBuffer &cmd, const RenderPass &rp,
                                                     uint32_t instance, uint32_t num_primitives)
 {
 	auto &inst = rp.instances[instance];
 
-	VkDeviceSize num_coarse_tiles = inst.coarse_tiles_width * inst.coarse_tiles_height;
+	uint32_t hier_binning = get_target_hier_binning(num_primitives, inst.coarse_tiles_width, inst.coarse_tiles_height);
+	uint32_t aligned_width = (inst.coarse_tiles_width + hier_binning - 1) & ~(hier_binning - 1);
+	uint32_t aligned_height = (inst.coarse_tiles_height + hier_binning - 1) & ~(hier_binning - 1);
+
+	VkDeviceSize num_coarse_tiles = aligned_width * aligned_height;
 	VkDeviceSize primitive_count_size = num_coarse_tiles * sizeof(uint32_t);
 	VkDeviceSize primitive_list_size = num_coarse_tiles * num_primitives * sizeof(uint16_t);
 
@@ -1310,7 +1338,7 @@ void GSRenderer::allocate_scratch_buffers_instanced(Vulkan::CommandBuffer &cmd, 
 	binning_cmd->set_storage_buffer(0, BINDING_COARSE_TILE_LIST, *buffers.device_scratch.buffer,
 	                                primitive_list_offset, primitive_list_size);
 
-	VkDeviceSize work_list_size = 256 + inst.coarse_tiles_width * inst.coarse_tiles_height * sizeof(uvec2);
+	VkDeviceSize work_list_size = 256 + aligned_width * aligned_height * sizeof(uvec2);
 
 	auto work_list_scratch = allocate_device_scratch(work_list_size, buffers.device_scratch, nullptr);
 	qword_clears.push_back(buffers.device_scratch.buffer->get_device_address() + work_list_scratch);
@@ -1459,21 +1487,29 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 {
 	auto &inst = rp.instances[instance];
 
+	uint32_t hier_binning = get_target_hier_binning(num_primitives, inst.coarse_tiles_width, inst.coarse_tiles_height);
+
 	cmd.enable_subgroup_size_control(true);
-	cmd.set_specialization_constant_mask(0x7);
+	cmd.set_specialization_constant_mask(0x1f);
 	cmd.set_specialization_constant(1, uint32_t(rp.feedback_color || rp.feedback_depth));
 	cmd.set_specialization_constant(2, uint32_t(inst.sampling_rate_y_log2 != 0));
+	cmd.set_specialization_constant(3, hier_binning);
 
-	// Prefer large waves if possible. Also, prefer to have just one subgroup per workgroup,
-	// since the algorithms kind of rely on that.
-	// Using larger workgroups it's feasible to do two-phase binning, but given the content and current perf-metrics,
-	// it doesn't seem meaningful perf-wise.
-	const struct
+	struct Config
 	{
 		uint32_t lo;
 		uint32_t hi;
 		uint32_t wg_size;
-	} attempts[] = {
+	};
+
+	const Config *configs;
+	size_t num_configs;
+
+	// For non-hierarchical binning, prefer large waves if possible. Also, prefer to have just one subgroup per workgroup,
+	// since the algorithms kind of rely on that.
+	// Using larger workgroups it's feasible to do two-phase binning, but given the content and current perf-metrics,
+	// it doesn't seem meaningful perf-wise.
+	const Config flat_attempts[] = {
 		{ 6, 6, 64 },
 		{ 5, 5, 32 },
 		{ 4, 4, 16 },
@@ -1482,12 +1518,39 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 		{ 2, 6, std::min<uint32_t>(64, device->get_device_features().vk11_props.subgroupSize) },
 	};
 
-	for (auto &attempt : attempts)
+	// Prefer smaller wave sizes since going too wide may impact occupancy.
+	// Do not prefer wave64 here, since the shader is tuned for a maximum of wave32.
+	const Config hier_attempts[] = {
+		{ 2, 2, 4 },
+		{ 3, 3, 8 },
+		{ 4, 4, 16 },
+		{ 5, 5, 32 },
+		{ 2, 6, std::min<uint32_t>(64, device->get_device_features().vk11_props.subgroupSize) },
+	};
+
+	if (hier_binning > 1)
 	{
+		// Hierarchical binning is a bit more special.
+		uint32_t clamped_num_primitives = Util::next_pow2(num_primitives);
+		uint32_t clamped_num_primitives_1024 = (clamped_num_primitives + 1023u) / 1024u;
+		cmd.set_specialization_constant(4, clamped_num_primitives_1024);
+		configs = hier_attempts;
+		num_configs = sizeof(hier_attempts) / sizeof(hier_attempts[0]);
+	}
+	else
+	{
+		cmd.set_specialization_constant(4, 1u);
+		configs = flat_attempts;
+		num_configs = sizeof(flat_attempts) / sizeof(flat_attempts[0]);
+	}
+
+	for (size_t i = 0; i < num_configs; i++)
+	{
+		auto &attempt = configs[i];
 		if (device->supports_subgroup_size_log2(true, attempt.lo, attempt.hi))
 		{
 			cmd.set_subgroup_size_log2(true, attempt.lo, attempt.hi);
-			cmd.set_specialization_constant(0, attempt.wg_size);
+			cmd.set_specialization_constant(0, attempt.wg_size * hier_binning * hier_binning);
 			break;
 		}
 	}
@@ -1510,7 +1573,18 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 	Vulkan::QueryPoolHandle start_ts, end_ts;
 	if (enable_timestamps)
 		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	cmd.dispatch(inst.coarse_tiles_width, inst.coarse_tiles_height, 1);
+
+	uint32_t tiles_x = inst.coarse_tiles_width;
+	uint32_t tiles_y = inst.coarse_tiles_height;
+
+	if (hier_binning > 1)
+	{
+		tiles_x = (tiles_x + hier_binning - 1) / hier_binning;
+		tiles_y = (tiles_y + hier_binning - 1) / hier_binning;
+	}
+
+	cmd.dispatch(tiles_x, tiles_y, 1);
+
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
