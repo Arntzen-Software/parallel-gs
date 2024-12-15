@@ -47,6 +47,7 @@ This is best left to blog posts.
 - RTX 3060 mobile on a Windows 11 laptop.
 - Intel UHD 620 on Windows 11 (but obviously too slow for it to be practical).
 - Arc A770 on Mesa 24.3.1.
+- Arc A770 on Windows 10.
 
 ## Required driver features
 
