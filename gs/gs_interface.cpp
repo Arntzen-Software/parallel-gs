@@ -1774,8 +1774,20 @@ void GSInterface::drawing_kick_update_state(FBFeedbackMode feedback_mode, const 
 		}
 	}
 
-	if ((ctx.test.desc.ATE && ctx.test.desc.ATST != ATST_ALWAYS) || ctx.test.desc.DATE)
+	if (ctx.test.desc.DATE)
+	{
 		color_write_needs_previous_pixels = true;
+	}
+	else if (ctx.test.desc.ATE && ctx.test.desc.ATST != ATST_ALWAYS)
+	{
+		// ATST of NEVER will usually trigger a degenerate primitive.
+		// If this primitive cannot write Z, an AFAIL of FB_ONLY is completely irrelevant.
+		bool can_write_z = (p.state & (1u << STATE_BIT_Z_WRITE)) != 0u;
+		bool can_mask_color = ctx.test.desc.AFAIL != AFAIL_FB_ONLY;
+		bool can_mask_z = can_write_z && ctx.test.desc.AFAIL != AFAIL_ZB_ONLY;
+		if (can_mask_color || can_mask_z)
+			color_write_needs_previous_pixels = true;
+	}
 
 	// FBMASK is in a similar situation where we might not be considered OPAQUE, but if all primitives
 	// in a pass use the same FBMASK, we can be considered opaque. Need to defer this decision until triangle setup time.
@@ -1882,10 +1894,49 @@ bool GSInterface::draw_is_degenerate()
 		return true;
 	}
 
+	// If ATEST_NEVER is used, it functions like a secondary write mask.
+	// Compute the effective static write mask, and figure out if we can discard the primitive.
+	uint32_t fbmsk = ctx.frame.desc.FBMSK;
+	uint32_t zmsk = ctx.zbuf.desc.ZMSK;
+
+	if (ctx.frame.desc.PSM == PSMCT24 || ctx.frame.desc.PSM == PSMZ24)
+		fbmsk |= 0xff << 24;
+
+	if (ctx.test.desc.ATE && ctx.test.desc.ATST == ATST_NEVER)
+	{
+		switch (ctx.test.desc.AFAIL)
+		{
+		case AFAIL_ZB_ONLY:
+			// Only Z is written.
+			fbmsk |= UINT32_MAX;
+			break;
+
+		case AFAIL_KEEP:
+			// Nothing is written. Obvious degenerate draw.
+			fbmsk |= UINT32_MAX;
+			zmsk |= 1;
+			break;
+
+		case AFAIL_FB_ONLY:
+			// RGBA is written.
+			zmsk |= 1;
+			break;
+
+		case AFAIL_RGB_ONLY:
+			// RGB is written. A is masked. For 24-bit, A masking is implied.
+			fbmsk |= 0xff << 24;
+			break;
+
+		default:
+			break;
+		}
+	}
+
 	// Any write is ignored. PS2 rendering does not have side effects.
 	// Undefined ZTE seems to mean ignore depth completely.
-	bool read_only_depth = ctx.zbuf.desc.ZMSK != 0 || ctx.test.desc.ZTE == TESTBits::ZTE_UNDEFINED;
-	bool read_only_color = ctx.frame.desc.FBMSK == UINT32_MAX;
+
+	bool read_only_color = fbmsk == UINT32_MAX;
+	bool read_only_depth = zmsk || ctx.test.desc.ZTE == TESTBits::ZTE_UNDEFINED;
 	state_tracker.degenerate_draw = read_only_color && read_only_depth;
 	return state_tracker.degenerate_draw;
 }
