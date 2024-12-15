@@ -162,6 +162,24 @@ void GSInterface::flush_render_pass(FlushReason reason)
 		if (sampling_rate_y_log2 != 0 && rp.coarse_tile_size_log2 > 3)
 			rp.coarse_tile_size_log2 -= 1;
 
+		for (uint32_t i = 0; i < render_pass.num_instances; i++)
+		{
+			auto &inst = render_pass.instances[i];
+			uint32_t coarse_tiles_width = ((inst.bb.z - inst.bb.x) >> rp.coarse_tile_size_log2) + 1;
+			uint32_t coarse_tiles_height = ((inst.bb.w - inst.bb.y) >> rp.coarse_tile_size_log2) + 1;
+
+			// Try to avoid overflowing the 64 MiB sub-allocation limit in Granite when
+			// allocating binning list.
+			// Just a mild performance optimization, will still work without this heuristic.
+			// TODO: Maybe expose something in Granite to make this less hard-coded.
+			VkDeviceSize primitive_list_size = coarse_tiles_width * coarse_tiles_height * rp.num_primitives * sizeof(uint16_t);
+			while (primitive_list_size > 48 * 1024 * 1024)
+			{
+				rp.coarse_tile_size_log2 += 1;
+				primitive_list_size /= 4;
+			}
+		}
+
 		rp.num_instances = render_pass.num_instances;
 
 		// It's possible the last RP instance was added, but there are no primitives yet, since
