@@ -109,6 +109,16 @@ vec2 unpack_uv(u16vec2 uv)
     return ldexp(vec2(uv), ivec2(-4));
 }
 
+bvec2 logicalOr(bvec2 a, bvec2 b)
+{
+    return bvec2(a.x || b.x, a.y || b.y);
+}
+
+bvec2 logicalAnd(bvec2 a, bvec2 b)
+{
+    return bvec2(a.x && b.x, a.y && b.y);
+}
+
 void main_inner(uint index)
 {
     ivec3 order = ivec3(0, 1, 2);
@@ -496,12 +506,38 @@ void main_inner(uint index)
         ivec2 min_delta = min(uv_delta0, uv_delta1);
         ivec2 max_delta = max(uv_delta0, uv_delta1);
 
-        bool half_texel_offset = all(equal(min_delta & (PGS_SUBPIXELS - 1), ivec2(PGS_SUBPIXELS >> 1)));
+        // A single ULP of FP error rounding down should cause the maximum delta to snap to texel center.
+        bvec2 center_snapped = equal(min_delta & (PGS_SUBPIXELS - 1), ivec2(PGS_SUBPIXELS >> 1));
+
+        // Only consider this case if the scaling is NPOT. Otherwise, we can expect perfect scaling.
+        bvec2 next_snapped = equal(max_delta & (PGS_SUBPIXELS - 1), ivec2(PGS_SUBPIXELS >> 1) + 1);
+        ivec2 dist = d - a;
+        bvec2 scaling_is_npot = notEqual(dist & (dist - 1), ivec2(0));
+        next_snapped = logicalAnd(next_snapped, scaling_is_npot);
+
+        // If this is true, we assume that the value is always between min and max.
+        // Since it seems like the DDA rounds down, we always get the minimum value.
+        bool no_effective_interpolation = all(lessThanEqual(max_delta - min_delta, ivec2(1)));
+
+        // A dimension has to be center snapped or next snapped. Some constellation that should disable LINEAR:
+        // - Lerp center to center.
+        //   This is a perfect noop. Assume that game is not relying on rounding behavior, since that would be very weird.
+        //   For POT scaling factors, this should hold nicely.
+        // - Lerp center to center + 1/16.
+        //   Since the result cannot be expected to ever reach >= center + 1/16, round down to center always.
+        // - Lerp center + 1/16 to center + 1/16.
+        //   This one is more esoteric, but if the scaling factor is non-POT, the DDA might step a bit too short
+        //   every time, leading to the effective UV rounding down to center anyway.
+        //   Interpolating at exactly 1/16 offset like this is esoteric at best, so assume the game did not intend that.
+        bool half_texel_offset = all(logicalOr(next_snapped, center_snapped));
+
+        // Alternative check. If a sprite has a 1/16th offset in both corners, it seems like
+        // the DDA interpolation tends round down, leading to a snapped interpolation anyway.
+        // Workarounds real-world game issues that seem to run fine on real hardware,
+        // so this seems like a plausible root cause.
 
         // If we only deviate by one sub-texel, interpolation will very likely never hit that upper value.
         // Since we snap down to the minimum value either way.
-        bool no_effective_interpolation = all(lessThanEqual(max_delta - min_delta, ivec2(1)));
-
         if (half_texel_offset && no_effective_interpolation)
             primitive_attr.data[index].tex &= ~TEX_SAMPLER_MAG_LINEAR_BIT;
     }
