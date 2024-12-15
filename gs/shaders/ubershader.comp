@@ -809,7 +809,13 @@ ShadeResultEarly shade_early(uint primitive_index)
 
 	if (HAS_SCANMSK)
 	{
-		if ((tile.fb_pixel.y & 1) == 0)
+		int scanmsk_pixel = tile.fb_pixel.y;
+
+		// If we're using scanmask on sprites, be accurate and do the masking per single-sampled pixel.
+		if ((prim_state & (1u << STATE_BIT_SPRITE)) != 0)
+			scanmsk_pixel >>= SAMPLING_RATE_DIM_LOG2;
+
+		if ((scanmsk_pixel & 1) == 0)
 		{
 			if (state_is_scanmsk_even(prim_state))
 				res.request.coverage = 0;
