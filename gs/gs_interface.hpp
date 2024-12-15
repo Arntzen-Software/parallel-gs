@@ -302,9 +302,9 @@ private:
 	enum { NumMemoizedPalettes = 16 };
 	struct RenderPassState
 	{
-		Util::DynamicArray<VertexPosition> positions;
-		Util::DynamicArray<VertexAttribute> attributes;
-		Util::DynamicArray<PrimitiveAttribute> prim;
+		VertexPosition *positions = nullptr;
+		VertexAttribute *attributes = nullptr;
+		PrimitiveAttribute *prim = nullptr;
 		uint32_t primitive_count = 0;
 
 		std::vector<StateVector> state_vectors;

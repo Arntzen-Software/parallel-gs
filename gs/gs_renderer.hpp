@@ -174,9 +174,6 @@ struct RenderPass
 
 	uint32_t coarse_tile_size_log2;
 
-	const VertexPosition *positions;
-	const VertexAttribute *attributes;
-	const PrimitiveAttribute *prims;
 	uint32_t num_primitives;
 
 	const StateVector *states;
@@ -230,6 +227,11 @@ public:
 	explicit GSRenderer(PageTracker &tracker);
 	bool init(Vulkan::Device *device, const GSOptions &options);
 	~GSRenderer();
+
+	void reserve_primitive_buffers(uint32_t num_primitives);
+	VertexPosition *get_reserved_vertex_positions() const;
+	VertexAttribute *get_reserved_vertex_attributes() const;
+	PrimitiveAttribute *get_reserved_primitive_attributes() const;
 
 	// Copies host VRAM into GPU VRAM.
 	// First logical stage.
@@ -328,6 +330,12 @@ private:
 		VkDeviceSize size = 0;
 	};
 
+	struct AttributeScratch : Scratch
+	{
+		Vulkan::BufferHandle gpu_buffer;
+		VkDeviceSize flushed_to = 0;
+	};
+
 	struct TextureUpload
 	{
 		Vulkan::ImageHandle image;
@@ -345,6 +353,7 @@ private:
 		Vulkan::BufferHandle vram_copy_payloads;
 
 		Scratch device_scratch, rebar_scratch;
+
 		VkDeviceSize ssbo_alignment = 0;
 
 		Vulkan::BufferHandle fixed_rcp_lut;
@@ -353,6 +362,12 @@ private:
 		Vulkan::BufferViewHandle float_rcp_lut_view;
 
 		Vulkan::BufferHandle bug_feedback;
+
+		// Attribute buffers, for zero-copy on UMA and single copy on dGPU.
+		AttributeScratch pos_scratch, attr_scratch, prim_scratch;
+		VertexPosition *pos = nullptr;
+		VertexAttribute *attr = nullptr;
+		PrimitiveAttribute *prim = nullptr;
 	} buffers;
 
 	Scratch indirect_single_sample_heuristic;
@@ -360,6 +375,9 @@ private:
 	Scratch work_list_super_sample;
 
 	VkDeviceSize allocate_device_scratch(VkDeviceSize size, Scratch &scratch, const void *data);
+	void reserve_attribute_scratch(VkDeviceSize size, AttributeScratch &scratch);
+	void commit_attribute_scratch(VkDeviceSize size, AttributeScratch &scratch);
+	void flush_attribute_scratch(AttributeScratch &scratch);
 
 	Vulkan::BindlessDescriptorPoolHandle bindless_allocator;
 	struct ExhaustedDescriptorPool

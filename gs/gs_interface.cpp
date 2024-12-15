@@ -53,9 +53,10 @@ bool GSInterface::init(Vulkan::Device *device, const GSOptions &options)
 
 	set_super_sampling_rate(options.super_sampling, options.ordered_super_sampling);
 
-	render_pass.positions.reserve(MaxPrimitivesPerFlush * 3);
-	render_pass.attributes.reserve(MaxPrimitivesPerFlush * 3);
-	render_pass.prim.reserve(MaxPrimitivesPerFlush);
+	renderer.reserve_primitive_buffers(MaxPrimitivesPerFlush);
+	render_pass.positions = renderer.get_reserved_vertex_positions();
+	render_pass.attributes = renderer.get_reserved_vertex_attributes();
+	render_pass.prim = renderer.get_reserved_primitive_attributes();
 	return true;
 }
 
@@ -130,9 +131,6 @@ void GSInterface::flush_render_pass(FlushReason reason)
 
 	if (render_pass.primitive_count)
 	{
-		rp.positions = render_pass.positions.data();
-		rp.attributes = render_pass.attributes.data();
-		rp.prims = render_pass.prim.data();
 		rp.num_primitives = render_pass.primitive_count;
 
 		rp.states = render_pass.state_vectors.data();
@@ -303,6 +301,11 @@ void GSInterface::flush_render_pass(FlushReason reason)
 	render_pass.has_short_term_texture_caching = false;
 	state_tracker.dirty_flags = STATE_DIRTY_ALL_BITS;
 	state_tracker.current_copy_cache_hazard_counter = 0;
+
+	renderer.reserve_primitive_buffers(MaxPrimitivesPerFlush);
+	render_pass.positions = renderer.get_reserved_vertex_positions();
+	render_pass.attributes = renderer.get_reserved_vertex_attributes();
+	render_pass.prim = renderer.get_reserved_primitive_attributes();
 }
 
 void GSInterface::flush(PageTrackerFlushFlags flags, FlushReason reason)
@@ -2325,8 +2328,8 @@ void GSInterface::drawing_kick_append()
 		if (state_tracker.dirty_flags == 0 && is_parallelogram_candidate &&
 		    render_pass.last_triangle_is_parallelogram_candidate &&
 		    triangles_form_parallelogram(pos, attr, order,
-		                                 render_pass.positions.data() + (render_pass.primitive_count - 1) * 3,
-		                                 render_pass.attributes.data() + (render_pass.primitive_count - 1) * 3,
+		                                 render_pass.positions + (render_pass.primitive_count - 1) * 3,
+		                                 render_pass.attributes + (render_pass.primitive_count - 1) * 3,
 		                                 render_pass.last_triangle_parallelogram_order,
 		                                 prim.desc))
 		{
@@ -2543,8 +2546,8 @@ void GSInterface::drawing_kick_append()
 	TRACE("DRAW", render_pass.primitive_count);
 
 	render_pass.prim[render_pass.primitive_count] = prim_attr;
-	memcpy(render_pass.positions.data() + 3 * render_pass.primitive_count, pos, sizeof(pos));
-	memcpy(render_pass.attributes.data() + 3 * render_pass.primitive_count, attr, sizeof(attr));
+	memcpy(render_pass.positions + 3 * render_pass.primitive_count, pos, sizeof(pos));
+	memcpy(render_pass.attributes + 3 * render_pass.primitive_count, attr, sizeof(attr));
 	render_pass.primitive_count++;
 	// Commit this here as well. Need to do it after flushing state, since that may reset any tracking state.
 	render_pass.last_triangle_is_parallelogram_candidate = is_parallelogram_candidate;

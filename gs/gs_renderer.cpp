@@ -639,6 +639,77 @@ void GSRenderer::check_flush_stats()
 	}
 }
 
+static VkDeviceSize align_offset(VkDeviceSize offset, VkDeviceSize align)
+{
+	return (offset + align - 1) & ~(align - 1);
+}
+
+void GSRenderer::flush_attribute_scratch(AttributeScratch &scratch)
+{
+	if (!scratch.buffer || scratch.offset == scratch.flushed_to)
+		return;
+
+	// Flush CPU caches if needed.
+	device->unmap_host_buffer(*scratch.buffer, Vulkan::MEMORY_ACCESS_WRITE_BIT,
+	                          scratch.flushed_to, scratch.offset - scratch.flushed_to);
+
+	// Do PCI-e transfer if needed.
+	if (scratch.gpu_buffer != scratch.buffer)
+	{
+		bool first_command = !async_transfer_cmd;
+		ensure_command_buffer(async_transfer_cmd, Vulkan::CommandBuffer::Type::AsyncTransfer);
+		if (first_command)
+			async_transfer_cmd->begin_region("AsyncTransfer");
+
+		async_transfer_cmd->begin_region("AttributeFlush");
+		async_transfer_cmd->copy_buffer(*scratch.gpu_buffer, scratch.flushed_to,
+		                                *scratch.buffer, scratch.flushed_to,
+		                                scratch.offset - scratch.flushed_to);
+		async_transfer_cmd->end_region();
+	}
+
+	scratch.flushed_to = scratch.offset;
+}
+
+void GSRenderer::reserve_attribute_scratch(VkDeviceSize size, AttributeScratch &scratch)
+{
+	auto align = buffers.ssbo_alignment;
+	scratch.offset = align_offset(scratch.offset, align);
+
+	if (!scratch.buffer || scratch.offset + size > scratch.size)
+	{
+		flush_attribute_scratch(scratch);
+
+		Vulkan::BufferCreateInfo info = {};
+		constexpr VkDeviceSize DefaultScratchBufferSize = 32 * 1024 * 1024;
+		info.size = std::max<VkDeviceSize>(size, DefaultScratchBufferSize);
+		info.domain = Vulkan::BufferDomain::UMACachedCoherentPreferDevice;
+		info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+		scratch.gpu_buffer = device->create_buffer(info);
+		scratch.offset = 0;
+		scratch.size = info.size;
+		scratch.flushed_to = 0;
+
+		if (device->map_host_buffer(*scratch.gpu_buffer, 0))
+		{
+			scratch.buffer = scratch.gpu_buffer;
+		}
+		else
+		{
+			info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+			info.domain = Vulkan::BufferDomain::CachedHost;
+			scratch.buffer = device->create_buffer(info);
+		}
+	}
+}
+
+void GSRenderer::commit_attribute_scratch(VkDeviceSize size, AttributeScratch &scratch)
+{
+	stats.allocated_scratch_memory += size;
+	scratch.offset += size;
+}
+
 VkDeviceSize GSRenderer::allocate_device_scratch(VkDeviceSize size, Scratch &scratch, const void *data)
 {
 	// Trivial linear allocator. Reduces pressure on Granite allocator.
@@ -647,7 +718,7 @@ VkDeviceSize GSRenderer::allocate_device_scratch(VkDeviceSize size, Scratch &scr
 	auto align = buffers.ssbo_alignment;
 	stats.allocated_scratch_memory += size;
 
-	scratch.offset = (scratch.offset + align - 1) & ~(align - 1);
+	scratch.offset = align_offset(scratch.offset, align);
 	if (!scratch.buffer || scratch.offset + size > scratch.size)
 	{
 		Vulkan::BufferCreateInfo info = {};
@@ -748,6 +819,10 @@ void GSRenderer::flush_submit(uint64_t value)
 	total_stats.num_copy_barriers += stats.num_copy_barriers;
 	total_stats.num_copy_threads += stats.num_copy_threads;
 	stats = {};
+
+	flush_attribute_scratch(buffers.pos_scratch);
+	flush_attribute_scratch(buffers.attr_scratch);
+	flush_attribute_scratch(buffers.prim_scratch);
 
 	if (direct_cmd)
 	{
@@ -1225,38 +1300,34 @@ void GSRenderer::bind_frame_resources(const RenderPass &rp)
 	triangle_setup_cmd->set_buffer_view(0, BINDING_FIXED_RCP_LUT, *buffers.fixed_rcp_lut_view);
 	triangle_setup_cmd->set_buffer_view(0, BINDING_FLOAT_RCP_LUT, *buffers.float_rcp_lut_view);
 
-	auto pos_offset = allocate_device_scratch(
-			rp.num_primitives * 3 * sizeof(rp.positions[0]),
-			buffers.rebar_scratch, rp.positions);
-	triangle_setup_cmd->set_storage_buffer(0, BINDING_VERTEX_POSITION, *buffers.rebar_scratch.buffer,
-	                                       pos_offset, rp.num_primitives * 3 * sizeof(rp.positions[0]));
+	triangle_setup_cmd->set_storage_buffer(0, BINDING_VERTEX_POSITION, *buffers.pos_scratch.gpu_buffer,
+	                                       buffers.pos_scratch.offset, rp.num_primitives * 3 * sizeof(VertexPosition));
 	if (heuristic_cmd)
 	{
-		heuristic_cmd->set_storage_buffer(0, BINDING_VERTEX_POSITION, *buffers.rebar_scratch.buffer,
-		                                  pos_offset, rp.num_primitives * 3 * sizeof(rp.positions[0]));
+		heuristic_cmd->set_storage_buffer(0, BINDING_VERTEX_POSITION, *buffers.pos_scratch.gpu_buffer,
+		                                  buffers.pos_scratch.offset, rp.num_primitives * 3 * sizeof(VertexPosition));
 	}
 
-	auto attr_offset = allocate_device_scratch(
-			rp.num_primitives * 3 * sizeof(rp.attributes[0]),
-			buffers.rebar_scratch, rp.attributes);
-	triangle_setup_cmd->set_storage_buffer(0, BINDING_VERTEX_ATTRIBUTES, *buffers.rebar_scratch.buffer,
-	                                       attr_offset, rp.num_primitives * 3 * sizeof(rp.attributes[0]));
+	triangle_setup_cmd->set_storage_buffer(0, BINDING_VERTEX_ATTRIBUTES, *buffers.attr_scratch.gpu_buffer,
+	                                       buffers.attr_scratch.offset, rp.num_primitives * 3 * sizeof(VertexAttribute));
 
-	auto prim_offset = allocate_device_scratch(
-			rp.num_primitives * sizeof(rp.prims[0]),
-			buffers.rebar_scratch, rp.prims);
-	cmd.set_storage_buffer(0, BINDING_PRIMITIVE_ATTRIBUTES, *buffers.rebar_scratch.buffer,
-	                       prim_offset, rp.num_primitives * sizeof(rp.prims[0]));
-	triangle_setup_cmd->set_storage_buffer(0, BINDING_PRIMITIVE_ATTRIBUTES, *buffers.rebar_scratch.buffer,
-	                                       prim_offset, rp.num_primitives * sizeof(rp.prims[0]));
+	cmd.set_storage_buffer(0, BINDING_PRIMITIVE_ATTRIBUTES, *buffers.prim_scratch.gpu_buffer,
+	                       buffers.prim_scratch.offset, rp.num_primitives * sizeof(PrimitiveAttribute));
+	triangle_setup_cmd->set_storage_buffer(0, BINDING_PRIMITIVE_ATTRIBUTES, *buffers.prim_scratch.gpu_buffer,
+	                                       buffers.prim_scratch.offset, rp.num_primitives * sizeof(PrimitiveAttribute));
 
 	if (heuristic_cmd)
 	{
-		heuristic_cmd->set_storage_buffer(0, BINDING_PRIMITIVE_ATTRIBUTES, *buffers.rebar_scratch.buffer,
-		                                  prim_offset, rp.num_primitives * sizeof(rp.prims[0]));
+		heuristic_cmd->set_storage_buffer(0, BINDING_PRIMITIVE_ATTRIBUTES, *buffers.prim_scratch.gpu_buffer,
+		                                  buffers.prim_scratch.offset, rp.num_primitives * sizeof(PrimitiveAttribute));
 	}
-	binning_cmd->set_storage_buffer(0, BINDING_PRIMITIVE_ATTRIBUTES, *buffers.rebar_scratch.buffer,
-	                                prim_offset, rp.num_primitives * sizeof(rp.prims[0]));
+
+	binning_cmd->set_storage_buffer(0, BINDING_PRIMITIVE_ATTRIBUTES, *buffers.prim_scratch.gpu_buffer,
+	                                buffers.prim_scratch.offset, rp.num_primitives * sizeof(PrimitiveAttribute));
+
+	commit_attribute_scratch(rp.num_primitives * 3 * sizeof(VertexPosition), buffers.pos_scratch);
+	commit_attribute_scratch(rp.num_primitives * 3 * sizeof(VertexAttribute), buffers.attr_scratch);
+	commit_attribute_scratch(rp.num_primitives * sizeof(PrimitiveAttribute), buffers.prim_scratch);
 }
 
 static uint32_t align_coarse_tiles(uint32_t num_tiles, uint32_t hier_binning)
@@ -1857,13 +1928,13 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 		{
 			// If we have duelling color and Z write we're in deep trouble, so have to fall back
 			// to single primitive stepping.
-			if ((rp.prims[base_primitive + i].state & (1u << STATE_BIT_Z_WRITE)) != 0)
+			if ((buffers.prim[base_primitive + i].state & (1u << STATE_BIT_Z_WRITE)) != 0)
 			{
 				single_primitive_step = true;
 				last_primitive_index_single_step = i;
 				last_primitive_index_z_sensitive = i;
 			}
-			else if ((rp.prims[base_primitive + i].state & (1u << STATE_BIT_Z_TEST)) != 0)
+			else if ((buffers.prim[base_primitive + i].state & (1u << STATE_BIT_Z_TEST)) != 0)
 			{
 				last_primitive_index_z_sensitive = i;
 			}
@@ -2044,7 +2115,7 @@ void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const Render
 			begin_region(cmd, "Prim [%u, %u]", push.lo_primitive_index, push.hi_primitive_index);
 			for (uint32_t j = push.lo_primitive_index; j <= push.hi_primitive_index; j++)
 			{
-				auto s = rp.prims[j].state;
+				auto s = buffers.prim[j].state;
 
 				uint32_t prim_instance = (s >> STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET) &
 				                         ((1 << STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) - 1);
@@ -2065,14 +2136,14 @@ void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const Render
 				             (s >> STATE_BIT_PARALLELOGRAM) & 1,
 				             (s >> STATE_BIT_IIP) & 1,
 				             (s >> STATE_BIT_LINE) & 1,
-							 rp.prims[j].fbmsk);
+							 buffers.prim[j].fbmsk);
 
-				auto alpha = rp.prims[j].alpha;
+				auto alpha = buffers.prim[j].alpha;
 				insert_label(cmd, "  AFIX: %u, AREF: %u",
 				             (alpha >> ALPHA_AFIX_OFFSET) & ((1u << ALPHA_AFIX_BITS) - 1u),
 				             (alpha >> ALPHA_AREF_OFFSET) & ((1u << ALPHA_AREF_BITS) - 1u));
 
-				auto tex = rp.prims[j].tex;
+				auto tex = buffers.prim[j].tex;
 				insert_label(cmd, "  TEX: %u, MXL: %u, CLAMPS: %u, CLAMPT: %u, MAG: %u, MIN: %u, MIP: %u",
 				             (tex >> TEX_TEXTURE_INDEX_OFFSET) & ((1u << TEX_TEXTURE_INDEX_BITS) - 1u),
 				             (tex >> TEX_MAX_MIP_LEVEL_OFFSET) & ((1u << TEX_MAX_MIP_LEVEL_BITS) - 1u),
@@ -2309,12 +2380,12 @@ static const char *reason_to_str(FlushReason reason)
 }
 
 #ifdef PARALLEL_GS_DEBUG
-static inline void sanitize_state_indices(const RenderPass &rp)
+static inline void sanitize_state_indices(const PrimitiveAttribute *prims, const RenderPass &rp)
 {
 	for (uint32_t i = 0; i < rp.num_primitives; i++)
 	{
-		uint32_t tex_index = rp.prims[i].tex & ((1u << TEX_TEXTURE_INDEX_BITS) - 1u);
-		uint32_t state_index = (rp.prims[i].state >> STATE_INDEX_BIT_OFFSET) &
+		uint32_t tex_index = prims[i].tex & ((1u << TEX_TEXTURE_INDEX_BITS) - 1u);
+		uint32_t state_index = (prims[i].state >> STATE_INDEX_BIT_OFFSET) &
 		                       ((1u << STATE_INDEX_BIT_COUNT) - 1u);
 
 		if (state_index >= rp.num_states)
@@ -2495,6 +2566,46 @@ static bool compute_instance_hazard_mask(uint8_t (&mask)[MaxRenderPassInstances]
 	return has_hazard;
 }
 
+void GSRenderer::reserve_primitive_buffers(uint32_t num_primitives)
+{
+	reserve_attribute_scratch(num_primitives * 3 * sizeof(VertexPosition), buffers.pos_scratch);
+	reserve_attribute_scratch(num_primitives * 3 * sizeof(VertexAttribute), buffers.attr_scratch);
+	reserve_attribute_scratch(num_primitives * sizeof(PrimitiveAttribute), buffers.prim_scratch);
+
+	{
+		auto *mapped = static_cast<uint8_t *>(device->map_host_buffer(*buffers.pos_scratch.buffer,
+		                                                              Vulkan::MEMORY_ACCESS_WRITE_BIT));
+		buffers.pos = reinterpret_cast<VertexPosition *>(mapped + buffers.pos_scratch.offset);
+	}
+
+	{
+		auto *mapped = static_cast<uint8_t *>(device->map_host_buffer(*buffers.attr_scratch.buffer,
+		                                                              Vulkan::MEMORY_ACCESS_WRITE_BIT));
+		buffers.attr = reinterpret_cast<VertexAttribute *>(mapped + buffers.attr_scratch.offset);
+	}
+
+	{
+		auto *mapped = static_cast<uint8_t *>(device->map_host_buffer(*buffers.prim_scratch.buffer,
+		                                                              Vulkan::MEMORY_ACCESS_WRITE_BIT));
+		buffers.prim = reinterpret_cast<PrimitiveAttribute *>(mapped + buffers.prim_scratch.offset);
+	}
+}
+
+VertexPosition *GSRenderer::get_reserved_vertex_positions() const
+{
+	return buffers.pos;
+}
+
+VertexAttribute *GSRenderer::get_reserved_vertex_attributes() const
+{
+	return buffers.attr;
+}
+
+PrimitiveAttribute *GSRenderer::get_reserved_primitive_attributes() const
+{
+	return buffers.prim;
+}
+
 void GSRenderer::flush_rendering(const RenderPass &rp)
 {
 	if (rp.num_primitives == 0)
@@ -2502,7 +2613,7 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 	assert(rp.num_primitives <= MaxPrimitivesPerFlush);
 
 #ifdef PARALLEL_GS_DEBUG
-	sanitize_state_indices(rp);
+	sanitize_state_indices(buffers.prim, rp);
 #endif
 
 	// Attempted async compute here for binning, etc, but it's not very useful in practice.
@@ -2570,7 +2681,7 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 
 				for (uint32_t prim = 0; prim < rp.num_primitives; prim++)
 				{
-					uint32_t instance = (rp.prims[prim].state >> STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET) &
+					uint32_t instance = (buffers.prim[prim].state >> STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET) &
 					                    ((1u << STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) - 1u);
 
 					if (active_hazards & (1u << instance))
@@ -2616,7 +2727,7 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 
 				for (uint32_t prim = 0; prim < rp.num_primitives; prim++)
 				{
-					uint32_t instance = (rp.prims[prim].state >> STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET) &
+					uint32_t instance = (buffers.prim[prim].state >> STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET) &
 					                    ((1u << STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) - 1u);
 
 					if (prim_lo[instance] == UINT32_MAX)
