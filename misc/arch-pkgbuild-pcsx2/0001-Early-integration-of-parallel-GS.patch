@@ -1,4 +1,4 @@
-From b43904445dac27b07aa278cfd28ed08139dc3e40 Mon Sep 17 00:00:00 2001
+From 46fe5e4b1406dfc20501895a6454ec0caf174811 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sun, 23 Jun 2024 14:54:43 +0200
 Subject: [PATCH] Early integration of parallel-GS.
@@ -9,11 +9,11 @@ Subject: [PATCH] Early integration of parallel-GS.
  CMakeLists.txt                                |    8 +
  pcsx2-gsrunner/Main.cpp                       |    4 +
  pcsx2-qt/MainWindow.cpp                       |    3 +
- pcsx2-qt/Settings/GraphicsSettingsWidget.cpp  |   52 +-
- pcsx2-qt/Settings/GraphicsSettingsWidget.ui   |   72 +
+ pcsx2-qt/Settings/GraphicsSettingsWidget.cpp  |   56 +-
+ pcsx2-qt/Settings/GraphicsSettingsWidget.ui   |   79 +
  pcsx2-qt/pcsx2-qt.vcxproj                     |    2 +-
  pcsx2/CMakeLists.txt                          |   18 +
- pcsx2/Config.h                                |    4 +
+ pcsx2/Config.h                                |    5 +
  pcsx2/GS/GS.cpp                               |  379 ++-
  pcsx2/GS/GS.h                                 |    3 +
  pcsx2/GS/GSState.cpp                          |    2 +-
@@ -23,12 +23,12 @@ Subject: [PATCH] Early integration of parallel-GS.
  pcsx2/GS/Renderers/Vulkan/VKLoader.cpp        |   18 +-
  pcsx2/GS/Renderers/Vulkan/VKLoader.h          |   19 +-
  .../Vulkan/VKLoaderPlatformDefines.h          |   23 +
- .../Renderers/parallel-gs/GSRendererPGS.cpp   |  835 ++++++
+ .../Renderers/parallel-gs/GSRendererPGS.cpp   |  837 ++++++
  .../GS/Renderers/parallel-gs/GSRendererPGS.h  |   87 +
  pcsx2/ImGui/ImGuiFullscreen.cpp               |    2 +
- pcsx2/Pcsx2Config.cpp                         |    9 +-
+ pcsx2/Pcsx2Config.cpp                         |   11 +-
  pcsx2/pcsx2.vcxproj                           |   52 +-
- 24 files changed, 3147 insertions(+), 871 deletions(-)
+ 24 files changed, 3163 insertions(+), 871 deletions(-)
  create mode 100644 pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
@@ -3507,7 +3507,7 @@ index 616e9efa9..4fe7cfc8f 100644
  		GSRendererType::DX11,
  		GSRendererType::DX12,
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
-index 311143fd4..d5e6460cd 100644
+index 311143fd4..0a3042ff9 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 @@ -20,6 +20,9 @@ struct RendererInfo
@@ -3520,7 +3520,7 @@ index 311143fd4..d5e6460cd 100644
  #ifdef _WIN32
  	//: Graphics backend/engine type. Leave as-is.
  	{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "Direct3D 11"), GSRendererType::DX11},
-@@ -264,6 +267,13 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
+@@ -264,6 +267,14 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
  	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.swAutoFlush, "EmuCore/GS", "autoflush_sw", true);
  	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.swMipmap, "EmuCore/GS", "mipmap", true);
  
@@ -3530,11 +3530,12 @@ index 311143fd4..d5e6460cd 100644
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsSuperSampling, "EmuCore/GS", "pgsSuperSampling", 0);
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsHighResScanout, "EmuCore/GS", "pgsHighResScanout", 0);
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsDisableMipmaps, "EmuCore/GS", "pgsDisableMipmaps", 0);
++	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsDisableReadbackSync, "EmuCore/GS", "pgsDisableReadbackSync", 0);
 +
  	//////////////////////////////////////////////////////////////////////////
  	// Non-trivial settings
  	//////////////////////////////////////////////////////////////////////////
-@@ -298,6 +308,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
+@@ -298,6 +309,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
  	connect(m_ui.extendedUpscales, &QCheckBox::checkStateChanged, this, &GraphicsSettingsWidget::updateRendererDependentOptions);
  	connect(m_ui.textureFiltering, &QComboBox::currentIndexChanged, this, &GraphicsSettingsWidget::onTextureFilteringChange);
  	connect(m_ui.swTextureFiltering, &QComboBox::currentIndexChanged, this, &GraphicsSettingsWidget::onSWTextureFilteringChange);
@@ -3542,7 +3543,7 @@ index 311143fd4..d5e6460cd 100644
  	updateRendererDependentOptions();
  
  #ifndef _WIN32
-@@ -571,6 +582,20 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
+@@ -571,6 +583,23 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
  
  		dialog->registerWidgetHelp(
  			m_ui.swMipmap, tr("Mipmapping"), tr("Checked"), tr("Enables mipmapping, which some games require to render correctly."));
@@ -3560,10 +3561,13 @@ index 311143fd4..d5e6460cd 100644
 +		dialog->registerWidgetHelp(m_ui.pgsDisableMipmaps, tr("Disable mip-mapping"), tr("Unchecked"),
 +		                           tr("Disables mip-mapping. May give a sharper image in games using mip-mapping intended for native resolution. "
 +		                              "May also break games which rely on mipmaps being used in esoteric ways."));
++
++		dialog->registerWidgetHelp(m_ui.pgsDisableReadbackSync, tr("Disable readback sync"), tr("Unchecked"),
++		                           tr("Disables sync for readbacks. Eliminates stalls, but will probably break things. Used for perf debug."));
  	}
  
  	// Hardware Fixes tab
-@@ -1084,6 +1109,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+@@ -1084,6 +1113,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
  	const bool is_hardware = (type == GSRendererType::DX11 || type == GSRendererType::DX12 || type == GSRendererType::OGL ||
  							  type == GSRendererType::VK || type == GSRendererType::Metal);
  	const bool is_software = (type == GSRendererType::SW);
@@ -3571,7 +3575,7 @@ index 311143fd4..d5e6460cd 100644
  	const bool is_auto = (type == GSRendererType::Auto);
  	const bool is_vk = (type == GSRendererType::VK);
  	const bool is_disable_barriers = (type == GSRendererType::DX11 || type == GSRendererType::DX12 || type == GSRendererType::Metal || type == GSRendererType::SW);
-@@ -1098,22 +1124,32 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+@@ -1098,22 +1128,32 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
  	m_ui.tabs->setTabEnabled(2, is_software);
  	m_ui.tabs->setTabVisible(2, is_software);
  
@@ -3613,10 +3617,10 @@ index 311143fd4..d5e6460cd 100644
  
  	if (m_ui.useBlitSwapChain)
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.ui b/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
-index d1b6a9031..f261ac0d6 100644
+index d1b6a9031..c806cdf6e 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
-@@ -721,6 +721,78 @@
+@@ -721,6 +721,85 @@
         </item>
        </layout>
       </widget>
@@ -3690,6 +3694,13 @@ index d1b6a9031..f261ac0d6 100644
 +           </property>
 +          </widget>
 +       </item>
++       <item row="2" column="0">
++          <widget class="QCheckBox" name="pgsDisableReadbackSync">
++           <property name="text">
++            <string>Disable readback sync</string>
++           </property>
++          </widget>
++       </item>
 +      </layout>
 +     </widget>
       <widget class="QGroupBox" name="hardwareFixesTab">
@@ -3745,7 +3756,7 @@ index 804ab2e40..9bb3b0af3 100644
  	GS/Renderers/Metal/cas.metal
  	GS/Renderers/Metal/convert.metal
 diff --git a/pcsx2/Config.h b/pcsx2/Config.h
-index 88f4da719..b41bfca20 100644
+index 88f4da719..3c858f8c5 100644
 --- a/pcsx2/Config.h
 +++ b/pcsx2/Config.h
 @@ -276,6 +276,7 @@ enum class GSRendererType : s8
@@ -3756,13 +3767,14 @@ index 88f4da719..b41bfca20 100644
  };
  
  enum class GSVSyncMode : u8
-@@ -814,6 +815,9 @@ struct Pcsx2Config
+@@ -814,6 +815,10 @@ struct Pcsx2Config
  		u8 ShadeBoost_Contrast = 50;
  		u8 ShadeBoost_Saturation = 50;
  		u8 PNGCompressionLevel = 1;
 +		u8 PGSSuperSampling = 0;
 +		u8 PGSHighResScanout = 0;
 +		u8 PGSDisableMipmaps = 0;
++		u8 PGSDisableReadbackSync = 0;
  
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
@@ -4597,10 +4609,10 @@ index 000000000..d3447f6f7
 +
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 new file mode 100644
-index 000000000..dbfba191e
+index 000000000..33f291f5e
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
-@@ -0,0 +1,835 @@
+@@ -0,0 +1,837 @@
 +// SPDX-FileCopyrightText: 2024 Hans-Kristian Arntzen
 +// SPDX-License-Identifier: LGPL-3.0+
 +
@@ -4845,6 +4857,7 @@ index 000000000..dbfba191e
 +
 +	Hacks hacks;
 +	hacks.disable_mipmaps = GSConfig.PGSDisableMipmaps != 0;
++	hacks.unsynced_readbacks = GSConfig.PGSDisableReadbackSync != 0;
 +	iface.set_hacks(hacks);
 +
 +	return true;
@@ -4868,6 +4881,7 @@ index 000000000..dbfba191e
 +
 +	Hacks hacks;
 +	hacks.disable_mipmaps = GSConfig.PGSDisableMipmaps != 0;
++	hacks.unsynced_readbacks = GSConfig.PGSDisableReadbackSync != 0;
 +	iface.set_hacks(hacks);
 +}
 +
@@ -5543,7 +5557,7 @@ index 8d9a8a07e..d20b14963 100644
  	g.ActiveIdSource = (g.ActiveIdSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
  	g.NavInputSource = (g.NavInputSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
 diff --git a/pcsx2/Pcsx2Config.cpp b/pcsx2/Pcsx2Config.cpp
-index be60b540f..e3f5d2e95 100644
+index be60b540f..b9c35f7d3 100644
 --- a/pcsx2/Pcsx2Config.cpp
 +++ b/pcsx2/Pcsx2Config.cpp
 @@ -683,6 +683,7 @@ const char* Pcsx2Config::GSOptions::GetRendererName(GSRendererType type)
@@ -5554,7 +5568,7 @@ index be60b540f..e3f5d2e95 100644
  		default:                    return "";
  			// clang-format on
  	}
-@@ -860,7 +861,10 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
+@@ -860,7 +861,11 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
  		OpEqu(Adapter) &&
  
  		OpEqu(HWDumpDirectory) &&
@@ -5562,17 +5576,19 @@ index be60b540f..e3f5d2e95 100644
 +		OpEqu(SWDumpDirectory)) &&
 +		OpEqu(PGSSuperSampling) &&
 +		OpEqu(PGSHighResScanout) &&
-+		OpEqu(PGSDisableMipmaps);
++		OpEqu(PGSDisableMipmaps) &&
++		OpEqu(PGSDisableReadbackSync);
  }
  
  bool Pcsx2Config::GSOptions::operator!=(const GSOptions& right) const
-@@ -942,6 +946,9 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
+@@ -942,6 +947,10 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
  	SettingsWrapBitBool(HWSpinCPUForReadbacks);
  	SettingsWrapBitBoolEx(GPUPaletteConversion, "paltex");
  	SettingsWrapBitBoolEx(AutoFlushSW, "autoflush_sw");
 +	SettingsWrapIntEnumEx(PGSSuperSampling, "pgsSuperSampling");
 +	SettingsWrapBitBoolEx(PGSHighResScanout, "pgsHighResScanout");
 +	SettingsWrapBitBoolEx(PGSDisableMipmaps, "pgsDisableMipmaps");
++	SettingsWrapBitBoolEx(PGSDisableReadbackSync, "pgsDisableReadbackSync");
  	SettingsWrapBitBoolEx(PreloadFrameWithGSData, "preload_frame_with_gs_data");
  	SettingsWrapBitBoolEx(Mipmap, "mipmap");
  	SettingsWrapBitBoolEx(ManualUserHacks, "UserHacks");

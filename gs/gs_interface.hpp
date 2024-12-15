@@ -201,6 +201,12 @@ struct Hacks
 	// Forces LOD0 to be read. Can break games which don't populate LOD0 with meaningful data.
 	// Can be useful when up-scaling to retain more texture detail.
 	bool disable_mipmaps = false;
+
+	// Disables FIFO readbacks if sync is required and replace them with all zero bytes.
+	// Will mostly likely cause wrong/glitched results,
+	// but may work around otherwise unusable performance on low-power devices or
+	// be useful to triage bad performance behavior.
+	bool unsynced_readbacks = false;
 };
 
 class GSInterface final

@@ -2914,15 +2914,30 @@ void GSInterface::init_transfer()
 	}
 	else if (XDIR == LOCAL_TO_HOST)
 	{
+		uint32_t required_bytes = (transfer_state.copy.trxreg.desc.RRW *
+		                           transfer_state.copy.trxreg.desc.RRH *
+		                           get_bits_per_pixel(transfer_state.copy.bitbltbuf.desc.SPSM)) / 8;
+
+		transfer_state.fifo_readback.reserve(required_bytes);
+		transfer_state.fifo_readback_128b_offset = 0;
+		transfer_state.fifo_readback_128b_size = required_bytes / 16;
+
 		auto src_rect = compute_page_rect(transfer_state.copy.bitbltbuf.desc.SBP,
-		                                  transfer_state.copy.trxpos.desc.SSAX,
-		                                  transfer_state.copy.trxpos.desc.SSAY,
-		                                  transfer_state.copy.trxreg.desc.RRW,
-		                                  transfer_state.copy.trxreg.desc.RRH,
-		                                  transfer_state.copy.bitbltbuf.desc.SBW,
-		                                  transfer_state.copy.bitbltbuf.desc.SPSM);
+										  transfer_state.copy.trxpos.desc.SSAX,
+										  transfer_state.copy.trxpos.desc.SSAY,
+										  transfer_state.copy.trxreg.desc.RRW,
+										  transfer_state.copy.trxreg.desc.RRH,
+										  transfer_state.copy.bitbltbuf.desc.SBW,
+										  transfer_state.copy.bitbltbuf.desc.SPSM);
 
 		uint64_t host_timeline = tracker.get_host_read_timeline(src_rect);
+
+		if (hacks.unsynced_readbacks && renderer.query_timeline() < host_timeline)
+		{
+			memset(transfer_state.fifo_readback.data(), 0, required_bytes);
+			return;
+		}
+
 		if (host_timeline == UINT64_MAX)
 		{
 			host_timeline = tracker.mark_submission_timeline();
@@ -2933,14 +2948,6 @@ void GSInterface::init_transfer()
 		renderer.wait_timeline(host_timeline);
 
 		void *mapped = renderer.begin_host_vram_access();
-
-		uint32_t required_bytes = (transfer_state.copy.trxreg.desc.RRW *
-		                           transfer_state.copy.trxreg.desc.RRH *
-		                           get_bits_per_pixel(transfer_state.copy.bitbltbuf.desc.SPSM)) / 8;
-
-		transfer_state.fifo_readback.reserve(required_bytes);
-		transfer_state.fifo_readback_128b_offset = 0;
-		transfer_state.fifo_readback_128b_size = required_bytes / 16;
 
 		switch (transfer_state.copy.bitbltbuf.desc.SPSM)
 		{
