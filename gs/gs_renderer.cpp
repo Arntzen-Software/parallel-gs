@@ -1602,32 +1602,23 @@ void GSRenderer::dispatch_single_sample_heuristic(Vulkan::CommandBuffer &cmd, co
 
 void GSRenderer::set_hierarchical_binning_subgroup_config(Vulkan::CommandBuffer &cmd, uint32_t hier_factor) const
 {
-	// For non-hierarchical binning, prefer large waves if possible. Also, prefer to have just one subgroup per workgroup,
-	// since the algorithms kind of rely on that.
-	// Using larger workgroups it's feasible to do two-phase binning, but given the content and current perf-metrics,
-	// it doesn't seem meaningful perf-wise.
+	const bool is_hierarchical = hier_factor != 1;
+	const uint32_t subgroup_size = cmd.get_device().get_device_features().vk11_props.subgroupSize;
 
-	// For hierarchical binning, prefer smaller wave sizes since going too wide may impact occupancy.
-	// Do not prefer wave64 here, since the shader is tuned for a maximum of wave32.
+	// We cannot take good advantage of wave64 in the hierarchical binner, otherwise, we prefer large waves.
+	uint32_t size_log2 = is_hierarchical ? 5 : 6;
 
-	bool is_hierarchical = hier_factor != 1;
-	int start_log2 = is_hierarchical ? 2 : 6;
-	int end_log2 = is_hierarchical ? 6 : 1;
-	int step = is_hierarchical ? 1 : -1;
-
-	uint32_t subgroup_size = cmd.get_device().get_device_features().vk11_props.subgroupSize;
-
-	while (start_log2 != end_log2)
+	while (size_log2 >= 2)
 	{
-		if (device->supports_subgroup_size_log2(true, start_log2, start_log2))
+		if (device->supports_subgroup_size_log2(true, size_log2, size_log2))
 		{
-			cmd.set_subgroup_size_log2(true, start_log2, start_log2);
-			uint32_t wg_size = std::min<uint32_t>(subgroup_size, 1u << start_log2);
+			cmd.set_subgroup_size_log2(true, size_log2, size_log2);
+			uint32_t wg_size = std::min<uint32_t>(subgroup_size, 1u << size_log2);
 			cmd.set_specialization_constant(0, wg_size * hier_factor * hier_factor);
 			return;
 		}
 
-		start_log2 += step;
+		size_log2--;
 	}
 
 	// Fallback case, allow whatever.
