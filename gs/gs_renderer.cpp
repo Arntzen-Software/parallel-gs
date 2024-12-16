@@ -3928,6 +3928,8 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		}
 	}
 
+	uint32_t real_mode_width = mode_width;
+
 	if (info.adapt_to_internal_horizontal_resolution)
 	{
 		uint32_t horiz_resolution0 = circuit1 ? circuit1->get_width() : 0;
@@ -4188,7 +4190,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		cmd.set_storage_buffer(0, 0, *buffers.gpu);
 		const Vulkan::ImageView *view = nullptr;
 
-		uint32_t scanout_width = merged->get_width();
+		uint32_t scanout_width = real_mode_width;
 		uint32_t scanout_height = merged->get_height();
 
 		if (priv.extbuf.FBIN == 0)
