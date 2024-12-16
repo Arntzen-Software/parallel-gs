@@ -3964,7 +3964,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	if (info.raw_circuit_scanout &&
 	    !info.crtc_offsets && !info.overscan &&
 	    info.adapt_to_internal_horizontal_resolution &&
-	    !force_deinterlace && !is_interlaced)
+	    !force_deinterlace && !is_interlaced && !priv.extwrite.WRITE)
 	{
 		auto effective_mode_width = mode_width;
 		auto effective_mode_height = mode_height;
@@ -4169,7 +4169,8 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			uint emodc;
 		} push = {};
 
-		push.resolution.x = (priv.extdata.WW + 1) / clock_divider;
+		// It seems like we should not use clock divider here ... ?
+		push.resolution.x = priv.extdata.WW + 1;
 		push.resolution.y = priv.extdata.WH + 1;
 		push.wdx = priv.extbuf.WDX;
 		push.wdy = priv.extbuf.WDY;
@@ -4179,12 +4180,16 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		push.emoda = priv.extbuf.EMODA;
 		push.emodc = priv.extbuf.EMODC;
 
-		// TODO: Handle WFFMD == 0 somehow?
-		if (priv.extbuf.WFFMD)
-			push.resolution.y = (push.resolution.y + 1) / 2;
+		// When WFFMD is 0, it seems like we should treat it as number of lines to write
+		// in an interlaced fashion. Just doubling the output resolution to fill in the blanks should work?
+		if (!priv.extbuf.WFFMD)
+			push.resolution.y *= 2;
 
 		cmd.set_storage_buffer(0, 0, *buffers.gpu);
 		const Vulkan::ImageView *view = nullptr;
+
+		uint32_t scanout_width = merged->get_width();
+		uint32_t scanout_height = merged->get_height();
 
 		if (priv.extbuf.FBIN == 0)
 			view = &merged->get_view();
@@ -4196,6 +4201,17 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		// Not sure what should happen if we haven't enabled the output circuit.
 		if (view)
 		{
+			// I've seen cases of WW/WH assuming that we need a clock divider, and other cases where games don't ...
+			// Most likely the missing clock-divider is just a game bug and the hardware stops doing feedback writes
+			// when the scanout is done. So the correct solution, might simply be to clamp the resolution.
+			uint32_t max_feedback_width =
+					(scanout_width * clock_divider + priv.extdata.SMPH) / (priv.extdata.SMPH + 1);
+			uint32_t max_feedback_height =
+					(scanout_height + priv.extdata.SMPV) / (priv.extdata.SMPV + 1);
+
+			push.resolution.x = std::min<uint32_t>(push.resolution.x, max_feedback_width);
+			push.resolution.y = std::min<uint32_t>(push.resolution.y, max_feedback_height);
+
 			auto write_rect = compute_page_rect(priv.extbuf.EXBP, priv.extbuf.WDX, priv.extbuf.WDY,
 			                                    push.resolution.x, push.resolution.y,
 			                                    priv.extbuf.EXBW, PSMCT32);
@@ -4203,8 +4219,8 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 			// TODO: Consider SX, SY.
 			push.uv_base = vec2(0.5f) / vec2(push.resolution);
-			push.uv_scale.x = float(priv.extdata.SMPH + 1) / float(view->get_view_width() * clock_divider);
-			push.uv_scale.y = float(priv.extdata.SMPV + 1) / float(view->get_view_height());
+			push.uv_scale.x = float(priv.extdata.SMPH + 1) / float(scanout_width * clock_divider);
+			push.uv_scale.y = float(priv.extdata.SMPV + 1) / float(scanout_height);
 			cmd.push_constants(&push, 0, sizeof(push));
 
 			// Is the write-back filtered at all? Probably not, but whatever.
