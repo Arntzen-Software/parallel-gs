@@ -2365,7 +2365,7 @@ void GSInterface::drawing_kick_append()
 		render_pass.scissor_lo = sci_lo;
 		render_pass.scissor_hi = sci_hi;
 		int fbw_deduced_width = std::max<int>(1, int(ctx.frame.desc.FBW)) * PGS_BUFFER_WIDTH_SCALE;
-		render_pass.scissor_hi_x_fb = std::min<int>(sci_hi.x, fbw_deduced_width);
+		render_pass.scissor_hi_x_fb = std::min<int>(sci_hi.x, fbw_deduced_width - 1);
 		render_pass.can_fb_wraparound = ctx.frame.desc.FBW != 0 && render_pass.scissor_hi_x_fb < render_pass.scissor_hi.x;
 	}
 
