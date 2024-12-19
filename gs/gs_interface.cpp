@@ -2539,7 +2539,7 @@ void GSInterface::drawing_kick_append()
 
 	auto &current_bb = fb_instance.bb;
 
-	if (render_pass.can_fb_wraparound && bb.x > render_pass.scissor_hi_x_fb && bb.y >= 0)
+	if (render_pass.can_fb_wraparound && bb.x > render_pass.scissor_hi_x_fb)
 	{
 		// Esoteric edge case where a game is attempting to render beyond the width of the frame buffer.
 		// What would happen in this case is a wraparound effect where it appears
