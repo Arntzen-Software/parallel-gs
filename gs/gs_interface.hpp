@@ -192,6 +192,7 @@ struct GSOptions
 	uint32_t vram_size = 4 * 1024 * 1024; // This should generally not be touched.
 	bool dynamic_super_sampling = false; // If super sampling rate can be toggled in-flight.
 	bool ordered_super_sampling = true; // Prefers ordered grid. Aids debugging.
+	bool super_sampled_textures = false;
 };
 
 // Pragmatic hacks which may or may not be useful.
@@ -216,7 +217,7 @@ public:
 	bool init(Vulkan::Device *device, const GSOptions &options);
 	void reset_context_state();
 
-	void set_super_sampling_rate(SuperSampling super_sampling, bool ordered_grid);
+	void set_super_sampling_rate(SuperSampling super_sampling, bool ordered_grid, bool super_sampled_textures);
 	void set_debug_mode(const DebugMode &mode);
 	void set_hacks(const Hacks &hacks);
 
@@ -318,6 +319,8 @@ private:
 		std::vector<TextureInfo> tex_infos;
 		std::vector<TEX0Bits> tex0_infos;
 
+		bool tex_infos_has_super_samples = false;
+
 		uint32_t clut_instance = 0;
 		uint32_t latest_clut_instance = 0;
 
@@ -388,6 +391,7 @@ private:
 		bool has_aa1 = false;
 		bool has_scanmsk = false;
 		bool has_short_term_texture_caching = false;
+		bool field_aware_rendering = false;
 
 		ivec3 last_triangle_parallelogram_order;
 
@@ -564,6 +568,7 @@ private:
 
 	uint32_t sampling_rate_x_log2 = 0;
 	uint32_t sampling_rate_y_log2 = 0;
+	bool super_sampled_textures = false;
 
 	void reset_context_state_registers();
 };

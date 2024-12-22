@@ -78,6 +78,7 @@ struct TextureDescriptor
 	Reg64<TEXABits> texa;
 	Reg64<CLAMPBits> clamp;
 	uint32_t palette_bank;
+	uint32_t samples;
 	uint32_t latest_palette_bank; // Purely for debug, so we can observe CLUT memoization.
 	Util::Hash hash; // Purely for debug.
 
@@ -92,7 +93,8 @@ struct TextureDescriptor
 		       miptbp4_6.bits == other.miptbp4_6.bits &&
 		       texa.bits == other.texa.bits &&
 		       clamp.bits == other.clamp.bits &&
-		       palette_bank == other.palette_bank;
+		       palette_bank == other.palette_bank &&
+		       samples == other.samples;
 	}
 
 	inline bool operator!=(const TextureDescriptor &other) const
@@ -168,6 +170,7 @@ struct RenderPass
 		uint32_t sampling_rate_y_log2;
 		bool z_sensitive;
 		bool z_write;
+		bool channel_shuffle;
 	};
 	Instance instances[MaxRenderPassInstances];
 	uint32_t num_instances;
@@ -292,9 +295,11 @@ public:
 	double get_accumulated_timestamps(TimestampType type) const;
 	void set_enable_timestamps(bool enable);
 
-	void invalidate_super_sampling_state();
+	void invalidate_super_sampling_state(uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2);
 
 	SuperSampling get_max_supported_super_sampling() const;
+
+	void set_field_aware_super_sampling(bool enable);
 
 private:
 	PageTracker &tracker;
@@ -317,6 +322,7 @@ private:
 	std::mutex timeline_lock;
 
 	bool last_clut_update_is_read = false;
+	bool field_aware_super_sampling = false;
 
 	std::vector<VkImageMemoryBarrier2> pre_image_barriers;
 	std::vector<VkImageMemoryBarrier2> post_image_barriers;
@@ -360,6 +366,7 @@ private:
 		Vulkan::BufferViewHandle fixed_rcp_lut_view;
 		Vulkan::BufferHandle float_rcp_lut;
 		Vulkan::BufferViewHandle float_rcp_lut_view;
+		Vulkan::ImageHandle phase_lut;
 
 		Vulkan::BufferHandle bug_feedback;
 
@@ -392,10 +399,14 @@ private:
 
 	void ensure_command_buffer(Vulkan::CommandBufferHandle &cmd, Vulkan::CommandBuffer::Type type);
 	void init_luts();
+	void init_phase_lut(uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2);
 	void init_vram(const GSOptions &options);
 
 	void upload_texture(const TextureUpload &upload);
 	void bind_textures(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
+
+	bool bound_texture_has_array = false;
+
 	void bind_frame_resources(const RenderPass &rp);
 	void bind_frame_resources_instanced(const RenderPass &rp, uint32_t instance, uint32_t num_primitives);
 	void allocate_scratch_buffers(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
@@ -412,6 +423,8 @@ private:
 	                            uint32_t base_primitive, uint32_t num_primitives,
 	                            bool single_primitive_step);
 	void flush_palette_upload();
+
+	bool render_pass_instance_is_deduced_blur(const RenderPass &rp, uint32_t instance) const;
 
 	void bind_debug_resources(Vulkan::CommandBuffer &cmd, const RenderPass &rp, const RenderPass::Instance &instance);
 	Vulkan::ImageHandle feedback_color, feedback_depth, feedback_prim, feedback_vary;
@@ -482,11 +495,13 @@ private:
 	// Only cache textures with reasonable POT size.
 	// Small slab allocator basically.
 	std::vector<Vulkan::ImageHandle> recycled_image_pool[7][11][11];
+	std::vector<Vulkan::ImageHandle> super_sampled_recycled_image_pool[11][11];
 	void move_image_handles_to_slab();
-	Vulkan::ImageHandle pull_image_handle_from_slab(uint32_t width, uint32_t height, uint32_t levels);
+	Vulkan::ImageHandle pull_image_handle_from_slab(uint32_t width, uint32_t height, uint32_t levels, uint32_t samples);
 	VkDeviceSize total_image_slab_size = 0;
 	VkDeviceSize max_image_slab_size = 0;
 	VkDeviceSize image_slab_high_water_mark = 0;
+	void flush_slab_cache();
 
 	std::vector<uint32_t> vram_copy_write_pages;
 	std::vector<uint32_t> sync_vram_shadow_pages;

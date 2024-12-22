@@ -35,7 +35,7 @@ struct PrimitiveSetup
 	uvec4 z; // Pack it here since we need to read it in early-Z. Better for cache.
 };
 
-// Each primitive's attribute setup consumes 80 bytes.
+// Each primitive's attribute setup consumes 64 bytes.
 // Quite compact and nice cache line alignment.
 struct TransformedAttributes
 {
@@ -46,7 +46,6 @@ struct TransformedAttributes
 	uint rgba1;
 	uint rgba2;
 	uint padding;
-	vec4 st_bb;
 };
 
 // Affects rasterization.
@@ -98,7 +97,8 @@ struct TexInfo
 	vec4 sizes;
 	vec4 region;
 	vec2 bias;
-	vec2 padding;
+	int arrayed;
+	int padding;
 };
 
 CONSTEXPR int PGS_FB_SWIZZLE_WIDTH_LOG2 = 3;
@@ -190,6 +190,8 @@ struct SingleSampleHeuristic
 
 struct ShadingDescriptor
 {
+	ivec2 snap_raster_mask;
+	uint color_preserve_samples;
 	uint lo_primitive_index;
 	uint hi_primitive_index;
 	uint fb_index_depth_offset;
@@ -240,6 +242,9 @@ CONSTEXPR int TEX_SAMPLER_CLAMP_S_BIT = 1 << 19;
 CONSTEXPR int TEX_SAMPLER_CLAMP_T_BIT = 1 << 20;
 CONSTEXPR int TEX_MAX_MIP_LEVEL_OFFSET = 21;
 CONSTEXPR int TEX_MAX_MIP_LEVEL_BITS = 3;
+CONSTEXPR int TEX_PER_SAMPLE_BIT = 1 << 24;
+CONSTEXPR int TEX_SAMPLE_MAPPING_BIT = 1 << 25;
+CONSTEXPR int TEX_SAMPLE_RESOLVED_BIT = 1 << 26;
 /////
 
 // PrimitiveAttribute::tex2
@@ -378,6 +383,7 @@ CONSTEXPR int AFAIL_RGB_ONLY = 3;
 
 #define BINDING_SINGLE_SAMPLE_HEURISTIC 20
 #define BINDING_OPAQUE_FBMASKS 21
+#define BINDING_PHASE_LUT 22
 
 #define DESCRIPTOR_SET_IMAGES 1
 #define DESCRIPTOR_SET_WORKGROUP_LIST 2
@@ -388,6 +394,7 @@ CONSTEXPR int VARIANT_FLAG_HAS_SCANMSK_BIT = 1 << 2;
 CONSTEXPR int VARIANT_FLAG_HAS_PRIMITIVE_RANGE_BIT = 1 << 3;
 CONSTEXPR int VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT = 1 << 4;
 CONSTEXPR int VARIANT_FLAG_FEEDBACK_DEPTH_BIT = 1 << 5;
+CONSTEXPR int VARIANT_FLAG_HAS_TEXTURE_ARRAY_BIT = 1 << 6;
 
 #ifdef __cplusplus
 }

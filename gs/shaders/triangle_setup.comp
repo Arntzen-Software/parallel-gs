@@ -21,6 +21,7 @@
 #define NEED_PRIMITIVE_SETUP
 #define NEED_PRIMITIVE_ATTRIBUTE
 #define NEED_TRANSFORMED_ATTRIBUTE
+#define NEED_STATE_VECTORS
 
 #include "data_buffers.h"
 #include "data_structures.h"
@@ -31,11 +32,14 @@
 layout(local_size_x = 64) in;
 
 layout(constant_id = 0) const int SAMPLING_RATE_LOG2 = 0;
+layout(constant_id = 1) const bool SUPER_SAMPLED_TEXTURES = false;
+layout(constant_id = 2) const bool FORCE_LINEAR_SUPER_SAMPLE = false;
 
 layout(push_constant) uniform Registers
 {
     uint num_primitives;
     uint packed_z_shift; // Shifts depth into 32-bit buckets.
+    uint rp_is_blur_mask;
 } registers;
 
 layout(set = 0, binding = BINDING_SINGLE_SAMPLE_HEURISTIC, std430) buffer SingleSampleHeuristicSSBO
@@ -106,7 +110,7 @@ ivec2 sub64(ivec2 a, ivec2 b)
 
 vec2 unpack_uv(u16vec2 uv)
 {
-    return ldexp(vec2(uv), ivec2(-4));
+    return vec2(uv) / float(PGS_SUBPIXELS);
 }
 
 bvec2 logicalOr(bvec2 a, bvec2 b)
@@ -511,7 +515,7 @@ void main_inner(uint index)
 
         // Only consider this case if the scaling is NPOT. Otherwise, we can expect perfect scaling.
         bvec2 next_snapped = equal(max_delta & (PGS_SUBPIXELS - 1), ivec2(PGS_SUBPIXELS >> 1) + 1);
-        ivec2 dist = d - a;
+        ivec2 dist = abs(d - a);
         bvec2 scaling_is_npot = notEqual(dist & (dist - 1), ivec2(0));
         next_snapped = logicalAnd(next_snapped, scaling_is_npot);
 
@@ -547,6 +551,167 @@ void main_inner(uint index)
     if (primitive_attr.data[index].fbmsk != opaque_fbmask && (state & (1u << STATE_BIT_OPAQUE)) != 0)
         primitive_attr.data[index].state = state & ~(1u << STATE_BIT_OPAQUE);
 
+    // Only allow per-sample texturing for cases where filtering will not cause issues.
+    if (SAMPLING_RATE_LOG2 != 0 && SUPER_SAMPLED_TEXTURES)
+    {
+        uint tex = primitive_attr.data[index].tex;
+
+        if ((tex & TEX_PER_SAMPLE_BIT) != 0)
+        {
+            ivec2 uv_delta = abs(ivec2(attr1.uv) - ivec2(attr0.uv));
+            ivec2 dist = abs(d - a);
+            bool adjust_linear_kernel = false;
+            bool is_perspective = (state & (1u << STATE_BIT_PERSPECTIVE)) != 0;
+
+            if ((tex & TEX_SAMPLER_MAG_LINEAR_BIT) == 0)
+            {
+                if (is_perspective)
+                {
+                    // If we promoted a super-sampled perspective quad, always assume sample mapping,
+                    // since we won't do any analysis on the UVs.
+                    tex |= TEX_SAMPLE_MAPPING_BIT;
+                }
+                else if (any(greaterThan(uv_delta, dist + 1)))
+                {
+                    // For nearest scaling, avoid broken filter kernels on downsampling.
+                    // For direct blits, force per-sample mapping, irregardless of the sampling phase.
+                    // Just use the normal super-sampled texture. It's already anti-aliased.
+                    tex &= ~TEX_PER_SAMPLE_BIT;
+                }
+                else if (any(greaterThanEqual(uv_delta, dist - PGS_SUBPIXELS)))
+                {
+                    // Be quite conservative with the allowed range since some games require this.
+                    uint state_index = state_get_index(state);
+                    uint blend = state_vectors.data[state_index].blend_mode;
+
+                    uint rp_instance = bitfieldExtract(state,
+                        STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET,
+                        STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT);
+                    bool rp_is_blur = bitfieldExtract(
+                        registers.rp_is_blur_mask, int(rp_instance), 1) != 0;
+
+                    // Heuristic if we're doing additive blending of some kind.
+                    // A more clever heuristic would be to detect if there are
+                    // multiple blends from the same texture at different phases.
+                    // We want to avoid the heuristic if we're only blending 1:1 on top.
+                    bool blur_kernel =
+                        rp_is_blur &&
+                        (blend & BLEND_MODE_ABE_BIT) != 0 && (state & (1 << STATE_BIT_Z_TEST)) == 0 &&
+                        bitfieldExtract(blend, BLEND_MODE_A_MODE_OFFSET, BLEND_MODE_A_MODE_BITS) == BLEND_RGB_SOURCE &&
+                        bitfieldExtract(blend, BLEND_MODE_B_MODE_OFFSET, BLEND_MODE_B_MODE_BITS) == BLEND_RGB_ZERO &&
+                        bitfieldExtract(blend, BLEND_MODE_D_MODE_OFFSET, BLEND_MODE_D_MODE_BITS) == BLEND_RGB_DEST;
+
+                    if (blur_kernel)
+                    {
+                        if (FORCE_LINEAR_SUPER_SAMPLE)
+                        {
+                            // Deduce the game is trying to do a blur kernel. Promote this to super-sampled against LOD 0.
+                            // Instead of all samples sampling at a specific coordinate, all samples will now sample different
+                            // coordinates. We want the average coordinate for those samples to be equal to the original,
+                            // to avoid unexpected image "shifts".
+                            tex |= TEX_SAMPLE_RESOLVED_BIT | TEX_SAMPLER_MAG_LINEAR_BIT;
+
+                            adjust_linear_kernel = true;
+
+                            // Adjust the phase so that the average sampling coordinate maps to the center of the texel.
+                            // With nearest sampling, a game can use any phase within the texels and still expect
+                            // the same result. Since we're promoting back to LINEAR we need to make
+                            // sure we sample at texel centers on average to avoid phase shifts.
+                            ivec2 average_uv = (ivec2(attr0.uv) + ivec2(attr1.uv)) >> 1;
+                            ivec2 average_pos = (d + a) >> 1;
+
+                            ivec2 phase = (average_uv - average_pos) & (PGS_SUBPIXELS - 1);
+                            stqf0.xy += 0.5 - vec2(phase) / PGS_SUBPIXELS;
+                            transformed_attr.data[index].stqf0.xy = stqf0.xy;
+                        }
+                        else
+                        {
+                            // Demote to single-sampled.
+                            // Blur kernels are extremely tricky to get right.
+                            tex &= ~TEX_PER_SAMPLE_BIT;
+                        }
+                    }
+                    else
+                    {
+                        // Most likely it's a feedback that requires 1:1 sample mapping to work.
+                        tex |= TEX_SAMPLE_MAPPING_BIT;
+                    }
+                }
+            }
+            else if (is_perspective)
+            {
+                // Just assume it's safe when perspective ST is used.
+                // TODO: We might want to convert ST into effective UVs and analyze that instead.
+                adjust_linear_kernel = true;
+            }
+            else
+            {
+                // Detect common blur stages.
+                // By default, any filtering in the low-res domain should stay there.
+                // There are too many glitches involved.
+                bool is_downsample = all(greaterThan(uv_delta, dist + 1));
+                bool is_upsample = all(greaterThanEqual(dist, 2 * uv_delta));
+                if (is_downsample)
+                {
+                    if (!FORCE_LINEAR_SUPER_SAMPLE)
+                    {
+                        // Demote LINEAR filtering to base layer.
+                        tex &= ~TEX_PER_SAMPLE_BIT;
+                    }
+                }
+                else if (is_upsample)
+                {
+                    // When upscaling, we should sample the resolved layer,
+                    // since we expect there has been a previous downsampling,
+                    // and downsampling forces single-sampled render.
+                    // We can use super-sampled UV here since upscaling tends to
+                    // sample at 0.25 and 0.75 phase. This blends against the next pixel
+                    // and adding super sampling will not cause additional bleed,
+                    // so this should be safe in any reasonable situation.
+                    if (!FORCE_LINEAR_SUPER_SAMPLE)
+                    {
+                        adjust_linear_kernel = true;
+                        tex |= TEX_SAMPLE_RESOLVED_BIT;
+                    }
+                }
+                else
+                {
+                    // In the in-between zone that isn't obviously downsample or upsample,
+                    // we deduce that the game is trying to either do "blit-to-FB" passes,
+                    // or non-blur related filtering.
+                    // This is most likely going to be safe it seems.
+                    adjust_linear_kernel = true;
+                }
+            }
+
+            if (adjust_linear_kernel)
+            {
+                // Adjust i/j interpolation such that we get an average sampling position
+                // equal to single sampled result. This combats any unexpected shifts.
+                const int SAMPLING_RATE_DIM = 1 << SAMPLING_RATE_LOG2;
+                const float bottom_right_sample =
+                    0.5 * float(1 << PGS_RASTER_SUBSAMPLE_BITS) *
+                    float(SAMPLING_RATE_DIM - 1) / float(SAMPLING_RATE_DIM);
+
+                ivec2 b = plane_b.xy;
+                ivec2 c = plane_c.xy;
+                float di_dcorner = float(b.x + b.y) * bottom_right_sample;
+                float dj_dcorner = float(c.x + c.y) * bottom_right_sample;
+                primitive_setup.data[index].error_i = error_i - di_dcorner * inv_area_scaled;
+                primitive_setup.data[index].error_j = error_j - dj_dcorner * inv_area_scaled;
+            }
+
+            primitive_attr.data[index].tex = tex;
+
+            if ((tex & (TEX_PER_SAMPLE_BIT | TEX_SAMPLE_MAPPING_BIT)) == TEX_PER_SAMPLE_BIT)
+            {
+                // We've opted for a straight forward super-sampled texture. Force per-sample interpolation.
+                const uint SNAP_ATTR_BIT = (1u << STATE_BIT_SNAP_ATTRIBUTE);
+                primitive_attr.data[index].state &= ~SNAP_ATTR_BIT;
+            }
+        }
+    }
+
     if (SAMPLING_RATE_LOG2 != 0 && !sprite)
     {
         // Try to detect common patterns of flat UI primitives.
@@ -572,32 +737,6 @@ void main_inner(uint index)
             // Don't demote lines unless we demote the entire render pass to single sampled.
             if (!line)
                 primitive_attr.data[index].state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
-
-            // Also need to compute the ST bounding box.
-            // This is important for UI elements to make sure we don't interpolate outside the expected region.
-            // Compute ST at the single-sample bounding box.
-            ivec4 packed_bb_single = pack_bounding_box(a, b, c, d, false, 0);
-
-            // Sample IJ at all BB points. This forms our barycentric bounds.
-            // For rotated primitives, this will lead to way-out-of-bounds IJ, but that's fine.
-            // Rotated primitives are rarely UI elements.
-            vec2 ij00 = evaluate_barycentric_ij(plane_b, plane_c, inv_area_scaled, error_i, error_j,
-                                                packed_bb_single.xy, 0);
-            vec2 ij10 = evaluate_barycentric_ij(plane_b, plane_c, inv_area_scaled, error_i, error_j,
-                                                packed_bb_single.zy, 0);
-            vec2 ij01 = evaluate_barycentric_ij(plane_b, plane_c, inv_area_scaled, error_i, error_j,
-                                                packed_bb_single.xw, 0);
-            vec2 ij11 = evaluate_barycentric_ij(plane_b, plane_c, inv_area_scaled, error_i, error_j,
-                                                packed_bb_single.zw, 0);
-
-            vec2 st00 = stqf0.xy + distqf.xy * ij00.x + djstqf.xy * ij00.y;
-            vec2 st10 = stqf0.xy + distqf.xy * ij10.x + djstqf.xy * ij10.y;
-            vec2 st01 = stqf0.xy + distqf.xy * ij01.x + djstqf.xy * ij01.y;
-            vec2 st11 = stqf0.xy + distqf.xy * ij11.x + djstqf.xy * ij11.y;
-
-            vec2 lo_st = min(min(st00, st10), min(st01, st11));
-            vec2 hi_st = max(max(st00, st10), max(st01, st11));
-            transformed_attr.data[index].st_bb = vec4(lo_st, hi_st);
 
             // Need to clamp in case primitive Z overflows. In that case, we get saturation.
             uint single_sampled_bucket_index = min(255u, za >> z_shift);

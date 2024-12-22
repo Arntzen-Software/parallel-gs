@@ -16,6 +16,7 @@
 #include <utility>
 #include <algorithm>
 #include <cmath>
+#include <climits>
 
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wformat-security"
@@ -90,7 +91,229 @@ struct RangeMerger
 	}
 };
 
-void GSRenderer::invalidate_super_sampling_state()
+static constexpr int MaxSamples = 16;
+static constexpr int PhaseLUTGridSize = 64;
+static constexpr int MaxPhaseLUTResults = MaxSamples * 3 * 3;
+
+struct PhaseLUTResult
+{
+	int sample_id;
+	ivec2 texel_offset;
+	ivec2 dist;
+	int max_dist;
+};
+
+static int compute_sample_points(
+	ivec2 *sample_points, uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2, bool nearest)
+{
+	int num_sample_points = 1 << (sampling_rate_x_log2 + sampling_rate_y_log2);
+
+	// Generate the same sampling patterns as ubershader.
+	// Sparse sampling grid.
+	if (sampling_rate_y_log2 - sampling_rate_x_log2 == 2)
+	{
+		for (int i = 0; i < num_sample_points; i++)
+		{
+			constexpr int sparse_offsets[4] = {0, 2, 3, 1};
+			sample_points[i] = ivec2(i / 8, i % 8);
+			sample_points[i].x *= 4;
+			sample_points[i].x += sparse_offsets[i % 4];
+		}
+	}
+	else
+	{
+		for (int i = 0; i < num_sample_points; i++)
+		{
+			sample_points[i].y = (i >> 0) & 1;
+			sample_points[i].x = (i >> 1) & 1;
+			sample_points[i].y += ((i >> 2) & 1) * 2;
+			sample_points[i].x += ((i >> 3) & 1) * 2;
+
+			// Checkerboards
+			if (sampling_rate_y_log2 - sampling_rate_x_log2 == 1)
+			{
+				sample_points[i].x *= 2;
+				sample_points[i].x += i % 2;
+			}
+		}
+	}
+
+	// Rescale sampling points to grid.
+	for (int i = 0; i < num_sample_points; i++)
+	{
+		int scale_factor = PhaseLUTGridSize >> sampling_rate_y_log2;
+		sample_points[i] *= scale_factor;
+		if (nearest)
+			sample_points[i] += (scale_factor - 1) >> 1;
+	}
+
+	return num_sample_points;
+}
+
+static int compute_phase_lut_samples(
+	int x, int y,
+	const ivec2 *sample_points, int num_sample_points,
+	int texel_support,
+	PhaseLUTResult *results)
+{
+	int num_results = 0;
+
+	for (int i = 0; i < num_sample_points; i++)
+	{
+		for (int texel_y = -texel_support; texel_y <= texel_support; texel_y++)
+		{
+			for (int texel_x = -texel_support; texel_x <= texel_support; texel_x++)
+			{
+				int dist_x = (sample_points[i].x + PhaseLUTGridSize * texel_x) - x;
+				int dist_y = (sample_points[i].y + PhaseLUTGridSize * texel_y) - y;
+
+				auto &result = results[num_results++];
+				result.sample_id = i;
+				result.texel_offset = ivec2(texel_x, texel_y);
+				result.dist = muglm::abs(ivec2(dist_x, dist_y));
+				result.max_dist = muglm::max(result.dist.x, result.dist.y);
+			}
+		}
+	}
+
+	std::sort(results, results + num_results, [](const PhaseLUTResult &a, const PhaseLUTResult &b)
+	{
+		if (a.max_dist == b.max_dist)
+			return a.dist.y < b.dist.y;
+		else
+			return a.max_dist < b.max_dist;
+	});
+
+	return num_results;
+}
+
+void GSRenderer::init_phase_lut(uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2)
+{
+	uvec2 samples[PhaseLUTGridSize][PhaseLUTGridSize] = {};
+	uvec2 samples_nearest[PhaseLUTGridSize / 2][PhaseLUTGridSize / 2] = {};
+	const Vulkan::ImageInitialData level_data[2] = {{samples}, {samples_nearest}};
+	auto info = Vulkan::ImageCreateInfo::immutable_2d_image(
+		PhaseLUTGridSize, PhaseLUTGridSize, VK_FORMAT_R32G32_UINT);
+	info.levels = 2;
+
+	if (!sampling_rate_x_log2 && !sampling_rate_y_log2)
+	{
+		// Just need to bind something to be spec compliant.
+		info.width = 1;
+		info.height = 1;
+		buffers.phase_lut = device->create_image(info, level_data);
+		return;
+	}
+
+	ivec2 sample_points[MaxSamples];
+	ivec2 sample_points_nearest[MaxSamples];
+	int num_sample_points = compute_sample_points(sample_points, sampling_rate_x_log2, sampling_rate_y_log2, false);
+	compute_sample_points(sample_points_nearest, sampling_rate_x_log2, sampling_rate_y_log2, true);
+	PhaseLUTResult results[MaxPhaseLUTResults];
+
+	int falloff_dist = INT_MAX;
+
+	// Figure out how wide the filter kernel can be. The window must be small enough that
+	// only the nearest 4 samples have kernel support.
+	for (int y = 0; y < PhaseLUTGridSize; y++)
+	{
+		for (int x = 0; x < PhaseLUTGridSize; x++)
+		{
+			compute_phase_lut_samples(x, y, sample_points, num_sample_points, 1, results);
+			falloff_dist = std::min<int>(falloff_dist, results[4].max_dist);
+		}
+	}
+
+	for (int y = 0; y < PhaseLUTGridSize; y++)
+	{
+		for (int x = 0; x < PhaseLUTGridSize; x++)
+		{
+			int num_results = compute_phase_lut_samples(x, y, sample_points, num_sample_points, 1, results);
+
+			if (results[0].texel_offset.x != 0 || results[0].texel_offset.y != 0)
+			{
+				for (int i = 1; i < num_results; i++)
+				{
+					// Ensure that the first sample has texel offset (0, 0).
+					if (results[i].texel_offset.x == 0 && results[i].texel_offset.y == 0)
+					{
+						if (i < 4)
+						{
+							// Found candidate in-bounds.
+							std::swap(results[0], results[i]);
+						}
+						else
+						{
+							// There were no in-bounds samples for this phase.
+							// Throw away the lowest weight OOB sample.
+							std::swap(results[3], results[i]);
+							std::swap(results[0], results[3]);
+						}
+
+						break;
+					}
+				}
+			}
+
+			assert(results[0].texel_offset.x == 0 && results[0].texel_offset.y == 0);
+
+			float weights[4];
+			float weight_sum = 0.0f;
+
+			// Encode a filter kernel in 64-bit.
+			// .x: lower 16 bits encode 4 sample IDs.
+			// .x: higher 16 bits encode 4 i2x2 texel offsets.
+			// .y: Kernel weights in unorm8x4.
+			for (int i = 0; i < 4; i++)
+			{
+				int sample_id = results[i].sample_id;
+				auto &texel_offset = results[i].texel_offset;
+				samples[y][x].x |= sample_id << (4 * i);
+				samples[y][x].x |= (texel_offset.x & 3u) << (4 * i + 16 + 0);
+				samples[y][x].x |= (texel_offset.y & 3u) << (4 * i + 16 + 2);
+				vec2 dist = vec2(results[i].dist) / vec2(falloff_dist);
+				weights[i] = muglm::max(0.0f, 1.0f - dist.x) * muglm::max(0.0f, 1.0f - dist.y);
+				weight_sum += weights[i];
+			}
+
+			// Safe-guard against a case where all samples end up at the falloff outer edge.
+			if (weight_sum < 0.001f)
+			{
+				for (auto &w : weights)
+					w = 1.0f;
+				weight_sum = 4.0f;
+			}
+
+			uint32_t unorm_sum = 0;
+
+			for (int i = 0; i < 3; i++)
+			{
+				uint32_t weight = uint32_t(weights[i] * 255.0f / weight_sum + 0.5f);
+				weight = std::min<uint32_t>(weight, 255 - unorm_sum);
+				unorm_sum += weight;
+				samples[y][x].y |= weight << (8 * i);
+			}
+
+			// Error redistribution. Ensure that the sum in unorm8 space is 255.
+			assert(unorm_sum <= 255);
+			samples[y][x].y |= (255 - unorm_sum) << 24;
+		}
+	}
+
+	for (int y = 0; y < PhaseLUTGridSize / 2; y++)
+	{
+		for (int x = 0; x < PhaseLUTGridSize / 2; x++)
+		{
+			compute_phase_lut_samples(2 * x, 2 * y, sample_points_nearest, num_sample_points, 0, results);
+			samples_nearest[y][x].x = results[0].sample_id;
+		}
+	}
+
+	buffers.phase_lut = device->create_image(info, level_data);
+}
+
+void GSRenderer::invalidate_super_sampling_state(
+    uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2)
 {
 	if (!device || !buffers.gpu)
 		return;
@@ -111,6 +334,11 @@ void GSRenderer::invalidate_super_sampling_state()
 	             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
 	cmd->end_region();
 	device->submit(cmd);
+
+	init_phase_lut(sampling_rate_x_log2, sampling_rate_y_log2);
+
+	flush_slab_cache();
+	device->wait_idle();
 }
 
 SuperSampling GSRenderer::get_max_supported_super_sampling() const
@@ -122,6 +350,11 @@ SuperSampling GSRenderer::get_max_supported_super_sampling() const
 		max_ssaa = SuperSampling::X16;
 
 	return max_ssaa;
+}
+
+void GSRenderer::set_field_aware_super_sampling(bool enable)
+{
+	field_aware_super_sampling = enable;
 }
 
 void GSRenderer::init_vram(const GSOptions &options)
@@ -323,22 +556,29 @@ void GSRenderer::kick_compilation_tasks()
 							cmd->set_specialization_constant(2, format.color_psm);
 							cmd->set_specialization_constant(3, format.depth_psm);
 							cmd->set_specialization_constant(4, vram_size - 1);
-							cmd->set_specialization_constant(
-									5, flags | (rates.sample_y ? VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT : 0));
 							cmd->set_specialization_constant(6, feedback.feedback_psm);
 							cmd->set_specialization_constant(7, feedback.feedback_cpsm);
+
+							uint32_t active_flags =
+									flags | (rates.sample_y ? VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT : 0);
+							cmd->set_specialization_constant(5, active_flags);
 							cmd->extract_pipeline_state(deferred);
 							tasks.push_back(deferred);
 
-							if (rates.sample_x == 0 && rates.sample_y == 0)
+							if (rates.sample_y != 0)
 							{
-								if (can_potentially_super_sample())
-								{
-									cmd->set_specialization_constant(
-											5, flags | VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT);
-									cmd->extract_pipeline_state(deferred);
-									tasks.push_back(deferred);
-								}
+								active_flags |= VARIANT_FLAG_HAS_TEXTURE_ARRAY_BIT;
+								cmd->set_specialization_constant(5, active_flags);
+								cmd->extract_pipeline_state(deferred);
+								tasks.push_back(deferred);
+							}
+
+							if (rates.sample_x == 0 && rates.sample_y == 0 && can_potentially_super_sample())
+							{
+								cmd->set_specialization_constant(
+									5, flags | VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT);
+								cmd->extract_pipeline_state(deferred);
+								tasks.push_back(deferred);
 							}
 						}
 					}
@@ -400,7 +640,6 @@ void GSRenderer::kick_compilation_tasks()
 	{
 		Vulkan::DeferredPipelineCompile deferred = {};
 		auto cmd = device->request_command_buffer();
-		cmd->set_program(shaders.upload);
 		cmd->set_specialization_constant_mask(0x7);
 
 		static const struct { uint32_t psm; uint32_t cpsm; } formats[] = {
@@ -432,8 +671,12 @@ void GSRenderer::kick_compilation_tasks()
 			for (auto mask : vram_masks)
 			{
 				cmd->set_specialization_constant(1, mask);
-				cmd->extract_pipeline_state(deferred);
-				tasks.push_back(deferred);
+				for (auto *prog : shaders.upload)
+				{
+					cmd->set_program(prog);
+					cmd->extract_pipeline_state(deferred);
+					tasks.push_back(deferred);
+				}
 			}
 		}
 
@@ -1018,7 +1261,7 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 
 	assert(desc.rect.width && desc.rect.height);
 
-	Vulkan::ImageHandle img = pull_image_handle_from_slab(desc.rect.width, desc.rect.height, desc.rect.levels);
+	Vulkan::ImageHandle img = pull_image_handle_from_slab(desc.rect.width, desc.rect.height, desc.rect.levels, desc.samples);
 
 	if (!img)
 	{
@@ -1026,12 +1269,15 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 			desc.rect.width, desc.rect.height, VK_FORMAT_R8G8B8A8_UNORM);
 
 		info.levels = desc.rect.levels;
+		info.layers = desc.samples;
+		if (desc.samples > 1)
+			info.layers++;
 		info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 		info.misc |= Vulkan::IMAGE_MISC_CREATE_PER_MIP_LEVEL_VIEWS_BIT;
 
 		// Ignore mips. This is just a crude heuristic.
-		stats.allocated_image_memory += info.width * info.height * sizeof(uint32_t);
+		stats.allocated_image_memory += info.width * info.height * info.layers * sizeof(uint32_t);
 
 		img = device->create_image(info);
 	}
@@ -1041,8 +1287,9 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 		// If we're running in capture tools.
 		char name_str[128];
 
-		snprintf(name_str, sizeof(name_str), "%s - [%u x %u] + (%u, %u) - 0x%x - bank %u @ %u - %s",
+		snprintf(name_str, sizeof(name_str), "%s%s - [%u x %u] + (%u, %u) - 0x%x - bank %u @ %u - %s",
 		         psm_to_str(desc.tex0.desc.PSM),
+		         desc.samples > 1 ? " (SSAA)" : "",
 		         desc.rect.width, desc.rect.height,
 		         desc.rect.x, desc.rect.y,
 		         uint32_t(desc.tex0.desc.TBP0) * PGS_BLOCK_ALIGNMENT_BYTES,
@@ -1245,6 +1492,8 @@ void GSRenderer::bind_textures(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
 	auto *tex_infos = cmd.allocate_typed_constant_data<TexInfo>(
 			0, BINDING_TEXTURE_INFO, std::max<uint32_t>(1, rp.num_textures));
 
+	bound_texture_has_array = false;
+
 	if (!bindless_allocator)
 		bindless_allocator = get_bindless_pool();
 
@@ -1278,6 +1527,8 @@ void GSRenderer::bind_textures(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
 	{
 		bindless_allocator->push_texture(*rp.textures[i].view);
 		tex_infos[i] = rp.textures[i].info;
+		if (rp.textures[i].info.arrayed)
+			bound_texture_has_array = true;
 	}
 	bindless_allocator->update();
 	cmd.set_bindless(DESCRIPTOR_SET_IMAGES, bindless_allocator->get_descriptor_set());
@@ -1288,7 +1539,10 @@ void GSRenderer::bind_frame_resources(const RenderPass &rp)
 	auto &cmd = *direct_cmd;
 
 	memcpy(cmd.allocate_typed_constant_data<StateVector>(
-			       0, BINDING_STATE_VECTORS, std::max<uint32_t>(1, rp.num_states)),
+		       0, BINDING_STATE_VECTORS, std::max<uint32_t>(1, rp.num_states)),
+	       rp.states, rp.num_states * sizeof(StateVector));
+	memcpy(triangle_setup_cmd->allocate_typed_constant_data<StateVector>(
+		       0, BINDING_STATE_VECTORS, std::max<uint32_t>(1, rp.num_states)),
 	       rp.states, rp.num_states * sizeof(StateVector));
 
 	cmd.set_storage_buffer(0, BINDING_CLUT, *buffers.clut);
@@ -1299,6 +1553,7 @@ void GSRenderer::bind_frame_resources(const RenderPass &rp)
 
 	triangle_setup_cmd->set_buffer_view(0, BINDING_FIXED_RCP_LUT, *buffers.fixed_rcp_lut_view);
 	triangle_setup_cmd->set_buffer_view(0, BINDING_FLOAT_RCP_LUT, *buffers.float_rcp_lut_view);
+	cmd.set_texture(0, BINDING_PHASE_LUT, buffers.phase_lut->get_view(), Vulkan::StockSampler::NearestClamp);
 
 	triangle_setup_cmd->set_storage_buffer(0, BINDING_VERTEX_POSITION, *buffers.pos_scratch.gpu_buffer,
 	                                       buffers.pos_scratch.offset, rp.num_primitives * 3 * sizeof(VertexPosition));
@@ -1479,12 +1734,52 @@ void GSRenderer::allocate_scratch_buffers_instanced(Vulkan::CommandBuffer &cmd, 
 		binning_cmd->set_storage_buffer(1, 1, *buffers.device_scratch.buffer, work_list_scratch, work_list_size);
 }
 
+bool GSRenderer::render_pass_instance_is_deduced_blur(const RenderPass &rp, uint32_t instance) const
+{
+	// Crude heuristic to figure out if a render pass instance attempts a blur kernel.
+	if (rp.num_primitives > 64)
+		return false;
+
+	uint32_t last_tex_index = UINT32_MAX;
+	ivec2 phase_offset = {};
+
+	for (uint32_t i = 0; i < rp.num_primitives; i++)
+	{
+		uint32_t prim_instance = (buffers.prim[i].state >> STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET) &
+		                         ((1 << STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) - 1);
+
+		if (prim_instance != instance || (buffers.prim[i].tex & TEX_PER_SAMPLE_BIT) == 0)
+			continue;
+		if ((buffers.prim[i].state & (1 << STATE_BIT_PERSPECTIVE)) != 0)
+			return false;
+
+		uint32_t tex_index = (buffers.prim[i].tex >> TEX_TEXTURE_INDEX_OFFSET) &
+		                     ((1 << TEX_TEXTURE_INDEX_BITS) - 1);
+
+		ivec2 phase = ivec2(buffers.attr[3 * i].uv) - buffers.pos[3 * i].pos;
+
+		if (last_tex_index == tex_index)
+		{
+			if (any(notEqual(phase_offset, phase)))
+				return true;
+		}
+		else
+			phase_offset = phase;
+
+		// When blurring, assume we're only using one texture.
+		last_tex_index = tex_index;
+	}
+
+	return false;
+}
+
 void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
 {
 	struct Push
 	{
 		uint32_t num_primitives;
 		uint32_t z_shift_to_bucket;
+		uint32_t rp_is_blur_mask;
 	} push = {};
 
 	push.num_primitives = rp.num_primitives;
@@ -1519,13 +1814,22 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 		}
 
 		sampling_rate_y_log2 = std::max<uint32_t>(sampling_rate_y_log2, inst.sampling_rate_y_log2);
+		if (bound_texture_has_array && render_pass_instance_is_deduced_blur(rp, i))
+		{
+			push.rp_is_blur_mask |= 1u << i;
+			if (device->consumes_debug_markers())
+				insert_label(cmd, "Instance %u, deduced blur kernel", i);
+		}
 	}
 
 	cmd.push_constants(&push, 0, sizeof(push));
 
 	cmd.set_program(shaders.triangle_setup);
-	cmd.set_specialization_constant_mask(1);
+	cmd.set_specialization_constant_mask(0xf);
 	cmd.set_specialization_constant(0, sampling_rate_y_log2);
+	cmd.set_specialization_constant(1, bound_texture_has_array);
+	cmd.set_specialization_constant(2, bound_texture_has_array && field_aware_super_sampling);
+
 	Vulkan::QueryPoolHandle start_ts, end_ts;
 	if (enable_timestamps)
 		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -1655,7 +1959,6 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 	}
 
 	set_hierarchical_binning_subgroup_config(cmd, hier_binning);
-
 	struct Push
 	{
 		uint32_t base_x, base_y;
@@ -1663,10 +1966,13 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 		uint32_t instance;
 		uint32_t end_primitives;
 		uint32_t num_samples;
+		uint32_t force_super_sample;
 	} push = {
 		inst.base_x, inst.base_y,
 		base_primitive, instance, base_primitive + num_primitives,
 		1u << (inst.sampling_rate_x_log2 + inst.sampling_rate_y_log2),
+		// Technically we can decay to 2x SSAA here and splat, but that too complicated to support.
+		uint32_t(field_aware_super_sampling),
 	};
 
 	cmd.push_constants(&push, 0, sizeof(push));
@@ -1957,6 +2263,9 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	if (can_potentially_super_sample())
 		variant_flags |= VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT;
 
+	if (bound_texture_has_array)
+		variant_flags |= VARIANT_FLAG_HAS_TEXTURE_ARRAY_BIT;
+
 	cmd.set_specialization_constant(5, variant_flags);
 
 	assert(inst.sampling_rate_x_log2 <= 2);
@@ -1976,7 +2285,22 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	}
 
 	cmd.set_program(shaders.ubershader[int(rp.feedback_color)][int(rp.feedback_depth)]);
-	ShadingDescriptor push = { base_primitive, base_primitive + num_primitives - 1, fb_index_depth_offset };
+	auto snap_raster_mask = ivec2(-(1 << inst.sampling_rate_y_log2));
+	// Snap single-sampled raster to half-texel instead.
+	if (inst.sampling_rate_y_log2 && field_aware_super_sampling)
+		snap_raster_mask.y >>= 1;
+
+	// If we're doing channel shuffle, but insist on super-sampling, we must make sure
+	// to never do any resolve since that leads to a non-sensical result.
+	// The best we can do is to demote to single samples, but declare that the super samples
+	// are still valid so that we can keep using the super samples until we're forced to decay.
+	ShadingDescriptor push = {
+		snap_raster_mask,
+		uint32_t(inst.channel_shuffle && inst.sampling_rate_y_log2 != 0),
+		base_primitive,
+		base_primitive + num_primitives - 1,
+		fb_index_depth_offset
+	};
 
 	if (rp.feedback_color)
 	{
@@ -2008,7 +2332,8 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 			cmd.set_specialization_constant(0, 0);
 			cmd.set_specialization_constant(1, 0);
 			cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
-			                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256, VK_WHOLE_SIZE);
+			                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256,
+			                       VK_WHOLE_SIZE);
 			cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
 
 			cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -2053,7 +2378,8 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 			cmd.set_specialization_constant(0, 0);
 			cmd.set_specialization_constant(1, 0);
 			cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
-			                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256, VK_WHOLE_SIZE);
+			                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256,
+			                       VK_WHOLE_SIZE);
 			cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
 		}
 	}
@@ -2073,7 +2399,8 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 		cmd.set_specialization_constant(0, 0);
 		cmd.set_specialization_constant(1, 0);
 		cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
-		                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256, VK_WHOLE_SIZE);
+		                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256,
+		                       VK_WHOLE_SIZE);
 		cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
 	}
 
@@ -2161,7 +2488,8 @@ void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const Render
 		cmd.set_specialization_constant(1, 0);
 		cmd.insert_label("single-sample");
 		cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
-		                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256, VK_WHOLE_SIZE);
+		                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256,
+		                       VK_WHOLE_SIZE);
 		cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
 
 		cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -2751,23 +3079,26 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 	move_image_handles_to_slab();
 }
 
-Vulkan::ImageHandle GSRenderer::pull_image_handle_from_slab(uint32_t width, uint32_t height, uint32_t levels)
+Vulkan::ImageHandle GSRenderer::pull_image_handle_from_slab(
+	uint32_t width, uint32_t height,
+	uint32_t levels, uint32_t samples)
 {
 	if (!Util::is_pow2(width) || !Util::is_pow2(height) || levels > 7 || width > 1024 || height > 1024)
 		return {};
 
+	assert(levels == 1 || samples == 1);
 	assert(levels > 0);
 
 	uint32_t W = Util::floor_log2(width);
 	uint32_t H = Util::floor_log2(height);
-	auto &pool = recycled_image_pool[levels - 1][H][W];
+	auto &pool = samples > 1 ? super_sampled_recycled_image_pool[H][W] : recycled_image_pool[levels - 1][H][W];
 	if (pool.empty())
 		return {};
 
 	auto res = std::move(pool.back());
 	pool.pop_back();
-	assert(total_image_slab_size >= (sizeof(uint32_t) << (W + H)));
-	total_image_slab_size -= sizeof(uint32_t) << (W + H);
+	assert(total_image_slab_size >= (sizeof(uint32_t) << (W + H)) * res->get_create_info().layers);
+	total_image_slab_size -= (sizeof(uint32_t) << (W + H)) * res->get_create_info().layers;
 	return res;
 }
 
@@ -2779,8 +3110,11 @@ void GSRenderer::move_image_handles_to_slab()
 		uint32_t H = Util::floor_log2(handle->get_height());
 		uint32_t levels = handle->get_create_info().levels;
 		assert(W <= 10 && H <= 10 && levels <= 7);
-		total_image_slab_size += sizeof(uint32_t) << (W + H);
-		recycled_image_pool[levels - 1][H][W].push_back(std::move(handle));
+		total_image_slab_size += (sizeof(uint32_t) << (W + H)) * handle->get_create_info().layers;
+		if (handle->get_create_info().layers > 1)
+			super_sampled_recycled_image_pool[H][W].push_back(std::move(handle));
+		else
+			recycled_image_pool[levels - 1][H][W].push_back(std::move(handle));
 	}
 	recycled_image_handles.clear();
 
@@ -2797,15 +3131,26 @@ void GSRenderer::move_image_handles_to_slab()
 	// Shouldn't happen in normal use.
 	if (total_image_slab_size > max_image_slab_size)
 	{
-		for (auto &l : recycled_image_pool)
-			for (auto &y : l)
-				for (auto &x : y)
-					x.clear();
-		total_image_slab_size = 0;
+		flush_slab_cache();
+
 #ifdef PARALLEL_GS_DEBUG
 		LOGW("Image slab pool was exhausted, flushing it ...\n");
 #endif
 	}
+}
+
+void GSRenderer::flush_slab_cache()
+{
+	for (auto &l : recycled_image_pool)
+		for (auto &y : l)
+			for (auto &x : y)
+				x.clear();
+
+	for (auto &h : super_sampled_recycled_image_pool)
+		for (auto &w : h)
+			w.clear();
+
+	total_image_slab_size = 0;
 }
 
 void GSRenderer::mark_clut_read(uint32_t clut_instance)
@@ -2855,7 +3200,7 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 	auto &cmd = *direct_cmd;
 
 	uint32_t levels = img.get_create_info().levels;
-	cmd.set_program(shaders.upload);
+	cmd.set_program(shaders.upload[int(upload.desc.samples > 1)]);
 	if (scratch.buffer)
 		cmd.set_storage_buffer(0, 0, *scratch.buffer, scratch.offset, scratch.size);
 	else
@@ -2936,9 +3281,10 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 		if (device->consumes_debug_markers())
 		{
 			insert_label(cmd,
-			             "%s mip %u - 0x%x - %s - %u x %u (stride %u) + (%u, %u) - CPSM %s - CSA %u - bank %u / %u - %016llx",
+			             "%s mip %u%s - 0x%x - %s - %u x %u (stride %u) + (%u, %u) - CPSM %s - CSA %u - bank %u / %u - %016llx",
 			             (scratch.buffer ? "CPU" : "GPU"),
-			             level, info.addr_block * PGS_BLOCK_ALIGNMENT_BYTES,
+			             level, upload.desc.samples > 1 ? " (SSAA)" : "",
+			             info.addr_block * PGS_BLOCK_ALIGNMENT_BYTES,
 			             psm_to_str(uint32_t(desc.tex0.desc.PSM)),
 			             info.width, info.height, info.stride_block * PGS_BUFFER_WIDTH_SCALE,
 			             info.off_x, info.off_y,
@@ -2952,7 +3298,8 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 
 		cmd.set_storage_texture_level(0, 1, img.get_view(), level);
 		cmd.push_constants(&info, 0, sizeof(info));
-		cmd.dispatch((info.width + 7) / 8, (info.height + 7) / 8, 1);
+		cmd.dispatch((info.width + 7) / 8, (info.height + 7) / 8,
+		             img.get_create_info().layers);
 
 		if (levels > 1)
 		{
@@ -3552,16 +3899,22 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	const bool anti_blur = info.anti_blur;
 	bool high_resolution_scanout = info.high_resolution_scanout;
 	bool is_interlaced = scanout_is_interlaced(priv, info);
-	bool force_deinterlace = priv.smode2.FFMD && priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
+	bool force_deinterlace = !high_resolution_scanout &&
+	                         (priv.smode2.FFMD && priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE);
 	bool alternative_sampling = priv.smode2.INT && !priv.smode2.FFMD;
 
 	// We have to scan out tightly packed fields or upscaling breaks.
 	if (!force_progressive || priv.extwrite.WRITE ||
 	    !sampling_rate_x_log2 || !sampling_rate_y_log2 ||
-	    is_interlaced || force_deinterlace)
+	    force_deinterlace)
 	{
 		high_resolution_scanout = false;
 	}
+
+	bool field_aware_rendering = high_resolution_scanout &&
+	                             sampling_rate_y_log2 &&
+	                             priv.smode2.FFMD &&
+	                             priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
 
 	uint32_t super_samples = 1;
 	if (high_resolution_scanout)
@@ -3666,6 +4019,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 		// Scanning out high-res with these resolutions is somewhat bogus.
 		high_resolution_scanout = false;
+		field_aware_rendering = false;
 		super_samples = 1;
 	}
 	else
@@ -4013,6 +4367,13 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	result.internal_height = mode_height;
 	image_info.width = mode_width << int(high_resolution_scanout);
 	image_info.height = mode_height << int(high_resolution_scanout);
+
+	if (field_aware_rendering)
+	{
+		// Avoid a one line flicker due to field rendering.
+		image_info.height--;
+	}
+
 	auto merged = device->create_image(image_info);
 
 	device->set_name(*merged, "Merged field");
@@ -4080,6 +4441,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 				vp.y *= 2.0f;
 				vp.width *= 2.0f;
 				vp.height *= 2.0f;
+
+				if (field_aware_rendering && !info.phase)
+					vp.y -= 1.0f;
 			}
 
 			cmd.set_viewport(vp);
@@ -4109,6 +4473,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 				vp.y *= 2.0f;
 				vp.width *= 2.0f;
 				vp.height *= 2.0f;
+
+				if (field_aware_rendering && !info.phase)
+					vp.y -= 1.0f;
 			}
 
 			cmd.set_viewport(vp);
@@ -4248,7 +4615,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		}
 	}
 
-	if (is_interlaced || force_deinterlace)
+	if (!high_resolution_scanout && (is_interlaced || force_deinterlace))
 	{
 		for (int i = 3; i >= 1; i--)
 			vsync_last_fields[i] = std::move(vsync_last_fields[i - 1]);

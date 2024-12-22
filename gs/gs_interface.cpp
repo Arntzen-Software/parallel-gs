@@ -51,7 +51,9 @@ bool GSInterface::init(Vulkan::Device *device, const GSOptions &options)
 	if (!renderer.init(device, options))
 		return false;
 
-	set_super_sampling_rate(options.super_sampling, options.ordered_super_sampling);
+	set_super_sampling_rate(options.super_sampling,
+	                        options.ordered_super_sampling,
+	                        options.super_sampled_textures);
 
 	renderer.reserve_primitive_buffers(MaxPrimitivesPerFlush);
 	render_pass.positions = renderer.get_reserved_vertex_positions();
@@ -60,8 +62,10 @@ bool GSInterface::init(Vulkan::Device *device, const GSOptions &options)
 	return true;
 }
 
-void GSInterface::set_super_sampling_rate(SuperSampling super_sampling, bool ordered_grid)
+void GSInterface::set_super_sampling_rate(SuperSampling super_sampling,
+                                          bool ordered_grid, bool super_sampled_textures_)
 {
+	super_sampled_textures = super_sampled_textures_;
 	super_sampling = SuperSampling(std::min<uint32_t>(
 			uint32_t(super_sampling), uint32_t(renderer.get_max_supported_super_sampling())));
 
@@ -70,6 +74,7 @@ void GSInterface::set_super_sampling_rate(SuperSampling super_sampling, bool ord
 	case SuperSampling::X1:
 		sampling_rate_x_log2 = 0;
 		sampling_rate_y_log2 = 0;
+		super_sampled_textures = false;
 		break;
 
 	case SuperSampling::X2:
@@ -109,7 +114,7 @@ void GSInterface::set_super_sampling_rate(SuperSampling super_sampling, bool ord
 		break;
 	}
 
-	renderer.invalidate_super_sampling_state();
+	renderer.invalidate_super_sampling_state(sampling_rate_x_log2, sampling_rate_y_log2);
 }
 
 static bool write_mask_is_16bit_channel_slice(uint32_t psm, uint32_t color_mask)
@@ -213,37 +218,44 @@ void GSInterface::flush_render_pass(FlushReason reason)
 
 			// Any FBMASK that masks more than the global mask must be demoted from OPAQUE.
 			pass.opaque_fbmask = ~inst.color_write_mask;
+			pass.channel_shuffle = inst.has_channel_shuffle ||
+			                       write_mask_is_16bit_channel_slice(inst.frame.desc.PSM, inst.color_write_mask);
 
-			// This case is to handle certain channel shuffling effects which render with 16-bit over a 32-bit FB
-			// using 0x3fff FBMSK. This ends up slicing the green channel and trying to resolve super-sampling in 16-bit
-			// domain leads to bogus results.
-			// If a channel is considered "odd" w.r.t. masking, force single-sampled rendering.
-			// Don't apply this fixup for 24/32-bit bpp, since there are no reasonable shuffle effects
-			// that operate on those bit-depths. Try to avoid false positives.
-			if ((sampling_rate_x_log2 || sampling_rate_y_log2) &&
-			    (inst.has_channel_shuffle ||
-			     write_mask_is_16bit_channel_slice(inst.frame.desc.PSM, inst.color_write_mask)))
+			// If we're super sampling textures, we can avoid a ton of common SSAA issues which
+			// arise when doing single-sampled textures resolving on top of super-sampled framebuffer data.
+			// If we're rendering field aware upscaling, we essentially need to force super-sampling everywhere all the time.
+			if (!render_pass.field_aware_rendering &&
+			    (!super_sampled_textures || !render_pass.tex_infos_has_super_samples))
 			{
-				pass.sampling_rate_x_log2 = 0;
-				pass.sampling_rate_y_log2 = 0;
-			}
-			else if (inst.z_feedback)
-			{
-				// If we're doing Z-feedback effects, it's not safe to run super-sampled since there are too many glitches in play
-				// for it to be viable. When super-sampled Z is converted to color, then downsampled, there will be bleeding
-				// across geometry, and we have no way of resolving this other than forwarding super-sampled textures
-				// everywhere.
-				pass.sampling_rate_x_log2 = 0;
-				pass.sampling_rate_y_log2 = 0;
-			}
-			else if (inst.z_write && inst.zbuf.desc.ZBP == inst.frame.desc.FBP)
-			{
-				// If we're doing color/Z aliasing like this, we're not doing normal rendering,
-				// and any super sampling state is likely to get clobbered hard either way.
-				// There's no useful use case for rendering 3D with this configuration,
-				// so be careful and just disable SSAA.
-				pass.sampling_rate_x_log2 = 0;
-				pass.sampling_rate_y_log2 = 0;
+				// This case is to handle certain channel shuffling effects which render with 16-bit over a 32-bit FB
+				// using 0x3fff FBMSK. This ends up slicing the green channel and trying to resolve super-sampling in 16-bit
+				// domain leads to bogus results.
+				// If a channel is considered "odd" w.r.t. masking, force single-sampled rendering.
+				// Don't apply this fixup for 24/32-bit bpp, since there are no reasonable shuffle effects
+				// that operate on those bit-depths. Try to avoid false positives.
+				if ((sampling_rate_x_log2 || sampling_rate_y_log2) && pass.channel_shuffle)
+				{
+					pass.sampling_rate_x_log2 = 0;
+					pass.sampling_rate_y_log2 = 0;
+				}
+				else if (inst.z_feedback)
+				{
+					// If we're doing Z-feedback effects, it's not safe to run super-sampled since there are too many glitches in play
+					// for it to be viable. When super-sampled Z is converted to color, then downsampled, there will be bleeding
+					// across geometry, and we have no way of resolving this other than forwarding super-sampled textures
+					// everywhere.
+					pass.sampling_rate_x_log2 = 0;
+					pass.sampling_rate_y_log2 = 0;
+				}
+				else if (inst.z_write && inst.zbuf.desc.ZBP == inst.frame.desc.FBP)
+				{
+					// If we're doing color/Z aliasing like this, we're not doing normal rendering,
+					// and any super sampling state is likely to get clobbered hard either way.
+					// There's no useful use case for rendering 3D with this configuration,
+					// so be careful and just disable SSAA.
+					pass.sampling_rate_x_log2 = 0;
+					pass.sampling_rate_y_log2 = 0;
+				}
 			}
 
 			pass.z_sensitive = inst.z_sensitive;
@@ -293,6 +305,7 @@ void GSInterface::flush_render_pass(FlushReason reason)
 	render_pass.held_images.clear();
 	render_pass.texture_map.clear();
 	render_pass.tex_infos.clear();
+	render_pass.tex_infos_has_super_samples = false;
 	render_pass.tex0_infos.clear();
 	render_pass.state_vector_map.clear();
 	render_pass.state_vectors.clear();
@@ -1240,6 +1253,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	desc.tex0 = ctx.tex0;
 	desc.tex1 = ctx.tex1;
 	desc.clamp = ctx.clamp;
+	desc.samples = 1;
 
 	auto psm = uint32_t(desc.tex0.desc.PSM);
 	auto cpsm = uint32_t(desc.tex0.desc.CPSM);
@@ -1522,6 +1536,19 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 
 	update_texture_page_rects();
 
+	// Be quite conservative when we decide to attempt super sampled textures.
+	// This is mostly only useful in:
+	// - Correctly resolving per-pixel effects which use some form of pixel testing.
+	// - Preserving per sample data during blit passes, etc.
+	if (desc.rect.levels == 1 && super_sampled_textures &&
+	    get_bits_per_pixel(desc.tex0.desc.PSM) >= 8 &&
+	    PRIMType(prim.desc.PRIM) == PRIMType::Sprite &&
+	    !desc.clamp.desc.has_horizontal_repeat() && !desc.clamp.desc.has_vertical_repeat() &&
+	    tracker.texture_may_super_sample(state_tracker.tex.page_rects[0]))
+	{
+		desc.samples = 1u << (sampling_rate_x_log2 + sampling_rate_y_log2);
+	}
+
 	Util::Hasher hasher;
 	hasher.u64(desc.tex0.bits);
 	hasher.u64(desc.tex1.bits);
@@ -1535,6 +1562,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	// The page tracker never keeps more than one variant alive however, so the multiple variants only
 	// live as long as we can maintain the render pass.
 	hasher.u64(desc.palette_bank);
+	hasher.u32(desc.samples);
 	auto *cached_index = render_pass.texture_map.find(hasher.get());
 
 	// For explicit feedback, we have to be super careful, and we skip these checks.
@@ -1668,6 +1696,10 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 		info.info.bias.x = -float(desc.rect.x) * info.info.sizes.z;
 		info.info.bias.y = -float(desc.rect.y) * info.info.sizes.w;
 
+		info.info.arrayed = int(desc.samples > 1);
+		if (info.info.arrayed)
+			render_pass.tex_infos_has_super_samples = true;
+
 		render_pass.tex_infos.push_back(info);
 		render_pass.tex0_infos.push_back(ctx.tex0.desc);
 		render_pass.held_images.push_back(std::move(image));
@@ -1693,10 +1725,13 @@ void GSInterface::drawing_kick_update_state(FBFeedbackMode feedback_mode, const 
 
 	if (prim.desc.TME)
 	{
-		p.tex = drawing_kick_update_texture(feedback_mode, uv_bb, bb) << TEX_TEXTURE_INDEX_OFFSET;
+		uint32_t tex_index = drawing_kick_update_texture(feedback_mode, uv_bb, bb);
+		p.tex = tex_index << TEX_TEXTURE_INDEX_OFFSET;
 		p.tex |= ctx.tex1.desc.MMAG == TEX1Bits::LINEAR ? TEX_SAMPLER_MAG_LINEAR_BIT : 0;
 		p.tex |= ctx.clamp.desc.has_horizontal_clamp() ? TEX_SAMPLER_CLAMP_S_BIT : 0;
 		p.tex |= ctx.clamp.desc.has_vertical_clamp() ? TEX_SAMPLER_CLAMP_T_BIT : 0;
+		if (tex_index < MaxTextures && render_pass.tex_infos[tex_index].info.arrayed)
+			p.tex |= TEX_PER_SAMPLE_BIT;
 
 		if (ctx.tex1.desc.mmin_has_mipmap() && !hacks.disable_mipmaps)
 		{
@@ -2344,7 +2379,7 @@ void GSInterface::drawing_kick_append()
 
 	hi_pos -= 1;
 	// Tighten the bounding box according to top-left raster rules.
-	if (quad || !registers.prim.desc.AA1)
+	if (!render_pass.field_aware_rendering && (quad || !registers.prim.desc.AA1))
 		lo_pos += (1 << int(PGS_SUBPIXEL_BITS - sampling_rate_y_log2)) - 1;
 
 	lo_pos >>= int(PGS_SUBPIXEL_BITS);
@@ -2487,6 +2522,7 @@ void GSInterface::drawing_kick_append()
 		prim_attr.state |= 1u << STATE_BIT_PARALLELOGRAM;
 		prim_attr.state |= 1u << STATE_BIT_SPRITE;
 		prim_attr.state |= 1u << STATE_BIT_SNAP_RASTER;
+		prim_attr.state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
 		prim_attr.state &= ~(1u << STATE_BIT_MULTISAMPLE);
 	}
 	else if (is_line)
@@ -2504,6 +2540,7 @@ void GSInterface::drawing_kick_append()
 		prim_attr.state |= 1u << STATE_BIT_FIX;
 		// Don't think we can reasonably upscale a point. Games can rely on the rounding to generate an exact pixel.
 		prim_attr.state |= 1u << STATE_BIT_SNAP_RASTER;
+		prim_attr.state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
 	}
 
 	prim_attr.state |= render_pass.current_instance << STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET;
@@ -4188,6 +4225,18 @@ void GSInterface::set_hacks(const Hacks &hacks_)
 
 ScanoutResult GSInterface::vsync(const VSyncInfo &info)
 {
+	// If the game is field rendered, and we want high-res scanout,
+	// snap to field resolution rather than native pixels.
+	// Ideally we should be able to achieve a "perfect" deinterlacer this way,
+	// since we can jitter a full pixel rather than half pixel.
+
+	render_pass.field_aware_rendering = info.high_resolution_scanout &&
+	                                    sampling_rate_y_log2 &&
+	                                    priv_registers.smode2.FFMD &&
+	                                    priv_registers.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
+
+	renderer.set_field_aware_super_sampling(render_pass.field_aware_rendering);
+
 	return renderer.vsync(priv_registers, info, sampling_rate_x_log2, sampling_rate_y_log2);
 }
 

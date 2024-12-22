@@ -9,7 +9,10 @@
 		{
 			"name": "upload",
 			"path": "upload.comp",
-			"compute": true
+			"compute": true,
+			"variants": [
+				{ "define": "SUPER_SAMPLED", "count": 2, "resolve": false }
+			]
 		},
 		{
 

@@ -93,6 +93,14 @@ void PageTracker::mark_external_write(const PageRect &rect)
 	invalidate_texture_cache(UINT32_MAX);
 }
 
+bool PageTracker::texture_may_super_sample(const PageRect &rect) const
+{
+	// Only check the base page since otherwise we may easily get false positives
+	// due to W/H rounding up to nearest POT.
+	auto &state = page_state[rect.base_page & page_state_mask];
+	return (state.flags & PAGE_STATE_MAY_SUPER_SAMPLE_BIT) != 0;
+}
+
 void PageTracker::mark_fb_write(const PageRect &rect)
 {
 	assert(rect.page_width <= 2048 / 64);
@@ -112,9 +120,12 @@ void PageTracker::mark_fb_write(const PageRect &rect)
 			if ((state.flags & (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
 				accessed_readback_pages.push_back(page);
 
-			state.flags |= PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT |
-			               PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT |
-			               PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT;
+			state.flags |=
+				PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT |
+				PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT |
+				PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT |
+				PAGE_STATE_MAY_SUPER_SAMPLE_BIT;
+
 			if (state.texture_cache_needs_invalidate_block_mask == 0)
 				potential_invalidated_indices.push_back(page);
 			state.texture_cache_needs_invalidate_block_mask |= UINT32_MAX;
@@ -197,6 +208,7 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 				accessed_readback_pages.push_back(page);
 			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT |
 			               PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT;
+			state.flags &= ~PAGE_STATE_MAY_SUPER_SAMPLE_BIT;
 			if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
 				accessed_copy_pages.push_back(page);
 			state.copy_write_block_mask |= dst_rect.block_mask;
@@ -566,6 +578,7 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 				accessed_readback_pages.push_back(page);
 			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT |
 			               PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
+			state.flags &= ~PAGE_STATE_MAY_SUPER_SAMPLE_BIT;
 			if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
 				accessed_copy_pages.push_back(page);
 			state.copy_write_block_mask |= rect.block_mask;
@@ -623,6 +636,7 @@ void PageTracker::commit_host_write(const PageRect &rect)
 			page &= page_state_mask;
 			cb.sync_host_vram_page(page);
 			auto &state = page_state[page];
+			state.flags &= ~PAGE_STATE_MAY_SUPER_SAMPLE_BIT;
 			if (state.texture_cache_needs_invalidate_block_mask == 0)
 				potential_invalidated_indices.push_back(page);
 			state.texture_cache_needs_invalidate_block_mask |= UINT32_MAX;

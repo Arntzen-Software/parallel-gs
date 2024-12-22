@@ -22,7 +22,7 @@ using namespace Util;
 
 static void print_help()
 {
-	LOGI("Usage: parallel-gs-replayer <dump.gs> [--ssaa <rate>] [--strided] [--full] [--iterations <count>] [--high-res-scanout]\n");
+	LOGI("Usage: parallel-gs-replayer <dump.gs> [--ssaa <rate>] [--strided] [--full] [--iterations <count>] [--high-res-scanout] [--ssaa-textures]\n");
 }
 
 int main(int argc, char **argv)
@@ -42,6 +42,7 @@ int main(int argc, char **argv)
 	cbs.add("--full", [&](CLIParser &) { debug_mode.draw_mode = DebugMode::DrawDebugMode::Full; });
 	cbs.add("--iterations", [&](CLIParser &parser) { total_iterations = parser.next_uint(); });
 	cbs.add("--high-res-scanout", [&](CLIParser &) { high_res_scanout = true; });
+	cbs.add("--ssaa-textures", [&](CLIParser &) { opts.super_sampled_textures = true; });
 	cbs.default_handler = [&](const char *arg) { dump_path = arg; };
 
 	CLIParser cli_parser(std::move(cbs), argc - 1, argv + 1);

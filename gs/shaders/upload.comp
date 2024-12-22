@@ -36,7 +36,11 @@ layout(std430, set = 0, binding = BINDING_CLUT) readonly buffer CLUT16
 	uint16_t data[];
 } clut16;
 
+#if SUPER_SAMPLED
+layout(rgba8, set = 0, binding = 1) writeonly uniform image2DArray uImage;
+#else
 layout(rgba8, set = 0, binding = 1) writeonly uniform image2D uImage;
+#endif
 
 layout(push_constant) uniform Registers
 {
@@ -108,28 +112,74 @@ void main()
 
 	uint payload = 0;
 
+	const uint VRAM_STRIDE = VRAM_MASK + 1;
+	const uint VRAM_STRIDE_U32 = VRAM_STRIDE / 4;
+	const uint VRAM_STRIDE_U16 = VRAM_STRIDE / 2;
+	const uint VRAM_STRIDE_U8 = VRAM_STRIDE;
+
+#if SUPER_SAMPLED
+	uint sample_id = gl_WorkGroupID.z - 1u;
+#endif
+
 	if (is_tex_24bit)
 	{
 		uint col = vram32.data[addr];
+#if SUPER_SAMPLED
+		if (sample_id != ~0u)
+		{
+			uint ref = vram32.data[addr + VRAM_STRIDE_U32];
+			if (ref != 0u)
+			{
+				uint hi_color = vram32.data[addr + (2 + sample_id) * VRAM_STRIDE_U32];
+				col = (hi_color & ref) | (col & ~ref);
+			}
+		}
+#endif
 		payload = rgb24_to_rgba32(col, registers.aem, registers.ta0);
 	}
 	else if (is_tex_16bit)
 	{
 		uint col = uint(vram16.data[addr]);
+#if SUPER_SAMPLED
+		if (sample_id != ~0u)
+		{
+			uint ref = uint(vram16.data[addr + VRAM_STRIDE_U16]);
+			if (ref == 0xffffu)
+				col = uint(vram16.data[addr + (2 + sample_id) * VRAM_STRIDE_U16]);
+		}
+#endif
 		payload = rgba16_to_rgba32(col, registers.aem, registers.ta0, registers.ta1);
 	}
 	else if (is_tex_8bit)
 	{
 		uint index = uint(vram8.data[addr]);
+#if SUPER_SAMPLED
+		if (sample_id != ~0u)
+		{
+			uint ref = uint(vram8.data[addr + VRAM_STRIDE_U8]);
+			if (ref == 0xffu)
+				index = uint(vram8.data[addr + (2 + sample_id) * VRAM_STRIDE_U8]);
+		}
+#endif
 		payload = get_clut_color(index, registers.clut_offset);
 	}
 	else if (TEXTURE_FMT == PSMT8H)
 	{
-		uint index = uint(vram8.data[(addr << 2) + 3]);
+		uint addr8h = addr * 4 + 3;
+		uint index = uint(vram8.data[addr8h]);
+#if SUPER_SAMPLED
+		if (sample_id != ~0u)
+		{
+			uint ref = uint(vram8.data[addr8h + VRAM_STRIDE_U8]);
+			if (ref == 0xffu)
+				index = uint(vram8.data[addr8h + (2 + sample_id) * VRAM_STRIDE_U8]);
+		}
+#endif
 		payload = get_clut_color(index, registers.clut_offset);
 	}
 	else if (TEXTURE_FMT == PSMT4)
 	{
+		// It's not meaningful to sample PSMT4 from a framebuffer.
 		int nibble_address = bitfieldExtract(int(addr), 0, 1) & 0x1;
 		uint raw_byte = uint(vram8.data[addr >> 1]);
 		uint nibble = bitfieldExtract(raw_byte, nibble_address << 2, 4);
@@ -137,14 +187,30 @@ void main()
 	}
 	else if (TEXTURE_FMT == PSMT4HH || TEXTURE_FMT == PSMT4HL)
 	{
+		// It's not meaningful to sample PSMT4 from a framebuffer.
 		uint raw_word = uint(vram32.data[addr]);
 		int nibble_offset = TEXTURE_FMT == PSMT4HH ? 28 : 24;
 		uint nibble = bitfieldExtract(raw_word, nibble_offset, 4);
 		payload = get_clut_color(nibble, registers.clut_offset);
 	}
 	else
+	{
 		payload = vram32.data[addr];
+#if SUPER_SAMPLED
+		if (sample_id != ~0u)
+		{
+			uint ref = vram32.data[addr + VRAM_STRIDE_U32];
+			if (ref == ~0u)
+				payload = vram32.data[addr + (2 + sample_id) * VRAM_STRIDE_U32];
+		}
+#endif
+	}
 
 	vec4 color = unpackUnorm4x8(payload);
+
+#if SUPER_SAMPLED
+	imageStore(uImage, ivec3(coord, gl_WorkGroupID.z), color);
+#else
 	imageStore(uImage, coord, color);
+#endif
 }

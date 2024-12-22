@@ -38,7 +38,8 @@ enum PageStateFlagBits : uint32_t
 	// On mark submission, page will get updated host write timeline.
 	PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT = 1 << 3,
 
-	PAGE_STATE_NEEDS_SHADOW_PAGE_BIT = 1 << 4
+	PAGE_STATE_NEEDS_SHADOW_PAGE_BIT = 1 << 4,
+	PAGE_STATE_MAY_SUPER_SAMPLE_BIT = 1 << 5
 };
 using PageStateFlags = uint32_t;
 
@@ -192,6 +193,8 @@ public:
 	// Mark an explicit flush. All batched GPU operations will complete and resolve fully.
 	// Once the timeline reaches the value in uint64_t, CPU can safely read host copy.
 	uint64_t mark_submission_timeline();
+
+	bool texture_may_super_sample(const PageRect &rect) const;
 
 private:
 	GSInterface &cb;

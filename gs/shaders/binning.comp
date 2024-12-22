@@ -32,6 +32,7 @@ layout(push_constant) uniform Registers
     uint instance;
     int end_primitives;
     uint num_samples;
+    int force_super_sample;
 } registers;
 
 layout(std430, set = 1, binding = 0) buffer SingleSampledWork
@@ -112,6 +113,10 @@ void update_heuristics(
         requires_super_sample = true;
     if ((s & (1u << STATE_BIT_Z_WRITE)) != 0)
         has_z_write = true;
+
+    uint t = primitive_attr.data[primitive_index].tex;
+    if ((t & TEX_PER_SAMPLE_BIT) != 0)
+        requires_super_sample = true;
 }
 
 void main()
@@ -182,7 +187,7 @@ void main()
     int coarse_primitive_list_offset = coarse_tile_linear * constants.coarse_primitive_list_stride;
 
     uint write_offset = 0;
-    bool requires_super_sample = false;
+    bool requires_super_sample = registers.force_super_sample != 0;
     bool requires_super_sample_when_z_writes = false;
     bool has_z_write = false;
 
@@ -214,7 +219,7 @@ void main()
                     if (invocation < 32u && (u32_mask & (1u << invocation)) != 0u)
                     {
                         binned = bin_primitive(fine_tile_lo, fine_tile_hi, primitive_index);
-                        if (SUPER_SAMPLED && binned)
+                        if (SUPER_SAMPLED && binned && !requires_super_sample)
                             update_heuristics(primitive_index, requires_super_sample, requires_super_sample_when_z_writes, has_z_write);
                     }
 
@@ -245,7 +250,7 @@ void main()
                     STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) == registers.instance)
                 {
                     binned = bin_primitive(fine_tile_lo, fine_tile_hi, primitive_index);
-                    if (SUPER_SAMPLED && binned)
+                    if (SUPER_SAMPLED && binned && !requires_super_sample)
                         update_heuristics(primitive_index, requires_super_sample, requires_super_sample_when_z_writes, has_z_write);
                 }
             }

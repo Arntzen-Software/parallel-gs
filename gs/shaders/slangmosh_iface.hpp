@@ -14,7 +14,7 @@ template <typename Program = Vulkan::Program *, typename Shader = Vulkan::Shader
 struct Shaders
 {
 	Program binning = {};
-	Program upload = {};
+	Program upload[2] = {};
 	Program clut_write = {};
 	Program vram_copy = {};
 	Program triangle_setup = {};

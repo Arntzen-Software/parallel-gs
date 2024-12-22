@@ -70,6 +70,7 @@ const bool HAS_SCANMSK = (VARIANT_FLAGS & VARIANT_FLAG_HAS_SCANMSK_BIT) != 0;
 const bool HAS_PRIMITIVE_RANGE = (VARIANT_FLAGS & VARIANT_FLAG_HAS_PRIMITIVE_RANGE_BIT) != 0;
 const bool HAS_SUPER_SAMPLE_REFERENCE = (VARIANT_FLAGS & VARIANT_FLAG_HAS_SUPER_SAMPLE_REFERENCE_BIT) != 0;
 const bool FEEDBACK_READS_DEPTH = (VARIANT_FLAGS & VARIANT_FLAG_FEEDBACK_DEPTH_BIT) != 0;
+const bool HAS_TEXTURE_ARRAY = (VARIANT_FLAGS & VARIANT_FLAG_HAS_TEXTURE_ARRAY_BIT) != 0;
 
 layout(std430, set = 0, binding = BINDING_CLUT) readonly buffer CLUT16
 {
@@ -80,6 +81,8 @@ layout(std430, set = DESCRIPTOR_SET_WORKGROUP_LIST, binding = 0) readonly buffer
 {
 	uvec2 work_items[];
 };
+
+layout(set = 0, binding = BINDING_PHASE_LUT) uniform usampler2D uPhaseLUT;
 
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
 layout(rgba8, set = 0, binding = BINDING_FEEDBACK_COLOR) writeonly uniform image2DArray FeedbackColor;
@@ -104,7 +107,6 @@ struct ShadeRequest
 	bool multisample;
 	bool perspective;
 	bool z_greater;
-	bool st_bb;
 	uint z;
 	uint state;
 	float i, j;
@@ -119,7 +121,6 @@ struct ShadeResultEarly
 struct TileInfo
 {
 	ivec2 fb_pixel;
-	ivec2 fb_pixel_single_rate;
 	ivec2 tile_lo;
 	ivec2 tile_hi;
 	int fb_index;
@@ -295,10 +296,9 @@ TileInfo get_tile_info()
 			tile_index.y += int(gl_WorkGroupID.x / (NUM_SAMPLES_X * 2));
 			local_pixel.y =
 				int(bitfieldExtract(gl_SubgroupInvocationID, 0, 3)) +
-				int(bitfieldExtract(gl_SubgroupInvocationID, 4, 1)) * 8;
+				int(bitfieldExtract(gl_SubgroupInvocationID, 5, 1)) * 8;
 			local_pixel.x =
-				int(bitfieldExtract(gl_SubgroupInvocationID, 3, 1)) +
-				int(bitfieldExtract(gl_SubgroupInvocationID, 5, 1)) * 2;
+				int(bitfieldExtract(gl_SubgroupInvocationID, 3, 2));
 		}
 		else
 		{
@@ -352,10 +352,6 @@ TileInfo get_tile_info()
 
 	// This is in high-res domain.
 	info.fb_pixel = fb_tile_base + tile_size * tile_index + local_pixel;
-
-	// Some primitives will be snapped to single-rate where we expect UI elements or similar.
-	// For now, snap sprite primitives to single rate.
-	info.fb_pixel_single_rate = info.fb_pixel & ~(SAMPLING_RATE_DIM - 1);
 
 	info.fb_index = int(swizzle_PS2(
 		info.fb_pixel.x >> SAMPLING_RATE_DIM_LOG2,
@@ -627,10 +623,19 @@ void end_tile()
 		// potential to run less work later.
 		// If all primitives for a tile are single-sampled, and there are no valid super-sampled pixels,
 		// we can demote super-sampling to single-sampling.
+		bool preserve_samples = registers.color_preserve_samples != 0u;
+		uint first_fb_color = subgroupShuffle(fb_color, gl_SubgroupInvocationID & ~(NUM_SAMPLES - 1));
 
 		// This kind of shuffle should be easy to optimize on AMD, even on wave64.
-		super_sample_required_color = subgroupShuffle(fb_color, gl_SubgroupInvocationID & ~(NUM_SAMPLES - 1)) != fb_color;
-		super_sample_required_color = ballot_reduce_broadcast(super_sample_required_color);
+		if (preserve_samples)
+		{
+			super_sample_required_color = true;
+		}
+		else
+		{
+			super_sample_required_color = first_fb_color != fb_color;
+			super_sample_required_color = ballot_reduce_broadcast(super_sample_required_color);
+		}
 
 		if (Z_SENSITIVE)
 		{
@@ -660,16 +665,23 @@ void end_tile()
 				}
 			}
 
-			vec4 fb_color_float = unpackUnorm4x8(fb_color);
-			if (NUM_SAMPLES >= 16)
-				fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 8);
-			if (NUM_SAMPLES >= 8)
-				fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 4);
-			if (NUM_SAMPLES >= 4)
-				fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 2);
-			fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 1);
-			fb_color_float /= float(NUM_SAMPLES);
-			fb_color = packUnorm4x8(fb_color_float);
+			if (preserve_samples)
+			{
+				fb_color = first_fb_color;
+			}
+			else
+			{
+				vec4 fb_color_float = unpackUnorm4x8(fb_color);
+				if (NUM_SAMPLES >= 16)
+					fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 8);
+				if (NUM_SAMPLES >= 8)
+					fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 4);
+				if (NUM_SAMPLES >= 4)
+					fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 2);
+				fb_color_float = fb_color_float + subgroupShuffleXor(fb_color_float, 1);
+				fb_color_float /= float(NUM_SAMPLES);
+				fb_color = packUnorm4x8(fb_color_float);
+			}
 		}
 
 		if (Z_SENSITIVE)
@@ -794,17 +806,22 @@ ShadeResultEarly shade_early(uint primitive_index)
 
 	float i, j;
 
-	ivec2 fb_pixel = tile.fb_pixel;
-
 	// Snap the effective pixel to single-rate coordinates when we risk bad upscale.
 	// We can probably make this a dedicated state bit.
 	const uint SNAP_RASTER_BIT = (1u << STATE_BIT_SNAP_RASTER);
 	const uint SNAP_ATTR_BIT = (1u << STATE_BIT_SNAP_ATTRIBUTE);
 
+	ivec2 raster_fb_pixel;
 	if (SUPER_SAMPLE && (prim_state & SNAP_RASTER_BIT) != 0)
-		fb_pixel = tile.fb_pixel_single_rate;
+	{
+		raster_fb_pixel = tile.fb_pixel & registers.snap_raster_mask;
+		if (HAS_TEXTURE_ARRAY && SUPER_SAMPLE && (primitive_attr.data[primitive_index].tex & TEX_SAMPLE_MAPPING_BIT) != 0)
+			raster_fb_pixel.y = tile.fb_pixel.y & registers.snap_raster_mask.x;
+	}
+	else
+		raster_fb_pixel = tile.fb_pixel;
 
-	res.request.coverage = evaluate_coverage(prim, fb_pixel, i, j,
+	res.request.coverage = evaluate_coverage(prim, raster_fb_pixel, i, j,
 			res.request.multisample, SAMPLING_RATE_DIM_LOG2);
 
 	if (HAS_SCANMSK)
@@ -857,14 +874,26 @@ ShadeResultEarly shade_early(uint primitive_index)
 	// This will function more like MSAA rather than SSAA. We still get edge-antialiasing at least.
 	// Technically, we could also have a problem where UI elements are drawn at a negative offset that is less than one pixel.
 	// With multisampling, we end up getting coverage on unexpected pixels this way as well, but that case should be rare.
-	res.request.st_bb = false;
-	if (SUPER_SAMPLE && (prim_state & (SNAP_RASTER_BIT | SNAP_ATTR_BIT)) == SNAP_ATTR_BIT)
+
+	if (SUPER_SAMPLE)
 	{
-		vec2 snap_ij = evaluate_barycentric_ij(prim.b, prim.c, prim.inv_area,
-				prim.error_i, prim.error_j, tile.fb_pixel_single_rate, SAMPLING_RATE_DIM_LOG2);
-		i = snap_ij.x;
-		j = snap_ij.y;
-		res.request.st_bb = true;
+		uint snap_state = prim_state & (SNAP_RASTER_BIT | SNAP_ATTR_BIT);
+		if (snap_state == SNAP_ATTR_BIT)
+		{
+			// Classic MSAA.
+			vec2 bary = evaluate_barycentric_ij(prim.b, prim.c, prim.inv_area,
+				prim.error_i, prim.error_j, tile.fb_pixel & registers.snap_raster_mask, SAMPLING_RATE_DIM_LOG2);
+			i = bary.x;
+			j = bary.y;
+		}
+		else if (HAS_TEXTURE_ARRAY && snap_state == SNAP_RASTER_BIT)
+		{
+			// For SSAA textured sprites, we may snap coverage, but we want per-sample interpolation.
+			vec2 bary = evaluate_barycentric_ij(prim.b, prim.c, prim.inv_area,
+				prim.error_i, prim.error_j, tile.fb_pixel, SAMPLING_RATE_DIM_LOG2);
+			i = bary.x;
+			j = bary.y;
+		}
 	}
 
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
@@ -1119,21 +1148,79 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 	if (sampler_clamp_t)
 		uv_1.y = texture_clamp(uv_1.y, region_coords.yw, LOD_1);
 
-	// Avoid micro-precision issues with UV and flooring + nearest.
-	// Exact rounding on hardware is somwhat unclear.
-	// SotC requires exact rounding precision and is hit particularly bad.
-	// If the epsilon is too high, then FF X save screen is screwed over, so ... uh, ye.
-	// We likely need a more principled approach that is actually HW accurate in fixed point.
-	uv_1 = (floor(uv_1 * 16.0 + UV_EPSILON_PRE_SNAP) + UV_EPSILON_POST_SNAP) * inv_scale_1 * 0.0625 + bias;
-
 	vec4 color_1;
 
-	// The sampler may be divergent if we have MMIN != MMAG. Most likely it will not.
-	// With newer Vulkan spec clarification, we don't need nonuniformEXT here as long as it's subgroup uniform :)
-	if (sampler_index != 0)
-		color_1 = textureLod(sampler2D(bindless_textures[tex_index], linear_sampler), uv_1, LOD_1);
+	if (HAS_TEXTURE_ARRAY && tex_info.arrayed != 0)
+	{
+		bool is_per_sample = (tex_word & TEX_PER_SAMPLE_BIT) != 0;
+		bool sample_mapping = (tex_word & TEX_SAMPLE_MAPPING_BIT) != 0;
+		bool force_resolved = (tex_word & TEX_SAMPLE_RESOLVED_BIT) != 0;
+		vec2 uv = uv_1 + UV_EPSILON_PRE_SNAP / 16.0;
+		int layer;
+
+		if (is_per_sample && !sample_mapping && !force_resolved)
+		{
+			precise vec2 shift_uv = uv - 0.5;
+			vec2 floored_uv = floor(shift_uv);
+			uvec2 lut = textureLod(uPhaseLUT, shift_uv - floored_uv, mag_linear ? 0.0 : 1.0).xy;
+			vec4 weights = unpackUnorm4x8(lut.y);
+
+			color_1 = vec4(0.0);
+			vec2 uv = (floored_uv + 0.5) * inv_scale_1 + bias;
+			bool force_nearest = !mag_linear || any(equal(floored_uv.xyxy, region_coords));
+
+			// On the edge we risk sampling against something which does not exist.
+			// Just pick the nearest sample point which is in current texel.
+			// The LUT guarantees that texel offset for first sample is 0.
+			int layer = int(bitfieldExtract(lut.x, 0, 4));
+			color_1 = textureLod(
+				sampler2DArray(bindless_textures_array[tex_index], nearest_sampler),
+				vec3(uv, layer + 1), 0.0);
+
+			if (!force_nearest)
+			{
+				color_1 *= weights.x;
+				for (int i = 1; i < 4; i++)
+				{
+					if (weights[i] > 0.0)
+					{
+						layer = int(bitfieldExtract(lut.x, 4 * i, 4));
+						int texel_x = bitfieldExtract(int(lut.x), 16 + 4 * i, 2);
+						int texel_y = bitfieldExtract(int(lut.x), 18 + 4 * i, 2);
+						color_1 += weights[i] * textureLod(
+							sampler2DArray(bindless_textures_array[tex_index], nearest_sampler),
+							vec3(uv + vec2(texel_x, texel_y) * inv_scale_1, layer + 1), 0.0);
+					}
+				}
+			}
+		}
+		else
+		{
+			uv = uv * inv_scale_1 + bias;
+			int layer = sample_mapping ? int((gl_SubgroupInvocationID & (NUM_SAMPLES - 1))) + 1 : 0;
+			vec3 uv_layer = vec3(uv, layer);
+			if (mag_linear)
+				color_1 = textureLod(sampler2DArray(bindless_textures_array[tex_index], linear_sampler), uv_layer, 0.0);
+			else
+				color_1 = textureLod(sampler2DArray(bindless_textures_array[tex_index], nearest_sampler), uv_layer, 0.0);
+		}
+	}
 	else
-		color_1 = textureLod(sampler2D(bindless_textures[tex_index], nearest_sampler), uv_1, LOD_1);
+	{
+		// Avoid micro-precision issues with UV and flooring + nearest.
+		// Exact rounding on hardware is somwhat unclear.
+		// SotC requires exact rounding precision and is hit particularly bad.
+		// If the epsilon is too high, then FF X save screen is screwed over, so ... uh, ye.
+		// We likely need a more principled approach that is actually HW accurate in fixed point.
+		uv_1 = (floor(uv_1 * 16.0 + UV_EPSILON_PRE_SNAP) + UV_EPSILON_POST_SNAP) * inv_scale_1 * 0.0625 + bias;
+
+		// The sampler may be divergent if we have MMIN != MMAG. Most likely it will not.
+		// With newer Vulkan spec clarification, we don't need nonuniformEXT here as long as it's subgroup uniform :)
+		if (sampler_index != 0)
+			color_1 = textureLod(sampler2D(bindless_textures[tex_index], linear_sampler), uv_1, LOD_1);
+		else
+			color_1 = textureLod(sampler2D(bindless_textures[tex_index], nearest_sampler), uv_1, LOD_1);
+	}
 
 	vec4 color = roundEven(255.0 * color_1);
 
@@ -1167,7 +1254,7 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 
 vec4 compute_combined_color(
 		uint primitive_index,
-		uint tex, uint combiner_mode, bool perspective, bool st_bb)
+		uint tex, uint combiner_mode, bool perspective)
 {
 	float i = pending_shade_request.i;
 	float j = pending_shade_request.j;
@@ -1200,8 +1287,6 @@ vec4 compute_combined_color(
 	{
 		vec3 stq = stqf0.xyz + stqf1.xyz * i + stqf2.xyz * j;
 		// Unsure if we should clip STQ here too to FP24.
-		if (NUM_SAMPLES > 1 && st_bb)
-			stq.xy = clamp(stq.xy, attrs.st_bb.xy, attrs.st_bb.zw);
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
 		last_stqf.z = stq.z;
 #endif
@@ -1384,7 +1469,7 @@ void shade_resolve(uint primitive_index, uint state_index, uint tex)
 	if (z_pass)
 	{
 		vec4 combined_color = compute_combined_color(primitive_index, tex, state.combiner,
-				pending_shade_request.perspective, pending_shade_request.st_bb);
+				pending_shade_request.perspective);
 		vec4 unpacked_fb_color = round(unpackUnorm4x8(fb_color) * 255.0);
 
 		bool write_fb = true;
