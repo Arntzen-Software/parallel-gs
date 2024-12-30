@@ -6,12 +6,16 @@
 #version 450
 
 #extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_samplerless_texture_functions : require
 #include "data_structures.h"
 #include "swizzle_utils.h"
 #include "utils.h"
 
 layout(location = 0) out vec4 FragColor;
 
+#if PROMOTED
+layout(set = 0, binding = 0) uniform texture2DArray uPromoted;
+#else
 layout(set = 0, binding = 0) readonly buffer VRAM32
 {
     uint data[];
@@ -21,6 +25,7 @@ layout(set = 0, binding = 0) readonly buffer VRAM16
 {
     uint16_t data[];
 } vram16;
+#endif
 
 layout(push_constant) uniform Registers
 {
@@ -38,6 +43,12 @@ layout(constant_id = 2) const uint SUPER_SAMPLES = 1;
 
 const bool is_tex_16bit = PSM == PSMCT16 || PSM == PSMCT16S || PSM == PSMZ16 || PSM == PSMZ16S;
 
+#if PROMOTED
+vec4 sample_vram(uvec2 coord, uint slice)
+{
+    return texelFetch(uPromoted, ivec3(coord, slice), 0);
+}
+#else
 vec4 sample_vram(uint addr, uint slice)
 {
     uint payload;
@@ -58,7 +69,11 @@ vec4 sample_vram(uint addr, uint slice)
 
     return unpackUnorm4x8(payload);
 }
+#endif
 
+#if PROMOTED
+bool super_sample_is_valid(uvec2 coord) { return true; }
+#else
 bool super_sample_is_valid(uint addr)
 {
     bool is_valid;
@@ -78,6 +93,7 @@ bool super_sample_is_valid(uint addr)
 
     return is_valid;
 }
+#endif
 
 void main()
 {
@@ -92,7 +108,13 @@ void main()
     uvec2 coord = single_sampled_coord * uvec2(1u, registers.phase_stride) +
         uvec2(registers.dbx, registers.dby + registers.phase);
 
+#if PROMOTED
+    #define addr coord
+    const int BASE_SSAA_LAYER = 1;
+#else
     uint addr = swizzle_PS2(coord.x, coord.y, registers.fbp * PGS_BLOCKS_PER_PAGE, registers.fbw, PSM, VRAM_MASK);
+    const int BASE_SSAA_LAYER = 2;
+#endif
 
     if (SUPER_SAMPLES == 1)
     {
@@ -113,7 +135,7 @@ void main()
             else
                 quad_offset = (super_sampled_coord.x & 1u) + (super_sampled_coord.y & 1u) * 2u;
 
-            uint base_slice = 2 + NUM_SSAA_SAMPLES * quad_offset;
+            uint base_slice = BASE_SSAA_LAYER + NUM_SSAA_SAMPLES * quad_offset;
 
             FragColor = vec4(0.0);
             for (uint i = 0; i < NUM_SSAA_SAMPLES; i++)

@@ -251,6 +251,8 @@ public:
 	void promote_cached_texture_upload_cpu(const PageRect &rect);
 	void commit_cached_texture();
 
+	Vulkan::ImageHandle copy_cached_texture(const Vulkan::Image &img, const VkRect2D &rect);
+
 	// Creating 1k+ VkImages per frame can be a noticeable CPU burden on drivers.
 	// Computing swizzling layouts and stuff is quite complicated and slow.
 	// It's not just about memory allocation.
@@ -285,7 +287,8 @@ public:
 	void end_host_write_vram_access();
 
 	ScanoutResult vsync(const PrivRegisterState &priv, const VSyncInfo &info,
-	                    uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2);
+	                    uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2,
+	                    const Vulkan::Image *promoted1, const Vulkan::Image *promoted2);
 	bool vsync_can_skip(const PrivRegisterState &priv, const VSyncInfo &info) const;
 
 	static TexRect compute_effective_texture_rect(const TextureDescriptor &desc);
@@ -442,7 +445,8 @@ private:
 	};
 
 	void sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::Image &img,
-	                         const DISPFBBits &dispfb, const SamplingRect &rect, uint32_t super_samples);
+	                         const DISPFBBits &dispfb, const SamplingRect &rect, uint32_t super_samples,
+	                         const Vulkan::Image *promoted);
 
 	static SamplingRect compute_circuit_rect(const PrivRegisterState &priv, uint32_t phase,
 	                                         const DISPLAYBits &display, bool force_progressive);
@@ -480,7 +484,7 @@ private:
 	// Slangmosh
 	Shaders<> shaders;
 	Vulkan::Program *blit_quad = nullptr;
-	Vulkan::Program *sample_quad = nullptr;
+	Vulkan::Program *sample_quad[2] = {};
 	Vulkan::Program *weave_quad = nullptr;
 
 	void drain_compilation_tasks();

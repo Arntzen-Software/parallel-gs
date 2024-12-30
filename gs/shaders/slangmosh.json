@@ -51,7 +51,10 @@
 		},
 		{
 			"name": "sample_circuit",
-			"path": "sample_circuit.frag"
+			"path": "sample_circuit.frag",
+			"variants": [
+				{ "define": "PROMOTED", "count": 2, "resolve": false }
+			]
 		},
 		{
 			"name": "blit_circuit",
