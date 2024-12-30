@@ -299,6 +299,10 @@ void GSInterface::flush_render_pass(FlushReason reason)
 
 		renderer.flush_rendering(rp);
 
+		// Need to call this after flush rendering to ensure that the images
+		// have been cached properly.
+		promote_render_pass_to_backbuffer(rp);
+
 		TRACE_HEADER("FLUSH RENDER", rp);
 	}
 
@@ -2945,6 +2949,8 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 			state_tracker.texflush_counter++;
 		}
 
+		invalidate_promoted_backbuffer(transfer_state.copy.bitbltbuf.desc.DBP / PGS_BLOCKS_PER_PAGE);
+
 		TRACE_HEADER("VRAM COPY", transfer_state.copy);
 	}
 
@@ -3010,6 +3016,7 @@ void GSInterface::init_transfer()
 			state_tracker.texflush_counter++;
 		}
 		renderer.copy_vram(transfer_state.copy, dst_rect);
+		invalidate_promoted_backbuffer(transfer_state.copy.bitbltbuf.desc.DBP / PGS_BLOCKS_PER_PAGE);
 	}
 	else if (XDIR == HOST_TO_LOCAL)
 	{
@@ -4221,6 +4228,170 @@ void GSInterface::set_debug_mode(const DebugMode &mode)
 void GSInterface::set_hacks(const Hacks &hacks_)
 {
 	hacks = hacks_;
+
+	if (!hacks.backbuffer_promotion)
+	{
+		for (auto &b : promoted_backbuffers)
+			b = {};
+		num_promoted_backbuffers = 0;
+	}
+}
+
+PromotedBackbuffer *GSInterface::find_promoted_backbuffer(uint32_t fbp)
+{
+	for (uint32_t i = 0; i < num_promoted_backbuffers; i++)
+		if (promoted_backbuffers[i].FBP == fbp)
+			return &promoted_backbuffers[i];
+
+	return nullptr;
+}
+
+void GSInterface::invalidate_promoted_backbuffer(uint32_t fbp)
+{
+	for (uint32_t i = 0; i < num_promoted_backbuffers; i++)
+		if (promoted_backbuffers[i].FBP == fbp)
+			promoted_backbuffers[i].img.reset();
+}
+
+void GSInterface::promote_render_pass_to_backbuffer(const RenderPass &rp)
+{
+	if (!hacks.backbuffer_promotion)
+		return;
+
+	for (uint32_t instance = 0; instance < rp.num_instances; instance++)
+	{
+		auto &inst = rp.instances[instance];
+		uint32_t fbp = inst.fb.frame.desc.FBP;
+		auto *promoted = find_promoted_backbuffer(fbp);
+		if (!promoted)
+			continue;
+
+		promoted->img.reset();
+
+		ivec2 lo = ivec2(INT32_MAX);
+		ivec2 hi = ivec2(INT32_MIN);
+		bool is_valid_blit = true;
+		uint32_t promoted_tex_index = UINT32_MAX;
+
+		for (uint32_t prim = 0; prim < rp.num_primitives; prim++)
+		{
+			uint32_t state = render_pass.prim[prim].state;
+			uint32_t state_index = (state >> STATE_INDEX_BIT_OFFSET) & ((1 << STATE_INDEX_BIT_COUNT) - 1);
+			uint32_t prim_instance = (state >> STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET) &
+			                         ((1 << STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) - 1);
+
+			if (prim_instance != instance)
+				continue;
+
+			if ((state & (1u << STATE_BIT_SPRITE)) == 0)
+			{
+				is_valid_blit = false;
+				break;
+			}
+
+			auto &s = render_pass.state_vectors[state_index];
+			if ((s.combiner & COMBINER_TME_BIT) == 0)
+			{
+				is_valid_blit = false;
+				break;
+			}
+
+			uint32_t tex_index = (render_pass.prim[prim].tex >> TEX_TEXTURE_INDEX_OFFSET) &
+			                     ((1 << TEX_TEXTURE_INDEX_BITS) - 1);
+
+			// Ignore texture feedback.
+			if (tex_index >= rp.num_textures)
+			{
+				is_valid_blit = false;
+				break;
+			}
+
+			if (promoted_tex_index != UINT32_MAX && tex_index != promoted_tex_index)
+			{
+				is_valid_blit = false;
+				break;
+			}
+
+			promoted_tex_index = tex_index;
+
+			// Ignore if mipmapped.
+			if (rp.textures[tex_index].view->get_image().get_create_info().levels > 1)
+			{
+				is_valid_blit = false;
+				break;
+			}
+
+			ivec2 uv0;
+			ivec2 uv1;
+
+			// Crude heuristic, just look at the bounding box being sampled.
+			// Promote that region to be the new backbuffer.
+			if ((state & (1 << STATE_BIT_PERSPECTIVE)) != 0)
+			{
+				auto &attr0 = render_pass.attributes[3 * prim + 0];
+				auto &attr1 = render_pass.attributes[3 * prim + 1];
+				constexpr float rounding_epsilon = 1.0f / 1024.0f;
+				uv0 = ivec2((attr0.st / attr0.q) * rp.textures[tex_index].info.sizes.xy() + rounding_epsilon);
+				uv1 = ivec2((attr1.st / attr1.q) * rp.textures[tex_index].info.sizes.xy() + rounding_epsilon);
+			}
+			else
+			{
+				uv0 = ivec2(render_pass.attributes[3 * prim + 0].uv) >> PGS_SUBPIXEL_BITS;
+				uv1 = ivec2(render_pass.attributes[3 * prim + 1].uv) >> PGS_SUBPIXEL_BITS;
+			}
+
+			lo = muglm::min(lo, uv0);
+			lo = muglm::min(lo, uv1);
+			hi = muglm::max(hi, uv0);
+			hi = muglm::max(hi, uv1);
+		}
+
+		if (!is_valid_blit)
+			continue;
+
+		auto &img = render_pass.tex_infos[promoted_tex_index].view->get_image();
+		hi = muglm::min(hi, ivec2(img.get_width(), img.get_height()));
+		lo = muglm::min(lo, ivec2(img.get_width(), img.get_height()));
+
+		// Assume bottom-right rules leading to rounding down here.
+		// Missing a pixel is better than including too many pixels since it may contain garbage.
+
+		ivec2 extent = hi - lo;
+		if (extent.x > 0 && extent.y > 0)
+		{
+			// The cached texture has been recycled, so need to make a copy of it for later scanout.
+			// We don't know yet if we need to resolve the multisamples, so just copy all samples as-is.
+			// This should happen at most once per frame, so it's not a big deal.
+			promoted->img = renderer.copy_cached_texture(
+					img, VkRect2D{{lo.x, lo.y}, {uint32_t(extent.x), uint32_t(extent.y)}});
+		}
+	}
+}
+
+void GSInterface::register_backbuffer_promotion_fbp(uint32_t fbp)
+{
+	for (uint32_t i = 0; i < num_promoted_backbuffers; i++)
+	{
+		if (promoted_backbuffers[i].FBP == fbp)
+		{
+			if (i)
+			{
+				auto tmp = std::move(promoted_backbuffers[i]);
+				for (uint32_t j = i; j; j--)
+					promoted_backbuffers[j] = std::move(promoted_backbuffers[j - 1]);
+				promoted_backbuffers[0] = std::move(tmp);
+			}
+			return;
+		}
+	}
+
+	if (num_promoted_backbuffers == MaxPromotedBackbuffers)
+		num_promoted_backbuffers--;
+	for (uint32_t j = num_promoted_backbuffers; j; j--)
+		promoted_backbuffers[j] = std::move(promoted_backbuffers[j - 1]);
+	promoted_backbuffers[0] = {};
+	promoted_backbuffers[0].FBP = fbp;
+	num_promoted_backbuffers++;
 }
 
 ScanoutResult GSInterface::vsync(const VSyncInfo &info)
@@ -4237,7 +4408,33 @@ ScanoutResult GSInterface::vsync(const VSyncInfo &info)
 
 	renderer.set_field_aware_super_sampling(render_pass.field_aware_rendering);
 
-	return renderer.vsync(priv_registers, info, sampling_rate_x_log2, sampling_rate_y_log2);
+	const Vulkan::Image *promoted1 = nullptr;
+	const Vulkan::Image *promoted2 = nullptr;
+	if (priv_registers.pmode.EN1)
+	{
+		auto *promoted = find_promoted_backbuffer(priv_registers.dispfb1.FBP);
+		promoted1 = promoted ? promoted->img.get() : nullptr;
+	}
+
+	if (priv_registers.pmode.EN2)
+	{
+		auto *promoted = find_promoted_backbuffer(priv_registers.dispfb2.FBP);
+		promoted2 = promoted ? promoted->img.get() : nullptr;
+	}
+
+	auto result = renderer.vsync(priv_registers, info,
+	                             sampling_rate_x_log2, sampling_rate_y_log2,
+								 promoted1, promoted2);
+
+	if (hacks.backbuffer_promotion && result.image)
+	{
+		if (priv_registers.pmode.EN1)
+			register_backbuffer_promotion_fbp(priv_registers.dispfb1.FBP);
+		if (priv_registers.pmode.EN2)
+			register_backbuffer_promotion_fbp(priv_registers.dispfb2.FBP);
+	}
+
+	return result;
 }
 
 bool GSInterface::vsync_can_skip(const VSyncInfo &info) const

@@ -783,7 +783,8 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 	Vulkan::ResourceLayout layout;
 	shaders = Shaders<>(*device_, layout, 0);
 	blit_quad = device_->request_program(shaders.quad, shaders.blit_circuit);
-	sample_quad = device_->request_program(shaders.quad, shaders.sample_circuit);
+	sample_quad[0] = device_->request_program(shaders.quad, shaders.sample_circuit[0]);
+	sample_quad[1] = device_->request_program(shaders.quad, shaders.sample_circuit[1]);
 	weave_quad = device_->request_program(shaders.quad, shaders.weave);
 
 	flush_submit(0);
@@ -1252,6 +1253,45 @@ void GSRenderer::recycle_image_handle(Vulkan::ImageHandle image)
 	{
 		recycled_image_handles.push_back(std::move(image));
 	}
+}
+
+Vulkan::ImageHandle GSRenderer::copy_cached_texture(const Vulkan::Image &img, const VkRect2D &rect)
+{
+	ensure_command_buffer(direct_cmd, Vulkan::CommandBuffer::Type::Generic);
+	auto &cmd = *direct_cmd;
+
+	auto info = img.get_create_info();
+	info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+	info.width = rect.extent.width;
+	info.height = rect.extent.height;
+	info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	info.misc |= Vulkan::IMAGE_MISC_FORCE_ARRAY_BIT;
+
+	auto copy_img = device->create_image(info);
+	device->set_name(*copy_img, "Sharp Backbuffer");
+
+	cmd.begin_region("Sharp Backbuffer Copy");
+	cmd.image_barrier(img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+	                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+	                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+	cmd.image_barrier(*copy_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					  0, 0,
+	                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+
+	cmd.copy_image(*copy_img, img, {}, { rect.offset.x, rect.offset.y, 0 }, { rect.extent.width, rect.extent.height, 1 },
+	               { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, info.layers }, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, info.layers });
+
+	cmd.image_barrier(img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	                  VK_PIPELINE_STAGE_2_COPY_BIT, 0,
+	                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	cmd.image_barrier(*copy_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+	                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+	                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+	cmd.end_region();
+
+	return copy_img;
 }
 
 Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &desc)
@@ -3752,8 +3792,15 @@ void GSRenderer::transfer_overlap_barrier()
 }
 
 void GSRenderer::sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::Image &img, const DISPFBBits &dispfb,
-                                     const SamplingRect &rect, uint32_t super_samples)
+                                     const SamplingRect &rect, uint32_t super_samples,
+                                     const Vulkan::Image *promoted)
 {
+	if (promoted && promoted->get_create_info().layers == 1 && super_samples > 1)
+	{
+		LOGW("Attempting to use promoted backbuffer, but it is not super-sampled. Super sampled textures must be enabled.\n");
+		promoted = nullptr;
+	}
+
 	cmd.image_barrier(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 	                  0, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
@@ -3766,8 +3813,11 @@ void GSRenderer::sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::I
 	cmd.begin_render_pass(rp_info);
 
 	cmd.set_opaque_sprite_state();
-	cmd.set_storage_buffer(0, 0, *buffers.gpu);
-	cmd.set_program(sample_quad);
+	cmd.set_program(sample_quad[promoted ? 1 : 0]);
+	if (promoted)
+		cmd.set_texture(0, 0, promoted->get_view());
+	else
+		cmd.set_storage_buffer(0, 0, *buffers.gpu);
 
 	auto valid_extent = rect.valid_extent;
 	if (super_samples > 1)
@@ -3874,7 +3924,8 @@ bool GSRenderer::vsync_can_skip(const PrivRegisterState &priv, const VSyncInfo &
 }
 
 ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &info,
-                                uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2)
+                                uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2,
+                                const Vulkan::Image *promoted1, const Vulkan::Image *promoted2)
 {
 	if (!device)
 		return {};
@@ -4183,6 +4234,13 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		}
 
 		auto rect = compute_circuit_rect(priv, phase, priv.display1, force_progressive);
+
+		if (promoted1)
+		{
+			rect.image_extent.width = promoted1->get_width();
+			rect.image_extent.height = promoted1->get_height();
+		}
+
 		image_info.width = rect.image_extent.width;
 		image_info.height = rect.image_extent.height;
 
@@ -4194,7 +4252,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 				image_info.height *= 2;
 			}
 			circuit1 = device->create_image(image_info);
-			sample_crtc_circuit(cmd, *circuit1, priv.dispfb1, rect, super_samples);
+			sample_crtc_circuit(cmd, *circuit1, priv.dispfb1, rect, super_samples, promoted1);
 			device->set_name(*circuit1, "Circuit1");
 		}
 
@@ -4235,6 +4293,13 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		}
 
 		auto rect = compute_circuit_rect(priv, phase, priv.display2, force_progressive);
+
+		if (promoted2)
+		{
+			rect.image_extent.width = promoted2->get_width();
+			rect.image_extent.height = promoted2->get_height();
+		}
+
 		image_info.width = rect.image_extent.width;
 		image_info.height = rect.image_extent.height;
 
@@ -4246,7 +4311,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 				image_info.height *= 2;
 			}
 			circuit2 = device->create_image(image_info);
-			sample_crtc_circuit(cmd, *circuit2, priv.dispfb2, rect, super_samples);
+			sample_crtc_circuit(cmd, *circuit2, priv.dispfb2, rect, super_samples, promoted2);
 			device->set_name(*circuit2, "Circuit2");
 		}
 

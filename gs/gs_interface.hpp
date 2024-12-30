@@ -128,6 +128,12 @@ enum StateDirtyFlagBits : uint32_t
 };
 using StateDirtyFlags = uint32_t;
 
+struct PromotedBackbuffer
+{
+	uint32_t FBP;
+	Vulkan::ImageHandle img;
+};
+
 struct DebugMode
 {
 	bool feedback_render_target = false;
@@ -208,6 +214,14 @@ struct Hacks
 	// but may work around otherwise unusable performance on low-power devices or
 	// be useful to triage bad performance behavior.
 	bool unsynced_readbacks = false;
+
+	// Many games do a scaled "blit" at the end of a frame before handing it to CRTC.
+	// Common examples include:
+	// - Scaling 512x448 to 640x448 for stupid reasons, since CRTC can do that for you anyway.
+	// - Blit a backbuffer to a 16-bit frame buffer with dither, likely to save VRAM on scanout.
+	// When enabled, the code will attempt to detect blit patterns, and replace the scanout with the original input texture.
+	// This can lead to much improved image quality, but is not accurate and could cause issues in some odd cases.
+	bool backbuffer_promotion = false;
 };
 
 class GSInterface final
@@ -571,5 +585,13 @@ private:
 	bool super_sampled_textures = false;
 
 	void reset_context_state_registers();
+
+	enum { MaxPromotedBackbuffers = 4 };
+	PromotedBackbuffer promoted_backbuffers[MaxPromotedBackbuffers];
+	uint32_t num_promoted_backbuffers = 0;
+	void promote_render_pass_to_backbuffer(const RenderPass &rp);
+	void register_backbuffer_promotion_fbp(uint32_t fbp);
+	PromotedBackbuffer *find_promoted_backbuffer(uint32_t fbp);
+	void invalidate_promoted_backbuffer(uint32_t fbp);
 };
 }

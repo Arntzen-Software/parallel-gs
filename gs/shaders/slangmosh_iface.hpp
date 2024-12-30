@@ -21,7 +21,7 @@ struct Shaders
 	Program single_sample_heuristic = {};
 	Program ubershader[2][2] = {};
 	Shader quad = {};
-	Shader sample_circuit = {};
+	Shader sample_circuit[2] = {};
 	Shader blit_circuit = {};
 	Shader weave = {};
 	Shader sharpen_vert = {};
