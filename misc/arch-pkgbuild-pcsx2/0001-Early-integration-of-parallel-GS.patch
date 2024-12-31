@@ -1,4 +1,4 @@
-From 004e050e1a365ca6152e4001b27dbd4734000f28 Mon Sep 17 00:00:00 2001
+From 3811ca24a7457cacf9946ce7d3875867b1fa71b6 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sun, 23 Jun 2024 14:54:43 +0200
 Subject: [PATCH] Early integration of parallel-GS.
@@ -11,7 +11,7 @@ Subject: [PATCH] Early integration of parallel-GS.
  CMakeLists.txt                                |    8 +
  pcsx2-gsrunner/Main.cpp                       |    4 +
  pcsx2-qt/MainWindow.cpp                       |    3 +
- pcsx2-qt/Settings/GraphicsSettingsWidget.cpp  |   67 +-
+ pcsx2-qt/Settings/GraphicsSettingsWidget.cpp  |   70 +-
  pcsx2-qt/Settings/GraphicsSettingsWidget.ui   |   93 +
  pcsx2-qt/pcsx2-qt.vcxproj                     |    2 +-
  pcsx2/CMakeLists.txt                          |   18 +
@@ -30,7 +30,7 @@ Subject: [PATCH] Early integration of parallel-GS.
  pcsx2/ImGui/ImGuiFullscreen.cpp               |    2 +
  pcsx2/Pcsx2Config.cpp                         |   15 +-
  pcsx2/pcsx2.vcxproj                           |   52 +-
- 26 files changed, 3347 insertions(+), 872 deletions(-)
+ 26 files changed, 3350 insertions(+), 872 deletions(-)
  create mode 100644 3rdparty/vulkan/include/vk_video/vulkan_video_codec_av1std_encode.h
  create mode 100644 pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
@@ -3681,7 +3681,7 @@ index 616e9efa9..4fe7cfc8f 100644
  		GSRendererType::DX11,
  		GSRendererType::DX12,
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
-index 311143fd4..5cdc18eee 100644
+index 311143fd4..8578f9465 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 @@ -20,6 +20,9 @@ struct RendererInfo
@@ -3719,7 +3719,7 @@ index 311143fd4..5cdc18eee 100644
  	updateRendererDependentOptions();
  
  #ifndef _WIN32
-@@ -571,6 +585,32 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
+@@ -571,6 +585,35 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
  
  		dialog->registerWidgetHelp(
  			m_ui.swMipmap, tr("Mipmapping"), tr("Checked"), tr("Enables mipmapping, which some games require to render correctly."));
@@ -3729,19 +3729,22 @@ index 311143fd4..5cdc18eee 100644
 +		                              "More than 4x SSAA is not recommended as there is diminishing returns in output quality. "
 +		                              "16x SSAA yields a very nice result, but requires reasonably powerful hardware in some games."));
 +
-+		dialog->registerWidgetHelp(m_ui.pgsSharpBackbuffer, tr("Sharp backbuffer hacks"), tr("Unchecked"),
++		dialog->registerWidgetHelp(m_ui.pgsSharpBackbuffer, tr("Sharp backbuffer hacks (experimental)"), tr("Unchecked"),
 +		                           tr("Some games perform a blit to the backbuffer. "
 +		                              "This can significantly reduce image quality, since games tend to either scale the image, or convert the image to 16-bit colors. "
 +		                              "This hack attempts to present the original image instead. This option may help alleviate that in lieu of a more proper game patch."));
 +
-+		dialog->registerWidgetHelp(m_ui.pgsSuperSampleTextures, tr("Super-sample Textures"), tr("Unchecked"),
++		dialog->registerWidgetHelp(m_ui.pgsSuperSampleTextures, tr("Super-sample Textures (experimental)"), tr("Unchecked"),
 +		                           tr("Ensures that frame buffer effects are sampled with all super-samples intact. "
-+		                              "Costs some GPU performance and VRAM, but may significantly improve image quality, especially when enabling high-res scanout."));
++		                              "Costs some GPU performance and VRAM, but may significantly improve image quality, especially when enabling high-res scanout. "
++									  "This option is highly experimental and may show many rendering artifacts."));
 +
-+		dialog->registerWidgetHelp(m_ui.pgsHighResScanout, tr("paraLLEl-GS High-res Scanout (experimental)"), tr("Unchecked"),
++		dialog->registerWidgetHelp(m_ui.pgsHighResScanout, tr("High-res Scanout (experimental)"), tr("Unchecked"),
 +		                           tr("When using SSAA, attempts to scan-out a higher resolution result based on stored super-samples. "
 +		                              "Requires at least 4x SSAA (ordered) to work. Can benefit from 16x SSAA, at a steep GPU processing cost. "
-+									  "Highly game dependent if it works well. Common issues include pixellated output, or lack of sharpness."));
++									  "Highly game dependent if it works well. Common issues include pixellated output, or lack of sharpness. "
++									  "When playing field rendered games, may eliminate most de-interlacing artifacts. "
++									  "May need super-sampled texture option to be enabled for good results."));
 +
 +		dialog->registerWidgetHelp(m_ui.pgsDisableMipmaps, tr("Disable mip-mapping"), tr("Unchecked"),
 +		                           tr("Disables mip-mapping. May give a sharper image in games using mip-mapping intended for native resolution. "
@@ -3752,7 +3755,7 @@ index 311143fd4..5cdc18eee 100644
  	}
  
  	// Hardware Fixes tab
-@@ -1084,6 +1124,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+@@ -1084,6 +1127,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
  	const bool is_hardware = (type == GSRendererType::DX11 || type == GSRendererType::DX12 || type == GSRendererType::OGL ||
  							  type == GSRendererType::VK || type == GSRendererType::Metal);
  	const bool is_software = (type == GSRendererType::SW);
@@ -3760,7 +3763,7 @@ index 311143fd4..5cdc18eee 100644
  	const bool is_auto = (type == GSRendererType::Auto);
  	const bool is_vk = (type == GSRendererType::VK);
  	const bool is_disable_barriers = (type == GSRendererType::DX11 || type == GSRendererType::DX12 || type == GSRendererType::Metal || type == GSRendererType::SW);
-@@ -1098,22 +1139,32 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+@@ -1098,22 +1142,32 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
  	m_ui.tabs->setTabEnabled(2, is_software);
  	m_ui.tabs->setTabVisible(2, is_software);
  
