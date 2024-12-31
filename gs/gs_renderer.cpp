@@ -201,6 +201,7 @@ void GSRenderer::init_phase_lut(uint32_t sampling_rate_x_log2, uint32_t sampling
 		// Just need to bind something to be spec compliant.
 		info.width = 1;
 		info.height = 1;
+		info.levels = 1;
 		buffers.phase_lut = device->create_image(info, level_data);
 		return;
 	}
