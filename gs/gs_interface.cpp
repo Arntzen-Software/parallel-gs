@@ -1375,6 +1375,26 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 
 				long_term_cache_texture = (hazard_bb.z + 64 < hazard_bb.x) || (hazard_bb.w + 64 < hazard_bb.y);
 			}
+
+			if (long_term_cache_texture && desc.tex1.desc.MMAG)
+			{
+				// Check case for in-place blur. If a texture is being sampled at a very tiny bias with linear filter, assume
+				// the game is abusing some texcache behavior to make it work somehow, or at least look okay.
+				// It tends to look very broken, especially when using SSAA textures.
+				int u_offset = std::abs(uv_bb.x - bb.x);
+				int v_offset = std::abs(uv_bb.y - bb.y);
+				int u_size = uv_bb.z - uv_bb.x;
+				int v_size = uv_bb.w - uv_bb.y;
+				int x_size = bb.z - bb.x;
+				int y_size = bb.w - bb.y;
+
+				// For linear filter, UV bb is generally 2 extra pixels.
+				u_size -= 2;
+				v_size -= 2;
+
+				if (u_offset <= 1 && v_offset <= 1 && u_size <= x_size && v_size <= y_size)
+					long_term_cache_texture = false;
+			}
 		}
 		else if (desc.clamp.desc.WMS == CLAMPBits::REGION_CLAMP && desc.clamp.desc.WMT == CLAMPBits::REGION_CLAMP)
 		{
