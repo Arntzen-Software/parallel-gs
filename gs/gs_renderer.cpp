@@ -4235,7 +4235,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 		auto rect = compute_circuit_rect(priv, phase, priv.display1, force_progressive);
 
-		if (promoted1)
+		if (promoted1 && promoted1->get_create_info().layers > super_samples)
 		{
 			rect.image_extent.width = promoted1->get_width();
 			rect.image_extent.height = promoted1->get_height();
@@ -4294,7 +4294,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 		auto rect = compute_circuit_rect(priv, phase, priv.display2, force_progressive);
 
-		if (promoted2)
+		if (promoted2 && promoted2->get_create_info().layers > super_samples)
 		{
 			rect.image_extent.width = promoted2->get_width();
 			rect.image_extent.height = promoted2->get_height();
