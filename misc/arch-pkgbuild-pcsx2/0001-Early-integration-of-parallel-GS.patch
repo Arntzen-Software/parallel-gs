@@ -1,4 +1,4 @@
-From 5f5079006ee30f0f9dbe6fdf1602d71be3f820fe Mon Sep 17 00:00:00 2001
+From 004e050e1a365ca6152e4001b27dbd4734000f28 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sun, 23 Jun 2024 14:54:43 +0200
 Subject: [PATCH] Early integration of parallel-GS.
@@ -11,11 +11,11 @@ Subject: [PATCH] Early integration of parallel-GS.
  CMakeLists.txt                                |    8 +
  pcsx2-gsrunner/Main.cpp                       |    4 +
  pcsx2-qt/MainWindow.cpp                       |    3 +
- pcsx2-qt/Settings/GraphicsSettingsWidget.cpp  |   61 +-
- pcsx2-qt/Settings/GraphicsSettingsWidget.ui   |   86 +
+ pcsx2-qt/Settings/GraphicsSettingsWidget.cpp  |   67 +-
+ pcsx2-qt/Settings/GraphicsSettingsWidget.ui   |   93 +
  pcsx2-qt/pcsx2-qt.vcxproj                     |    2 +-
  pcsx2/CMakeLists.txt                          |   18 +
- pcsx2/Config.h                                |    6 +
+ pcsx2/Config.h                                |    7 +
  pcsx2/GS/GS.cpp                               |  379 ++-
  pcsx2/GS/GS.h                                 |    3 +
  pcsx2/GS/GSState.cpp                          |    2 +-
@@ -25,19 +25,19 @@ Subject: [PATCH] Early integration of parallel-GS.
  pcsx2/GS/Renderers/Vulkan/VKLoader.cpp        |   18 +-
  pcsx2/GS/Renderers/Vulkan/VKLoader.h          |   19 +-
  .../Vulkan/VKLoaderPlatformDefines.h          |   23 +
- .../Renderers/parallel-gs/GSRendererPGS.cpp   |  841 ++++++
+ .../Renderers/parallel-gs/GSRendererPGS.cpp   |  843 ++++++
  .../GS/Renderers/parallel-gs/GSRendererPGS.h  |   88 +
  pcsx2/ImGui/ImGuiFullscreen.cpp               |    2 +
- pcsx2/Pcsx2Config.cpp                         |   13 +-
+ pcsx2/Pcsx2Config.cpp                         |   15 +-
  pcsx2/pcsx2.vcxproj                           |   52 +-
- 26 files changed, 3329 insertions(+), 872 deletions(-)
+ 26 files changed, 3347 insertions(+), 872 deletions(-)
  create mode 100644 3rdparty/vulkan/include/vk_video/vulkan_video_codec_av1std_encode.h
  create mode 100644 pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
 
 diff --git a/.gitignore b/.gitignore
-index b59e873da7..aac77d3488 100644
+index b59e873da..aac77d348 100644
 --- a/.gitignore
 +++ b/.gitignore
 @@ -120,3 +120,5 @@ CMakeSettings.json
@@ -47,7 +47,7 @@ index b59e873da7..aac77d3488 100644
 +
 +/pcsx2/GS/parallel-gs
 diff --git a/3rdparty/vulkan/include/vk_video/vulkan_video_codec_av1std.h b/3rdparty/vulkan/include/vk_video/vulkan_video_codec_av1std.h
-index 8ce283e8a8..4fdced78e5 100644
+index 8ce283e8a..4fdced78e 100644
 --- a/3rdparty/vulkan/include/vk_video/vulkan_video_codec_av1std.h
 +++ b/3rdparty/vulkan/include/vk_video/vulkan_video_codec_av1std.h
 @@ -132,7 +132,7 @@ typedef enum StdVideoAV1FrameRestorationType {
@@ -70,7 +70,7 @@ index 8ce283e8a8..4fdced78e5 100644
  
 diff --git a/3rdparty/vulkan/include/vk_video/vulkan_video_codec_av1std_encode.h b/3rdparty/vulkan/include/vk_video/vulkan_video_codec_av1std_encode.h
 new file mode 100644
-index 0000000000..87fc093b56
+index 000000000..87fc093b5
 --- /dev/null
 +++ b/3rdparty/vulkan/include/vk_video/vulkan_video_codec_av1std_encode.h
 @@ -0,0 +1,143 @@
@@ -218,7 +218,7 @@ index 0000000000..87fc093b56
 +
 +#endif
 diff --git a/3rdparty/vulkan/include/vulkan/vulkan_core.h b/3rdparty/vulkan/include/vulkan/vulkan_core.h
-index e6c16498af..4e716da03e 100644
+index e6c16498a..4e716da03 100644
 --- a/3rdparty/vulkan/include/vulkan/vulkan_core.h
 +++ b/3rdparty/vulkan/include/vulkan/vulkan_core.h
 @@ -69,10 +69,10 @@ extern "C" {
@@ -3633,7 +3633,7 @@ index e6c16498af..4e716da03e 100644
  #define VK_KHR_acceleration_structure 1
  #define VK_KHR_ACCELERATION_STRUCTURE_SPEC_VERSION 13
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 4036241b47..2f369adb3c 100644
+index 4036241b4..2f369adb3 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -33,6 +33,14 @@ check_no_parenthesis_in_path()
@@ -3652,7 +3652,7 @@ index 4036241b47..2f369adb3c 100644
  # Include specific module
  include(BuildParameters)
 diff --git a/pcsx2-gsrunner/Main.cpp b/pcsx2-gsrunner/Main.cpp
-index d3ad1e8182..0f41205736 100644
+index d3ad1e818..0f4120573 100644
 --- a/pcsx2-gsrunner/Main.cpp
 +++ b/pcsx2-gsrunner/Main.cpp
 @@ -519,6 +519,10 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
@@ -3667,7 +3667,7 @@ index d3ad1e8182..0f41205736 100644
  				else if (StringUtil::Strcasecmp(rname, "gl") == 0)
  					type = GSRendererType::OGL;
 diff --git a/pcsx2-qt/MainWindow.cpp b/pcsx2-qt/MainWindow.cpp
-index 616e9efa94..4fe7cfc8f6 100644
+index 616e9efa9..4fe7cfc8f 100644
 --- a/pcsx2-qt/MainWindow.cpp
 +++ b/pcsx2-qt/MainWindow.cpp
 @@ -462,6 +462,9 @@ void MainWindow::createRendererSwitchMenu()
@@ -3681,7 +3681,7 @@ index 616e9efa94..4fe7cfc8f6 100644
  		GSRendererType::DX11,
  		GSRendererType::DX12,
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
-index 311143fd46..d4097f3c60 100644
+index 311143fd4..5cdc18eee 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 @@ -20,6 +20,9 @@ struct RendererInfo
@@ -3694,7 +3694,7 @@ index 311143fd46..d4097f3c60 100644
  #ifdef _WIN32
  	//: Graphics backend/engine type. Leave as-is.
  	{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "Direct3D 11"), GSRendererType::DX11},
-@@ -264,6 +267,15 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
+@@ -264,6 +267,16 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
  	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.swAutoFlush, "EmuCore/GS", "autoflush_sw", true);
  	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.swMipmap, "EmuCore/GS", "mipmap", true);
  
@@ -3706,11 +3706,12 @@ index 311143fd46..d4097f3c60 100644
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsSuperSampleTextures, "EmuCore/GS", "pgsSuperSampleTextures", 0);
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsDisableMipmaps, "EmuCore/GS", "pgsDisableMipmaps", 0);
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsDisableReadbackSync, "EmuCore/GS", "pgsDisableReadbackSync", 0);
++	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsSharpBackbuffer, "EmuCore/GS", "pgsSharpBackbuffer", 0);
 +
  	//////////////////////////////////////////////////////////////////////////
  	// Non-trivial settings
  	//////////////////////////////////////////////////////////////////////////
-@@ -298,6 +310,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
+@@ -298,6 +311,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
  	connect(m_ui.extendedUpscales, &QCheckBox::checkStateChanged, this, &GraphicsSettingsWidget::updateRendererDependentOptions);
  	connect(m_ui.textureFiltering, &QComboBox::currentIndexChanged, this, &GraphicsSettingsWidget::onTextureFilteringChange);
  	connect(m_ui.swTextureFiltering, &QComboBox::currentIndexChanged, this, &GraphicsSettingsWidget::onSWTextureFilteringChange);
@@ -3718,7 +3719,7 @@ index 311143fd46..d4097f3c60 100644
  	updateRendererDependentOptions();
  
  #ifndef _WIN32
-@@ -571,6 +584,27 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
+@@ -571,6 +585,32 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
  
  		dialog->registerWidgetHelp(
  			m_ui.swMipmap, tr("Mipmapping"), tr("Checked"), tr("Enables mipmapping, which some games require to render correctly."));
@@ -3727,6 +3728,11 @@ index 311143fd46..d4097f3c60 100644
 +		                           tr("Number of super samples used by paraLLEl-GS before down-sampling to native resolution. "
 +		                              "More than 4x SSAA is not recommended as there is diminishing returns in output quality. "
 +		                              "16x SSAA yields a very nice result, but requires reasonably powerful hardware in some games."));
++
++		dialog->registerWidgetHelp(m_ui.pgsSharpBackbuffer, tr("Sharp backbuffer hacks"), tr("Unchecked"),
++		                           tr("Some games perform a blit to the backbuffer. "
++		                              "This can significantly reduce image quality, since games tend to either scale the image, or convert the image to 16-bit colors. "
++		                              "This hack attempts to present the original image instead. This option may help alleviate that in lieu of a more proper game patch."));
 +
 +		dialog->registerWidgetHelp(m_ui.pgsSuperSampleTextures, tr("Super-sample Textures"), tr("Unchecked"),
 +		                           tr("Ensures that frame buffer effects are sampled with all super-samples intact. "
@@ -3746,7 +3752,7 @@ index 311143fd46..d4097f3c60 100644
  	}
  
  	// Hardware Fixes tab
-@@ -1084,6 +1118,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+@@ -1084,6 +1124,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
  	const bool is_hardware = (type == GSRendererType::DX11 || type == GSRendererType::DX12 || type == GSRendererType::OGL ||
  							  type == GSRendererType::VK || type == GSRendererType::Metal);
  	const bool is_software = (type == GSRendererType::SW);
@@ -3754,7 +3760,7 @@ index 311143fd46..d4097f3c60 100644
  	const bool is_auto = (type == GSRendererType::Auto);
  	const bool is_vk = (type == GSRendererType::VK);
  	const bool is_disable_barriers = (type == GSRendererType::DX11 || type == GSRendererType::DX12 || type == GSRendererType::Metal || type == GSRendererType::SW);
-@@ -1098,22 +1133,32 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+@@ -1098,22 +1139,32 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
  	m_ui.tabs->setTabEnabled(2, is_software);
  	m_ui.tabs->setTabVisible(2, is_software);
  
@@ -3796,10 +3802,10 @@ index 311143fd46..d4097f3c60 100644
  
  	if (m_ui.useBlitSwapChain)
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.ui b/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
-index d1b6a9031d..00c44c4f60 100644
+index d1b6a9031..1b1a272c7 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
-@@ -721,6 +721,92 @@
+@@ -721,6 +721,99 @@
         </item>
        </layout>
       </widget>
@@ -3887,13 +3893,20 @@ index d1b6a9031d..00c44c4f60 100644
 +           </property>
 +          </widget>
 +       </item>
++       <item row="3" column="0">
++          <widget class="QCheckBox" name="pgsSharpBackbuffer">
++           <property name="text">
++            <string>Sharp backbuffer hack</string>
++           </property>
++          </widget>
++       </item>
 +      </layout>
 +     </widget>
       <widget class="QGroupBox" name="hardwareFixesTab">
        <attribute name="title">
         <string>Hardware Fixes</string>
 diff --git a/pcsx2-qt/pcsx2-qt.vcxproj b/pcsx2-qt/pcsx2-qt.vcxproj
-index f77da95952..5c3536ce90 100644
+index f77da9595..5c3536ce9 100644
 --- a/pcsx2-qt/pcsx2-qt.vcxproj
 +++ b/pcsx2-qt/pcsx2-qt.vcxproj
 @@ -54,7 +54,7 @@
@@ -3906,7 +3919,7 @@ index f77da95952..5c3536ce90 100644
        <RuntimeTypeInfo Condition="$(Configuration.Contains(Debug))">true</RuntimeTypeInfo>
      </ClCompile>
 diff --git a/pcsx2/CMakeLists.txt b/pcsx2/CMakeLists.txt
-index 804ab2e406..9bb3b0af39 100644
+index 804ab2e40..9bb3b0af3 100644
 --- a/pcsx2/CMakeLists.txt
 +++ b/pcsx2/CMakeLists.txt
 @@ -638,6 +638,7 @@ if(USE_VULKAN)
@@ -3942,7 +3955,7 @@ index 804ab2e406..9bb3b0af39 100644
  	GS/Renderers/Metal/cas.metal
  	GS/Renderers/Metal/convert.metal
 diff --git a/pcsx2/Config.h b/pcsx2/Config.h
-index 88f4da719c..23d3f89810 100644
+index 88f4da719..15aa6cfe6 100644
 --- a/pcsx2/Config.h
 +++ b/pcsx2/Config.h
 @@ -276,6 +276,7 @@ enum class GSRendererType : s8
@@ -3953,7 +3966,7 @@ index 88f4da719c..23d3f89810 100644
  };
  
  enum class GSVSyncMode : u8
-@@ -814,6 +815,11 @@ struct Pcsx2Config
+@@ -814,6 +815,12 @@ struct Pcsx2Config
  		u8 ShadeBoost_Contrast = 50;
  		u8 ShadeBoost_Saturation = 50;
  		u8 PNGCompressionLevel = 1;
@@ -3962,11 +3975,12 @@ index 88f4da719c..23d3f89810 100644
 +		u8 PGSDisableMipmaps = 0;
 +		u8 PGSDisableReadbackSync = 0;
 +		u8 PGSSuperSampleTextures = 0;
++		u8 PGSSharpBackbuffer = 0;
  
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
 diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
-index 84956d86a3..94af60d8a3 100644
+index 84956d86a..94af60d8a 100644
 --- a/pcsx2/GS/GS.cpp
 +++ b/pcsx2/GS/GS.cpp
 @@ -22,6 +22,11 @@
@@ -4602,7 +4616,7 @@ index 84956d86a3..94af60d8a3 100644
  	GSClampUpscaleMultiplier(GSConfig);
  
 diff --git a/pcsx2/GS/GS.h b/pcsx2/GS/GS.h
-index f2882c3a7f..433bdfb622 100644
+index f2882c3a7..433bdfb62 100644
 --- a/pcsx2/GS/GS.h
 +++ b/pcsx2/GS/GS.h
 @@ -20,6 +20,7 @@ enum class RenderAPI
@@ -4623,7 +4637,7 @@ index f2882c3a7f..433bdfb622 100644
  {
  	/// Called when the GS is creating a render device.
 diff --git a/pcsx2/GS/GSState.cpp b/pcsx2/GS/GSState.cpp
-index 83068f15db..045201926a 100644
+index 83068f15d..045201926 100644
 --- a/pcsx2/GS/GSState.cpp
 +++ b/pcsx2/GS/GSState.cpp
 @@ -32,7 +32,7 @@ static __fi bool IsFirstProvokingVertex()
@@ -4636,7 +4650,7 @@ index 83068f15db..045201926a 100644
  	int size = 0;
  
 diff --git a/pcsx2/GS/GSState.h b/pcsx2/GS/GSState.h
-index 94f9a5442b..5128a0043d 100644
+index 94f9a5442..5128a0043 100644
 --- a/pcsx2/GS/GSState.h
 +++ b/pcsx2/GS/GSState.h
 @@ -21,7 +21,7 @@ public:
@@ -4649,7 +4663,7 @@ index 94f9a5442b..5128a0043d 100644
  private:
  	// RESTRICT prevents multiple loads of the same part of the register when accessing its bitfields (the compiler is happy to know that memory writes in-between will not go there)
 diff --git a/pcsx2/GS/GSUtil.cpp b/pcsx2/GS/GSUtil.cpp
-index 63ae1db030..fdea62b2d1 100644
+index 63ae1db03..fdea62b2d 100644
 --- a/pcsx2/GS/GSUtil.cpp
 +++ b/pcsx2/GS/GSUtil.cpp
 @@ -204,7 +204,9 @@ GSRendererType GSUtil::GetPreferredRenderer()
@@ -4664,7 +4678,7 @@ index 63ae1db030..fdea62b2d1 100644
  		preferred_renderer = GSRendererType::Metal;
  #elif defined(_WIN32) && defined(_M_ARM64)
 diff --git a/pcsx2/GS/Renderers/Common/GSRenderer.cpp b/pcsx2/GS/Renderers/Common/GSRenderer.cpp
-index e564e0e6d2..e29148065b 100644
+index e564e0e6d..e29148065 100644
 --- a/pcsx2/GS/Renderers/Common/GSRenderer.cpp
 +++ b/pcsx2/GS/Renderers/Common/GSRenderer.cpp
 @@ -275,7 +275,7 @@ float GSRenderer::GetModXYOffset()
@@ -4677,7 +4691,7 @@ index e564e0e6d2..e29148065b 100644
  	static constexpr std::array<float, static_cast<size_t>(AspectRatioType::MaxCount) + 1> ars = {{4.0f / 3.0f, 4.0f / 3.0f, 4.0f / 3.0f, 16.0f / 9.0f, 10.0f / 7.0f, 3.0f / 2.0f}};
  	return ars[static_cast<u32>(GSConfig.AspectRatio) + (3u * (is_progressive && GSConfig.AspectRatio == AspectRatioType::RAuto4_3_3_2))];
 diff --git a/pcsx2/GS/Renderers/Vulkan/VKLoader.cpp b/pcsx2/GS/Renderers/Vulkan/VKLoader.cpp
-index e386e6fe53..c7d5381358 100644
+index e386e6fe5..c7d538135 100644
 --- a/pcsx2/GS/Renderers/Vulkan/VKLoader.cpp
 +++ b/pcsx2/GS/Renderers/Vulkan/VKLoader.cpp
 @@ -16,6 +16,8 @@
@@ -4736,7 +4750,7 @@ index e386e6fe53..c7d5381358 100644
  			std::fprintf(stderr, "Vulkan: Failed to load required instance function %s\n", name);
  			required_functions_missing = true;
 diff --git a/pcsx2/GS/Renderers/Vulkan/VKLoader.h b/pcsx2/GS/Renderers/Vulkan/VKLoader.h
-index 736723fca5..cfba3a7c9d 100644
+index 736723fca..cfba3a7c9 100644
 --- a/pcsx2/GS/Renderers/Vulkan/VKLoader.h
 +++ b/pcsx2/GS/Renderers/Vulkan/VKLoader.h
 @@ -7,24 +7,7 @@ class Error;
@@ -4767,7 +4781,7 @@ index 736723fca5..cfba3a7c9d 100644
  
 diff --git a/pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h b/pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
 new file mode 100644
-index 0000000000..d3447f6f7d
+index 000000000..d3447f6f7
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
 @@ -0,0 +1,23 @@
@@ -4796,10 +4810,10 @@ index 0000000000..d3447f6f7d
 +
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 new file mode 100644
-index 0000000000..58d2878d11
+index 000000000..a9d6e8e46
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
-@@ -0,0 +1,841 @@
+@@ -0,0 +1,843 @@
 +// SPDX-FileCopyrightText: 2024 Hans-Kristian Arntzen
 +// SPDX-License-Identifier: LGPL-3.0+
 +
@@ -5047,6 +5061,7 @@ index 0000000000..58d2878d11
 +	Hacks hacks;
 +	hacks.disable_mipmaps = GSConfig.PGSDisableMipmaps != 0;
 +	hacks.unsynced_readbacks = GSConfig.PGSDisableReadbackSync != 0;
++	hacks.backbuffer_promotion = GSConfig.PGSSharpBackbuffer != 0;
 +	iface.set_hacks(hacks);
 +
 +	return true;
@@ -5073,6 +5088,7 @@ index 0000000000..58d2878d11
 +	Hacks hacks;
 +	hacks.disable_mipmaps = GSConfig.PGSDisableMipmaps != 0;
 +	hacks.unsynced_readbacks = GSConfig.PGSDisableReadbackSync != 0;
++	hacks.backbuffer_promotion = GSConfig.PGSSharpBackbuffer != 0;
 +	iface.set_hacks(hacks);
 +}
 +
@@ -5643,7 +5659,7 @@ index 0000000000..58d2878d11
 +}
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
 new file mode 100644
-index 0000000000..f2ff289d9c
+index 000000000..f2ff289d9
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
 @@ -0,0 +1,88 @@
@@ -5736,7 +5752,7 @@ index 0000000000..f2ff289d9c
 +	uint32_t dump_frames = 0;
 +};
 diff --git a/pcsx2/ImGui/ImGuiFullscreen.cpp b/pcsx2/ImGui/ImGuiFullscreen.cpp
-index 8d9a8a07e0..d20b14963d 100644
+index 8d9a8a07e..d20b14963 100644
 --- a/pcsx2/ImGui/ImGuiFullscreen.cpp
 +++ b/pcsx2/ImGui/ImGuiFullscreen.cpp
 @@ -586,6 +586,8 @@ ImGuiFullscreen::FocusResetType ImGuiFullscreen::GetQueuedFocusResetType()
@@ -5749,7 +5765,7 @@ index 8d9a8a07e0..d20b14963d 100644
  	g.ActiveIdSource = (g.ActiveIdSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
  	g.NavInputSource = (g.NavInputSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
 diff --git a/pcsx2/Pcsx2Config.cpp b/pcsx2/Pcsx2Config.cpp
-index be60b540fe..33412b2ea9 100644
+index be60b540f..f998440b7 100644
 --- a/pcsx2/Pcsx2Config.cpp
 +++ b/pcsx2/Pcsx2Config.cpp
 @@ -683,6 +683,7 @@ const char* Pcsx2Config::GSOptions::GetRendererName(GSRendererType type)
@@ -5760,7 +5776,7 @@ index be60b540fe..33412b2ea9 100644
  		default:                    return "";
  			// clang-format on
  	}
-@@ -860,7 +861,12 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
+@@ -860,7 +861,13 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
  		OpEqu(Adapter) &&
  
  		OpEqu(HWDumpDirectory) &&
@@ -5770,11 +5786,12 @@ index be60b540fe..33412b2ea9 100644
 +		OpEqu(PGSHighResScanout) &&
 +		OpEqu(PGSSuperSampleTextures) &&
 +		OpEqu(PGSDisableMipmaps) &&
-+		OpEqu(PGSDisableReadbackSync);
++		OpEqu(PGSDisableReadbackSync) &&
++		OpEqu(PGSSharpBackbuffer);
  }
  
  bool Pcsx2Config::GSOptions::operator!=(const GSOptions& right) const
-@@ -942,6 +948,11 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
+@@ -942,6 +949,12 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
  	SettingsWrapBitBool(HWSpinCPUForReadbacks);
  	SettingsWrapBitBoolEx(GPUPaletteConversion, "paltex");
  	SettingsWrapBitBoolEx(AutoFlushSW, "autoflush_sw");
@@ -5783,11 +5800,12 @@ index be60b540fe..33412b2ea9 100644
 +	SettingsWrapBitBoolEx(PGSSuperSampleTextures, "pgsSuperSampleTextures");
 +	SettingsWrapBitBoolEx(PGSDisableMipmaps, "pgsDisableMipmaps");
 +	SettingsWrapBitBoolEx(PGSDisableReadbackSync, "pgsDisableReadbackSync");
++	SettingsWrapBitBoolEx(PGSSharpBackbuffer, "pgsSharpBackbuffer");
  	SettingsWrapBitBoolEx(PreloadFrameWithGSData, "preload_frame_with_gs_data");
  	SettingsWrapBitBoolEx(Mipmap, "mipmap");
  	SettingsWrapBitBoolEx(ManualUserHacks, "UserHacks");
 diff --git a/pcsx2/pcsx2.vcxproj b/pcsx2/pcsx2.vcxproj
-index 41ff04385a..b8816342c2 100644
+index 41ff04385..b8816342c 100644
 --- a/pcsx2/pcsx2.vcxproj
 +++ b/pcsx2/pcsx2.vcxproj
 @@ -53,6 +53,15 @@
