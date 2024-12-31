@@ -2577,6 +2577,10 @@ void GSInterface::drawing_kick_append()
 			return;
 		}
 	}
+	else if (render_pass.can_fb_wraparound)
+	{
+		bb.z = std::min<int>(bb.z, render_pass.scissor_hi_x_fb);
+	}
 
 	assert(bb.z < int(std::max<int>(1, fb_instance.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE));
 	assert(bb.z < int(std::max<int>(1, ctx.frame.desc.FBW) * PGS_BUFFER_WIDTH_SCALE));
