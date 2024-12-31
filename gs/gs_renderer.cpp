@@ -3663,6 +3663,10 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		}
 
 		clock_divider = SMODE1Bits::CLOCK_DIVIDER_HDTV;
+
+		// Scanning out high-res with these resolutions is somewhat bogus.
+		high_resolution_scanout = false;
+		super_samples = 1;
 	}
 	else
 	{
