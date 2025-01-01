@@ -1392,7 +1392,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 				u_size -= 2;
 				v_size -= 2;
 
-				if (u_offset <= 1 && v_offset <= 1 && u_size <= x_size && v_size <= y_size)
+				if (u_offset <= 1 && v_offset <= 1 && u_size == x_size && v_size == y_size)
 					long_term_cache_texture = false;
 			}
 		}
