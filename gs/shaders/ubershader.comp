@@ -1162,7 +1162,7 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 		{
 			// In the subsampling domain all the samples should sum to 0.5 phase.
 			// We already spread out i/j accordingly and for 1:1 scaling, we expect a match.
-			precise vec2 shift_uv = uv - get_average_sampling_offset(NUM_SAMPLES_X_LOG2, NUM_SAMPLES_Y_LOG2);
+			precise vec2 shift_uv = uv - 0.5 + get_average_sampling_offset(NUM_SAMPLES_X_LOG2, NUM_SAMPLES_Y_LOG2);
 			vec2 floored_uv = floor(shift_uv);
 			uvec2 lut = textureLod(uPhaseLUT, shift_uv - floored_uv, mag_linear ? 0.0 : 1.0).xy;
 			vec4 weights = unpackUnorm4x8(lut.y);
