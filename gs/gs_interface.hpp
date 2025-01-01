@@ -289,6 +289,7 @@ private:
 	uint64_t query_timeline();
 
 	void mark_texture_state_dirty();
+	void mark_texture_state_dirty_with_flush();
 
 	PageTracker tracker;
 	GSRenderer renderer;

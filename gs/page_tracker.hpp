@@ -23,7 +23,9 @@ struct CachedTexture : Util::IntrusiveHashMapEnabled<CachedTexture>,
 	explicit CachedTexture(Util::ObjectPool<CachedTexture> &pool_) : pool(pool_) {}
 	Util::ObjectPool<CachedTexture> &pool;
 	Vulkan::ImageHandle image;
-	bool is_live_handle = true;
+
+	enum class Status { Live, Floating, Dead };
+	Status status = Status::Live;
 };
 using CachedTextureHandle = Util::IntrusivePtr<CachedTexture>;
 
@@ -163,7 +165,7 @@ public:
 	// This would invalidate the texture since CLUT has been written.
 	// Use UINT32_MAX to always flush.
 	// This kind of CLUT flushing is mostly relevant to avoid false invalidations inside a render pass.
-	bool invalidate_texture_cache(uint32_t clut_instance_match);
+	void invalidate_texture_cache(uint32_t clut_instance_match);
 
 	void mark_texture_read(const PageRect &rect);
 	void register_cached_clut_clobber(const PageRectCLUT &rect);
@@ -228,7 +230,7 @@ private:
 
 	void flush_copy();
 	void flush_cached();
-	void garbage_collect_texture_masked_handles(std::vector<CachedTextureMasked> &state);
+	void garbage_collect_texture_masked_handles(std::vector<CachedTextureMasked> &textures);
 	std::vector<uint32_t> potential_invalidated_indices;
 };
 }

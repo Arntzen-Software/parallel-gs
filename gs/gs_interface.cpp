@@ -956,9 +956,7 @@ void GSInterface::check_frame_buffer_state()
 			{
 				render_pass.instances[render_pass.current_instance] = {};
 				render_pass.num_instances++;
-
-				if (tracker.invalidate_texture_cache(render_pass.clut_instance))
-					mark_texture_state_dirty();
+				tracker.invalidate_texture_cache(render_pass.clut_instance);
 			}
 			else
 			{
@@ -1221,6 +1219,12 @@ void GSInterface::mark_texture_state_dirty()
 	state_tracker.last_texture_index = UINT32_MAX;
 	state_tracker.last_texture_index_valid_at_texflush = 0;
 	state_tracker.dirty_flags |= STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_TEX_BIT;
+}
+
+void GSInterface::mark_texture_state_dirty_with_flush()
+{
+	mark_texture_state_dirty();
+	state_tracker.texflush_counter++;
 }
 
 uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, const ivec4 &uv_bb, const ivec4 &bb)
@@ -2962,13 +2966,7 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 		// Very possible we just have to flush early and we never receive more image data until
 		// game kicks a new transfer.
 		transfer_state.last_flushed_qwords = uint32_t(transfer_state.host_to_local_payload.size());
-
-		if (tracker.invalidate_texture_cache(render_pass.clut_instance))
-		{
-			mark_texture_state_dirty();
-			state_tracker.texflush_counter++;
-		}
-
+		tracker.invalidate_texture_cache(render_pass.clut_instance);
 		invalidate_promoted_backbuffer(transfer_state.copy.bitbltbuf.desc.DBP / PGS_BLOCKS_PER_PAGE);
 
 		TRACE_HEADER("VRAM COPY", transfer_state.copy);
@@ -3030,11 +3028,7 @@ void GSInterface::init_transfer()
 		                                  transfer_state.copy.bitbltbuf.desc.SPSM);
 
 		transfer_state.copy.needs_shadow_vram = tracker.mark_transfer_copy(dst_rect, src_rect);
-		if (tracker.invalidate_texture_cache(render_pass.clut_instance))
-		{
-			mark_texture_state_dirty();
-			state_tracker.texflush_counter++;
-		}
+		tracker.invalidate_texture_cache(render_pass.clut_instance);
 		renderer.copy_vram(transfer_state.copy, dst_rect);
 		invalidate_promoted_backbuffer(transfer_state.copy.bitbltbuf.desc.DBP / PGS_BLOCKS_PER_PAGE);
 	}

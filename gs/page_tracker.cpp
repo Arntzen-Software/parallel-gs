@@ -502,6 +502,12 @@ void PageTracker::clear_fb_pages()
 		page.short_term_cached_textures.clear();
 	}
 	short_term_cache_pages.clear();
+
+	// Once a FB is flushed, we can no longer hold on to CLUT cached images
+	// which are in a floating state.
+	for (auto &cached : texture_cached_palette)
+		if (cached.tex->status == CachedTexture::Status::Floating)
+			cached.tex->status = CachedTexture::Status::Dead;
 }
 
 void PageTracker::flush_copy()
@@ -702,48 +708,69 @@ Vulkan::ImageHandle PageTracker::find_cached_texture(Util::Hash hash) const
 void PageTracker::garbage_collect_texture_masked_handles(std::vector<CachedTextureMasked> &textures)
 {
 	auto itr = Util::unstable_remove_if(textures.begin(), textures.end(), [](const CachedTextureMasked &masked) {
-		return !masked.tex->image;
+		return masked.tex->status == CachedTexture::Status::Dead;
 	});
 	textures.erase(itr, textures.end());
 }
 
 bool PageTracker::invalidate_cached_textures(
-		std::vector<CachedTextureMasked> &textures, uint32_t block_mask, uint32_t write_mask, uint32_t clut_instance)
+		std::vector<CachedTextureMasked> &textures,
+		uint32_t block_mask, uint32_t write_mask, uint32_t clut_instance)
 {
-	auto itr = Util::unstable_remove_if(textures.begin(), textures.end(),
-	                                    [block_mask, write_mask, clut_instance](const CachedTextureMasked &masked) {
-		                                    return !masked.tex->is_live_handle ||
-		                                           ((masked.block_mask & block_mask) != 0 &&
-		                                            (masked.write_mask & write_mask) != 0 &&
-		                                            (clut_instance == UINT32_MAX || masked.clut_instance != clut_instance));
-	                                    });
-
 	bool did_work = false;
 
-	for (auto erase_itr = itr; erase_itr != textures.end(); ++erase_itr)
-	{
-		auto &tex = *erase_itr;
-		if (tex.tex->is_live_handle)
-		{
-			// If we only invalidated texture due to palette cache being clobbered,
-			// we may be able to ignore the invalidation and keep it alive in the render pass cache if
-			// we sample the texture with same memoized CLUT instance once again.
-			// Essentially, we defer the invalidation until the same texture is used with a different palette instance.
-			cb.invalidate_texture_hash(tex.tex->get_hash(), clut_instance != UINT32_MAX);
-			if (tex.tex->image)
-				cb.recycle_image_handle(std::move(tex.tex->image));
-			tex.tex->image = {};
-			tex.tex->is_live_handle = false;
-			cached_textures.erase(tex.tex.get());
-			did_work = true;
-		}
-	}
+	auto itr = Util::unstable_remove_if(
+			textures.begin(), textures.end(),
+			[this, block_mask, write_mask, clut_instance, &did_work](CachedTextureMasked &masked) {
+				auto &tex = *masked.tex;
+
+				// CLUT invalidation is a soft invalidation. As long as we can use CLUT memoization
+				// to get back to the original CLUT index, we can keep reusing the image,
+				// but only within the same render pass.
+				bool is_clut_invalidation = clut_instance != UINT32_MAX;
+
+				bool can_invalidate =
+						tex.status == CachedTexture::Status::Live ||
+						(tex.status == CachedTexture::Status::Floating && !is_clut_invalidation);
+
+				if (can_invalidate &&
+				    (masked.block_mask & block_mask) != 0 &&
+				    (masked.write_mask & write_mask) != 0 &&
+				    (clut_instance == UINT32_MAX || masked.clut_instance != clut_instance))
+				{
+					// When we transition away from Live status, remove it from the hashmap lookup.
+					// Handles may persist until render pass end.
+					if (tex.status == CachedTexture::Status::Live)
+						cached_textures.erase(masked.tex.get());
+
+					// If we only invalidated texture due to palette cache being clobbered,
+					// we may be able to ignore the invalidation and keep it alive in the render pass cache if
+					// we sample the texture with same memoized CLUT instance once again.
+					// Essentially, we defer the invalidation until the same texture is used with a different palette instance.
+					cb.invalidate_texture_hash(tex.get_hash(), is_clut_invalidation);
+					if (tex.image)
+					{
+						cb.recycle_image_handle(std::move(tex.image));
+						tex.image = {};
+					}
+
+					// If the image was only invalidated for CLUT, it can remain live until.
+					tex.status = is_clut_invalidation ?
+					             CachedTexture::Status::Floating :
+					             CachedTexture::Status::Dead;
+
+					did_work = true;
+				}
+
+				// Can only reap the handle when it's truly dead.
+				return tex.status == CachedTexture::Status::Dead;
+			});
 
 	textures.erase(itr, textures.end());
 	return did_work;
 }
 
-bool PageTracker::invalidate_texture_cache(uint32_t clut_instance)
+void PageTracker::invalidate_texture_cache(uint32_t clut_instance)
 {
 	bool invalidated = false;
 
@@ -775,7 +802,8 @@ bool PageTracker::invalidate_texture_cache(uint32_t clut_instance)
 		csa_written_mask = 0;
 	}
 
-	return invalidated;
+	if (invalidated)
+		cb.mark_texture_state_dirty_with_flush();
 }
 
 uint64_t PageTracker::mark_submission_timeline()
