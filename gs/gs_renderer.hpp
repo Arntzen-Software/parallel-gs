@@ -449,7 +449,8 @@ private:
 	                         const Vulkan::Image *promoted);
 
 	static SamplingRect compute_circuit_rect(const PrivRegisterState &priv, uint32_t phase,
-	                                         const DISPLAYBits &display, bool force_progressive);
+	                                         const DISPLAYBits &display, bool force_progressive,
+	                                         const Vulkan::Image *promoted);
 
 	void copy_pages(Vulkan::CommandBuffer &cmd, const Vulkan::Buffer &dst, const Vulkan::Buffer &src,
 	                const uint32_t *page_indices, uint32_t num_indices, bool invalidate_super_sampling);

@@ -3800,12 +3800,6 @@ void GSRenderer::sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::I
                                      const SamplingRect &rect, uint32_t super_samples,
                                      const Vulkan::Image *promoted)
 {
-	if (promoted && promoted->get_create_info().layers == 1 && super_samples > 1)
-	{
-		LOGW("Attempting to use promoted backbuffer, but it is not super-sampled. Super sampled textures must be enabled.\n");
-		promoted = nullptr;
-	}
-
 	cmd.image_barrier(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 	                  0, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
@@ -3861,7 +3855,8 @@ void GSRenderer::sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::I
 }
 
 GSRenderer::SamplingRect GSRenderer::compute_circuit_rect(const PrivRegisterState &priv, uint32_t phase,
-                                                          const DISPLAYBits &display, bool force_progressive)
+                                                          const DISPLAYBits &display, bool force_progressive,
+                                                          const Vulkan::Image *promoted)
 {
 	SamplingRect rect = {};
 
@@ -3875,6 +3870,12 @@ GSRenderer::SamplingRect GSRenderer::compute_circuit_rect(const PrivRegisterStat
 	uint32_t DH = display.DH + 1;
 	uint32_t MAGH = display.MAGH + 1;
 	uint32_t MAGV = display.MAGV + 1;
+
+	if (promoted)
+	{
+		DW = promoted->get_width() * MAGH;
+		DH = promoted->get_height() * MAGV;
+	}
 
 	rect.image_extent.width = DW / MAGH;
 	rect.image_extent.height = DH / MAGV;
@@ -3975,6 +3976,11 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	uint32_t super_samples = 1;
 	if (high_resolution_scanout)
 		super_samples = 1 << (sampling_rate_x_log2 + sampling_rate_y_log2);
+
+	if (promoted1 && promoted1->get_create_info().layers < super_samples)
+		promoted1 = nullptr;
+	if (promoted2 && promoted2->get_create_info().layers < super_samples)
+		promoted2 = nullptr;
 
 	uint32_t phase = 0;
 	uint32_t clock_divider = 1;
@@ -4085,6 +4091,13 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		flush_submit(0);
 		return {};
 	}
+
+	// It's possible the input had higher resolution.
+	// Make a fake mode in this case that has more lines to compensate.
+	if (promoted1)
+		mode_height = std::max<uint32_t>(mode_height, promoted1->get_height());
+	if (promoted2)
+		mode_height = std::max<uint32_t>(mode_height, promoted2->get_height());
 
 	if (device->consumes_debug_markers())
 	{
@@ -4238,14 +4251,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			             priv.display1.MAGH, priv.display1.MAGV);
 		}
 
-		auto rect = compute_circuit_rect(priv, phase, priv.display1, force_progressive);
-
-		if (promoted1 && promoted1->get_create_info().layers >= super_samples)
-		{
-			rect.image_extent.width = promoted1->get_width();
-			rect.image_extent.height = promoted1->get_height();
-		}
-
+		auto rect = compute_circuit_rect(priv, phase, priv.display1, force_progressive, promoted1);
 		image_info.width = rect.image_extent.width;
 		image_info.height = rect.image_extent.height;
 
@@ -4297,13 +4303,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			             priv.display2.MAGH, priv.display2.MAGV);
 		}
 
-		auto rect = compute_circuit_rect(priv, phase, priv.display2, force_progressive);
-
-		if (promoted2 && promoted2->get_create_info().layers >= super_samples)
-		{
-			rect.image_extent.width = promoted2->get_width();
-			rect.image_extent.height = promoted2->get_height();
-		}
+		auto rect = compute_circuit_rect(priv, phase, priv.display2, force_progressive, promoted2);
 
 		image_info.width = rect.image_extent.width;
 		image_info.height = rect.image_extent.height;
