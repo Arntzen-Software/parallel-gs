@@ -31,9 +31,10 @@
 
 layout(local_size_x = 64) in;
 
-layout(constant_id = 0) const int SAMPLING_RATE_LOG2 = 0;
-layout(constant_id = 1) const bool SUPER_SAMPLED_TEXTURES = false;
-layout(constant_id = 2) const bool FORCE_LINEAR_SUPER_SAMPLE = false;
+layout(constant_id = 0) const int SAMPLING_RATE_X_LOG2 = 0;
+layout(constant_id = 1) const int SAMPLING_RATE_Y_LOG2 = 0;
+layout(constant_id = 2) const bool SUPER_SAMPLED_TEXTURES = false;
+layout(constant_id = 3) const bool FORCE_LINEAR_SUPER_SAMPLE = false;
 
 layout(push_constant) uniform Registers
 {
@@ -248,7 +249,7 @@ void main_inner(uint index)
         primitive_setup.data[index].bb = ivec4(0, 0, -1, -1);
 
         // Make sure that degenerate primitives don't contribute to breaking heuristic.
-        if (SAMPLING_RATE_LOG2 != 0)
+        if (SAMPLING_RATE_Y_LOG2 != 0)
             primitive_attr.data[index].state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
 
         return;
@@ -494,7 +495,7 @@ void main_inner(uint index)
     primitive_setup.data[index].z = uvec4(za, floatBitsToUint(float(zb - za)), floatBitsToUint(float(zc - za)), 0);
 
     ivec2 d = parallelogram ? (b + c - a) : c;
-    ivec4 packed_bb = pack_bounding_box(a, b, c, d, multisample, SAMPLING_RATE_LOG2);
+    ivec4 packed_bb = pack_bounding_box(a, b, c, d, multisample, SAMPLING_RATE_Y_LOG2);
 
     packed_bb = clip_bounding_box(packed_bb, ivec4(primitive_attr.data[index].bb));
     primitive_setup.data[index].bb = packed_bb;
@@ -552,7 +553,7 @@ void main_inner(uint index)
         primitive_attr.data[index].state = state & ~(1u << STATE_BIT_OPAQUE);
 
     // Only allow per-sample texturing for cases where filtering will not cause issues.
-    if (SAMPLING_RATE_LOG2 != 0 && SUPER_SAMPLED_TEXTURES)
+    if (SAMPLING_RATE_Y_LOG2 != 0 && SUPER_SAMPLED_TEXTURES)
     {
         uint tex = primitive_attr.data[index].tex;
 
@@ -560,7 +561,6 @@ void main_inner(uint index)
         {
             ivec2 uv_delta = abs(ivec2(attr1.uv) - ivec2(attr0.uv));
             ivec2 dist = abs(d - a);
-            bool adjust_linear_kernel = false;
             bool is_perspective = (state & (1u << STATE_BIT_PERSPECTIVE)) != 0;
 
             if ((tex & TEX_SAMPLER_MAG_LINEAR_BIT) == 0)
@@ -611,8 +611,6 @@ void main_inner(uint index)
                             // to avoid unexpected image "shifts".
                             tex |= TEX_SAMPLE_RESOLVED_BIT | TEX_SAMPLER_MAG_LINEAR_BIT;
 
-                            adjust_linear_kernel = true;
-
                             // Adjust the phase so that the average sampling coordinate maps to the center of the texel.
                             // With nearest sampling, a game can use any phase within the texels and still expect
                             // the same result. Since we're promoting back to LINEAR we need to make
@@ -638,13 +636,7 @@ void main_inner(uint index)
                     }
                 }
             }
-            else if (is_perspective)
-            {
-                // Just assume it's safe when perspective ST is used.
-                // TODO: We might want to convert ST into effective UVs and analyze that instead.
-                adjust_linear_kernel = true;
-            }
-            else
+            else if (!is_perspective)
             {
                 // Detect common blur stages.
                 // By default, any filtering in the low-res domain should stay there.
@@ -669,36 +661,13 @@ void main_inner(uint index)
                     // and adding super sampling will not cause additional bleed,
                     // so this should be safe in any reasonable situation.
                     if (!FORCE_LINEAR_SUPER_SAMPLE)
-                    {
-                        adjust_linear_kernel = true;
                         tex |= TEX_SAMPLE_RESOLVED_BIT;
-                    }
                 }
-                else
-                {
-                    // In the in-between zone that isn't obviously downsample or upsample,
-                    // we deduce that the game is trying to either do "blit-to-FB" passes,
-                    // or non-blur related filtering.
-                    // This is most likely going to be safe it seems.
-                    adjust_linear_kernel = true;
-                }
-            }
 
-            if (adjust_linear_kernel)
-            {
-                // Adjust i/j interpolation such that we get an average sampling position
-                // equal to single sampled result. This combats any unexpected shifts.
-                const int SAMPLING_RATE_DIM = 1 << SAMPLING_RATE_LOG2;
-                const float bottom_right_sample =
-                    0.5 * float(1 << PGS_RASTER_SUBSAMPLE_BITS) *
-                    float(SAMPLING_RATE_DIM - 1) / float(SAMPLING_RATE_DIM);
-
-                ivec2 b = plane_b.xy;
-                ivec2 c = plane_c.xy;
-                float di_dcorner = float(b.x + b.y) * bottom_right_sample;
-                float dj_dcorner = float(c.x + c.y) * bottom_right_sample;
-                primitive_setup.data[index].error_i = error_i - di_dcorner * inv_area_scaled;
-                primitive_setup.data[index].error_j = error_j - dj_dcorner * inv_area_scaled;
+                // In the in-between zone that isn't obviously downsample or upsample,
+                // we deduce that the game is trying to either do "blit-to-FB" passes,
+                // or non-blur related filtering.
+                // This is most likely going to be safe it seems.
             }
 
             primitive_attr.data[index].tex = tex;
@@ -708,11 +677,24 @@ void main_inner(uint index)
                 // We've opted for a straight forward super-sampled texture. Force per-sample interpolation.
                 const uint SNAP_ATTR_BIT = (1u << STATE_BIT_SNAP_ATTRIBUTE);
                 primitive_attr.data[index].state &= ~SNAP_ATTR_BIT;
+
+                // Adjust i/j interpolation such that we get an average sampling position
+                // equal to single sampled result. This combats any unexpected shifts.
+                vec2 bottom_right_sample =
+                    float(1 << PGS_RASTER_SUBSAMPLE_BITS) *
+                    get_average_sampling_offset(SAMPLING_RATE_X_LOG2, SAMPLING_RATE_Y_LOG2);
+
+                ivec2 b = plane_b.xy;
+                ivec2 c = plane_c.xy;
+                float di_dcorner = float(b.x + b.y) * bottom_right_sample.x;
+                float dj_dcorner = float(c.x + c.y) * bottom_right_sample.y;
+                primitive_setup.data[index].error_i = error_i - di_dcorner * inv_area_scaled;
+                primitive_setup.data[index].error_j = error_j - dj_dcorner * inv_area_scaled;
             }
         }
     }
 
-    if (SAMPLING_RATE_LOG2 != 0 && !sprite)
+    if (SAMPLING_RATE_Y_LOG2 != 0 && !sprite)
     {
         // Try to detect common patterns of flat UI primitives.
         // In this case, we should aim to snap attribute interpolation to avoid common glitches.

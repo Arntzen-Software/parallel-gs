@@ -99,4 +99,25 @@ uint rgb24_to_rgba32(uint rgb_24, uint aem, uint ta0)
 	return pack_color(c);
 }
 
+// Inputs are spec constants, so this function will collapse into a constant.
+vec2 get_average_sampling_offset(int sample_rate_x_log2, int sample_rate_y_log2)
+{
+	// Ordered grid is very simple.
+	if (sample_rate_x_log2 == sample_rate_y_log2)
+	{
+		int rate = 1 << sample_rate_y_log2;
+		return vec2(0.5 * float(rate - 1) / float(rate));
+	}
+	else if (sample_rate_y_log2 == 1) // 2x checkerboard
+		return vec2(1.0 / 4.0);
+	else if (sample_rate_x_log2 == 1 && sample_rate_y_log2 == 2) // 8x checkerboard
+		return vec2((0.125 + 0.625) * 0.5);
+	else if (sample_rate_x_log2 == 0 && sample_rate_y_log2 == 2) // 4x sparse
+		return vec2(6.0 / 16.0);
+	else if (sample_rate_x_log2 == 1 && sample_rate_y_log2 == 3) // 16x sparse
+		return vec2((6.0 + 22.0) / 64.0);
+	else
+		return vec2(0.0);
+}
+
 #endif

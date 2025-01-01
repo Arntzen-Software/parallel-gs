@@ -1824,6 +1824,7 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 	} push = {};
 
 	push.num_primitives = rp.num_primitives;
+	uint32_t sampling_rate_x_log2 = 0;
 	uint32_t sampling_rate_y_log2 = 0;
 
 	auto *opaque_fbmasks = cmd.allocate_typed_constant_data<uint32_t>(0, BINDING_OPAQUE_FBMASKS, MaxRenderPassInstances);
@@ -1854,7 +1855,9 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 			break;
 		}
 
+		sampling_rate_x_log2 = std::max<uint32_t>(sampling_rate_x_log2, inst.sampling_rate_x_log2);
 		sampling_rate_y_log2 = std::max<uint32_t>(sampling_rate_y_log2, inst.sampling_rate_y_log2);
+
 		if (bound_texture_has_array && render_pass_instance_is_deduced_blur(rp, i))
 		{
 			push.rp_is_blur_mask |= 1u << i;
@@ -1867,9 +1870,10 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 
 	cmd.set_program(shaders.triangle_setup);
 	cmd.set_specialization_constant_mask(0xf);
-	cmd.set_specialization_constant(0, sampling_rate_y_log2);
-	cmd.set_specialization_constant(1, bound_texture_has_array);
-	cmd.set_specialization_constant(2, bound_texture_has_array && field_aware_super_sampling);
+	cmd.set_specialization_constant(0, sampling_rate_x_log2);
+	cmd.set_specialization_constant(1, sampling_rate_y_log2);
+	cmd.set_specialization_constant(2, bound_texture_has_array);
+	cmd.set_specialization_constant(3, bound_texture_has_array && field_aware_super_sampling);
 
 	Vulkan::QueryPoolHandle start_ts, end_ts;
 	if (enable_timestamps)
