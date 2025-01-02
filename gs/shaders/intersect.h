@@ -145,7 +145,8 @@ bool evaluate_coverage_single(PrimitiveSetup setup, bool parallelogram, ivec2 pa
 
 int evaluate_coverage(PrimitiveSetup setup, ivec2 coord, out float i, out float j, bool multisample, int sample_rate_log2)
 {
-	bool coverage = all(greaterThanEqual(ivec4(coord, setup.bb.zw), ivec4(setup.bb.xy, coord >> sample_rate_log2)));
+	ivec2 single_sampled_coord = coord >> sample_rate_log2;
+	bool coverage = all(greaterThanEqual(ivec4(single_sampled_coord, setup.bb.zw), ivec4(setup.bb.xy, single_sampled_coord)));
 
 	if (!coverage)
 		return 0;
