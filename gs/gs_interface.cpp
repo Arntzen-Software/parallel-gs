@@ -1995,6 +1995,10 @@ bool GSInterface::draw_is_degenerate()
 		}
 	}
 
+	// Color is effectively masked here, functioning as a noop.
+	if (prim.desc.ABE && ctx.alpha.desc.D == BLEND_RGB_DEST && ctx.alpha.desc.A == ctx.alpha.desc.B)
+		fbmsk |= 0xffffff;
+
 	// Any write is ignored. PS2 rendering does not have side effects.
 	// Undefined ZTE seems to mean ignore depth completely.
 
@@ -3637,13 +3641,15 @@ void GSInterface::a_d_SCISSOR_2(uint64_t payload)
 
 void GSInterface::a_d_ALPHA_1(uint64_t payload)
 {
-	update_internal_register(registers.ctx[0].alpha.bits, payload, STATE_DIRTY_STATE_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT);
+	update_internal_register(registers.ctx[0].alpha.bits, payload,
+	                         STATE_DIRTY_STATE_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_DEGENERATE_BIT);
 	TRACE("ALPHA_1", registers.ctx[0].alpha);
 }
 
 void GSInterface::a_d_ALPHA_2(uint64_t payload)
 {
-	update_internal_register(registers.ctx[1].alpha.bits, payload, STATE_DIRTY_STATE_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT);
+	update_internal_register(registers.ctx[1].alpha.bits, payload,
+	                         STATE_DIRTY_STATE_BIT | STATE_DIRTY_PRIM_TEMPLATE_BIT | STATE_DIRTY_DEGENERATE_BIT);
 	TRACE("ALPHA_2", registers.ctx[1].alpha);
 }
 
