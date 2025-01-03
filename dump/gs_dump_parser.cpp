@@ -133,6 +133,8 @@ bool GSDumpParser::iterate_until_vsync(bool high_res_scanout)
 	if (!file)
 		return false;
 
+	bool has_transfer = false;
+
 	while (!eof)
 	{
 		auto type = GSDumpPacketType(read_u8());
@@ -151,6 +153,7 @@ bool GSDumpParser::iterate_until_vsync(bool high_res_scanout)
 			read_data(gif_tag_buffer.data(), size);
 			if (!eof)
 				iface->gif_transfer(path, gif_tag_buffer.data(), size);
+			has_transfer = true;
 			break;
 		}
 
@@ -167,7 +170,9 @@ bool GSDumpParser::iterate_until_vsync(bool high_res_scanout)
 			vsync.overscan = false;
 			iface->flush();
 			vsync_result = iface->vsync(vsync);
-			return true;
+			if (has_transfer)
+				return true;
+			break;
 		}
 
 		case GSDumpPacketType::PrivRegisters:
