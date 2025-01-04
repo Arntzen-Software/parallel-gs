@@ -2868,6 +2868,9 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 		transfer_state.copy.host_data_size_offset = transfer_state.last_flushed_qwords * sizeof(uint64_t);
 		transfer_state.copy.host_data_size_required = transfer_state.required_qwords * sizeof(uint64_t);
 
+		// This is an arbitrarily chosen value to deal with known problematic games.
+		constexpr uint32_t CopyCacheHazardLimit = 400;
+
 		// Can we resolve this on CPU timeline?
 		// Only bother with cases which are known to fix hazards.
 		// Also, only bother with simple cases. No partial copies, etc ...
@@ -2879,15 +2882,19 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 			{
 				state_tracker.current_copy_cache_hazard_counter++;
 
-				if (state_tracker.max_copy_cache_hazard_counter < 32 &&
-				    state_tracker.current_copy_cache_hazard_counter == 32)
+				if (state_tracker.max_copy_cache_hazard_counter < CopyCacheHazardLimit &&
+				    state_tracker.current_copy_cache_hazard_counter == CopyCacheHazardLimit)
 				{
 					LOGI("Detected bad copy -> cache -> copy -> cache pattern. Injecting CPU wait workaround.\n");
 				}
 
-				state_tracker.max_copy_cache_hazard_counter = std::max<uint32_t>(
-						state_tracker.max_copy_cache_hazard_counter,
-						state_tracker.current_copy_cache_hazard_counter);
+				if (state_tracker.current_copy_cache_hazard_counter > state_tracker.max_copy_cache_hazard_counter)
+				{
+#ifdef PARALLEL_GS_DEBUG
+					LOGW("Increasing copy cache limit to %u.\n", state_tracker.current_copy_cache_hazard_counter);
+#endif
+					state_tracker.max_copy_cache_hazard_counter = state_tracker.current_copy_cache_hazard_counter;
+				}
 			}
 			else
 				state_tracker.current_copy_cache_hazard_counter = 0;
@@ -2896,11 +2903,11 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 			copy_cpu = tracker.acquire_host_write(dst_rect, renderer.query_timeline());
 
 			// Be conservative, we only want to do this for games that really need it.
-			// We must have seen at least a case of 32 back-to-back copies which all triggered a hazard.
-			// This is a hint that the game is doing something questionable.
-			// 32 barriers isn't all that bad on first frame (we want to avoid 1000 barriers).
+			// We must have seen at least a case of N back-to-back copies which all triggered a hazard.
+			// This is a hint that the game is doing something deeply questionable.
+			// This number of barriers isn't all that bad on first frame (we want to avoid 1000+ barriers).
 			// Once we've observed this case, we will start to stall in order to ensure fixed performance.
-			bool heuristic_force_cpu_wait = state_tracker.max_copy_cache_hazard_counter >= 32 &&
+			bool heuristic_force_cpu_wait = state_tracker.max_copy_cache_hazard_counter >= CopyCacheHazardLimit &&
 			                                state_tracker.current_copy_cache_hazard_counter > 4;
 
 			if (!copy_cpu && heuristic_force_cpu_wait)
