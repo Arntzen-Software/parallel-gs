@@ -479,6 +479,11 @@ void PageTracker::clear_cache_pages()
 	for (uint32_t page_index : accessed_cache_pages)
 		page_state[page_index].cached_read_block_mask = 0;
 	accessed_cache_pages.clear();
+
+	// If we have memoized data earlier in this render pass, need to forget
+	// that and requery properly.
+	// This is important if we're doing copy -> sample -> copy -> sample.
+	cb.forget_in_render_pass_memoization();
 }
 
 void PageTracker::clear_fb_pages()
@@ -523,11 +528,6 @@ void PageTracker::flush_cached()
 
 	clear_copy_pages();
 	clear_cache_pages();
-
-	// If we have memoized data earlier in this render pass, need to forget
-	// that and requery properly.
-	// This is important if we're doing copy -> sample -> copy -> sample.
-	cb.forget_in_render_pass_memoization();
 
 	TRACE("TRACKER || FLUSH CACHED\n");
 }
