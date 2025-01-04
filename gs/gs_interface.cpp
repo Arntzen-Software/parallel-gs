@@ -140,6 +140,7 @@ void GSInterface::flush_render_pass(FlushReason reason)
 
 		rp.states = render_pass.state_vectors.data();
 		rp.num_states = render_pass.state_vectors.size();
+		rp.allow_blend_demote = hacks.allow_blend_demote;
 
 		rp.textures = render_pass.tex_infos.data();
 		rp.num_textures = render_pass.tex_infos.size();

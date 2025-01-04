@@ -222,6 +222,13 @@ struct Hacks
 	// When enabled, the code will attempt to detect blit patterns, and replace the scanout with the original input texture.
 	// This can lead to much improved image quality, but is not accurate and could cause issues in some odd cases.
 	bool backbuffer_promotion = false;
+
+	// Try to detect some render passes with extreme overlapping blending.
+	// This can happen for fogging effects which will end up running with super-sampling
+	// despite most likely not making any difference for the visual output.
+	// Can squeeze out more performance on lower powered devices in some cases
+	// where games abuse the GS's fill rate for e.g. ridiculously expensive fogging effects.
+	bool allow_blend_demote = false;
 };
 
 class GSInterface final

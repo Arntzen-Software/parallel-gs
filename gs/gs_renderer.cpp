@@ -1989,6 +1989,17 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 	cmd.set_specialization_constant(2, uint32_t(inst.sampling_rate_y_log2 != 0));
 	cmd.set_specialization_constant(3, hier_binning);
 
+	bool allow_blend_demote = false;
+	constexpr uint32_t BlendDemoteBudget = 32;
+
+	if (rp.allow_blend_demote)
+	{
+		allow_blend_demote = true;
+		for (uint32_t i = 0; i < rp.num_states && allow_blend_demote; i++)
+			if ((rp.states[i].blend_mode & BLEND_MODE_ABE_BIT) == 0)
+				allow_blend_demote = false;
+	}
+
 	if (hier_binning > 1)
 	{
 		// Hierarchical binning is a bit more special.
@@ -2012,12 +2023,14 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 		uint32_t end_primitives;
 		uint32_t num_samples;
 		uint32_t force_super_sample;
+		uint32_t allow_blend_demote;
 	} push = {
 		inst.base_x, inst.base_y,
 		base_primitive, instance, base_primitive + num_primitives,
 		1u << (inst.sampling_rate_x_log2 + inst.sampling_rate_y_log2),
 		// Technically we can decay to 2x SSAA here and splat, but that too complicated to support.
 		uint32_t(field_aware_super_sampling),
+		allow_blend_demote ? BlendDemoteBudget : 0,
 	};
 
 	cmd.push_constants(&push, 0, sizeof(push));

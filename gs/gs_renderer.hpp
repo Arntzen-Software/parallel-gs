@@ -190,6 +190,7 @@ struct RenderPass
 
 	bool has_aa1;
 	bool has_scanmsk;
+	bool allow_blend_demote;
 
 	// For debugging. Aids capture tools.
 	bool feedback_color;

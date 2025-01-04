@@ -33,6 +33,7 @@ layout(push_constant) uniform Registers
     int end_primitives;
     uint num_samples;
     int force_super_sample;
+    int allow_blend_demote;
 } registers;
 
 layout(std430, set = 1, binding = 0) buffer SingleSampledWork
@@ -219,7 +220,7 @@ void main()
                     if (invocation < 32u && (u32_mask & (1u << invocation)) != 0u)
                     {
                         binned = bin_primitive(fine_tile_lo, fine_tile_hi, primitive_index);
-                        if (SUPER_SAMPLED && binned && !requires_super_sample)
+                        if (SUPER_SAMPLED && binned)
                             update_heuristics(primitive_index, requires_super_sample, requires_super_sample_when_z_writes, has_z_write);
                     }
 
@@ -250,7 +251,7 @@ void main()
                     STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) == registers.instance)
                 {
                     binned = bin_primitive(fine_tile_lo, fine_tile_hi, primitive_index);
-                    if (SUPER_SAMPLED && binned && !requires_super_sample)
+                    if (SUPER_SAMPLED && binned)
                         update_heuristics(primitive_index, requires_super_sample, requires_super_sample_when_z_writes, has_z_write);
                 }
             }
@@ -270,6 +271,12 @@ void main()
 
     if (subgroupElect())
     {
+        // Speed hack for extreme blending passes. If we have a ton of primitives intersecting, but
+        // no primitives writing to Z, we're probably doing some ridiculous post processing pass
+        // with tons of overlapping geometry. Just force single sampled for this tile and pray it'll work out.
+        if (write_offset >= registers.allow_blend_demote && registers.allow_blend_demote != 0 && !has_z_write)
+            requires_super_sample = false;
+
         coarse_primitive_counts.data[coarse_tile_linear] = int(write_offset);
 
         if (all(equal(gl_WorkGroupID.xy, uvec2(0))))
@@ -286,7 +293,7 @@ void main()
 
         if (write_offset != 0 || FEEDBACK_FORCE_WORK)
         {
-            bool requires_super_sample = requires_super_sample || (requires_super_sample_when_z_writes && has_z_write);
+            requires_super_sample = requires_super_sample || (requires_super_sample_when_z_writes && has_z_write);
 
             if (SUPER_SAMPLED && requires_super_sample)
             {
