@@ -3231,6 +3231,22 @@ bool PaletteUploadDescriptor::fully_replaces_clut_upload(const PaletteUploadDesc
 	       is_8bit == old_is_8bit;
 }
 
+void GSRenderer::rewind_clut_instance(uint32_t index)
+{
+	assert(palette_uploads.empty());
+
+	if (index != next_clut_instance)
+	{
+		PageRectCLUT clut = {};
+		clut.csa_mask = UINT32_MAX;
+		tracker.register_cached_clut_clobber(clut);
+		tracker.invalidate_texture_cache(index);
+	}
+
+	base_clut_instance = index;
+	next_clut_instance = index;
+}
+
 uint32_t GSRenderer::update_palette_cache(const PaletteUploadDescriptor &desc)
 {
 	if (!last_clut_update_is_read && !palette_uploads.empty() &&

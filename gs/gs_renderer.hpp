@@ -244,6 +244,7 @@ public:
 	// Caching stage.
 	uint32_t update_palette_cache(const PaletteUploadDescriptor &desc);
 	void mark_clut_read(uint32_t clut_instance);
+	void rewind_clut_instance(uint32_t index);
 
 	Vulkan::ImageHandle create_cached_texture(const TextureDescriptor &desc);
 	// Should always be called after create_cached_texture().

@@ -307,6 +307,11 @@ void GSInterface::flush_render_pass(FlushReason reason)
 		TRACE_HEADER("FLUSH RENDER", rp);
 	}
 
+	// If we used memoization of CLUT and ended on an old instance, we need to notify the renderer
+	// so it uses the current index as read input to future updates.
+	renderer.rewind_clut_instance(render_pass.clut_instance);
+	render_pass.latest_clut_instance = render_pass.clut_instance;
+
 	render_pass.held_images.clear();
 	render_pass.texture_map.clear();
 	render_pass.tex_infos.clear();
