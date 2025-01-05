@@ -1683,6 +1683,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 				// Potential feedback textures are handled explicitly w.r.t. FB hazards,
 				// but we still need to consider potential copy hazards.
 				tracker.register_short_term_cached_texture(state_tracker.tex.page_rects, desc.rect.levels, hasher.get());
+				recycle_image_handle(image);
 			}
 
 			renderer.commit_cached_texture();
