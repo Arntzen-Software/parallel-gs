@@ -1455,6 +1455,25 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	uint32_t width = 1u << TW;
 	uint32_t height = 1u << TH;
 
+	if (render_pass.is_potential_feedback &&
+	    width > uint32_t(desc.tex0.desc.TBW) * PGS_BUFFER_WIDTH_SCALE &&
+	    desc.tex0.desc.TBW != 0)
+	{
+		// Speculate that we can clamp the image region.
+		// This is mostly a performance workaround, especially when using SSAA textures.
+		if (desc.clamp.desc.WMS == CLAMPBits::CLAMP || desc.clamp.desc.WMS == CLAMPBits::REPEAT)
+		{
+			desc.clamp.desc.WMS = CLAMPBits::REGION_CLAMP;
+			desc.clamp.desc.MINU = 0;
+			desc.clamp.desc.MAXU = uint32_t(desc.tex0.desc.TBW * PGS_BUFFER_WIDTH_SCALE) - 1;
+		}
+		else if (desc.clamp.desc.WMS == CLAMPBits::REGION_CLAMP)
+		{
+			desc.clamp.desc.MINU = std::min<uint32_t>(desc.clamp.desc.MINU, desc.tex0.desc.TBW * PGS_BUFFER_WIDTH_SCALE - 1);
+			desc.clamp.desc.MAXU = std::min<uint32_t>(desc.clamp.desc.MAXU, desc.tex0.desc.TBW * PGS_BUFFER_WIDTH_SCALE - 1);
+		}
+	}
+
 	// In sliced mode with clamping, we can clamp harder based on uv_bb.
 	// In this path, we're guaranteed to not hit wrapping with region clamp.
 	// For repeat, give up. Should not happen (hopefully).
