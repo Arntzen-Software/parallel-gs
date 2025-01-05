@@ -3160,8 +3160,11 @@ Vulkan::ImageHandle GSRenderer::pull_image_handle_from_slab(
 	uint32_t width, uint32_t height,
 	uint32_t levels, uint32_t samples)
 {
-	if (!Util::is_pow2(width) || !Util::is_pow2(height) || levels > 7 || width > 1024 || height > 1024)
+	if (!Util::is_pow2(width) || !Util::is_pow2(height) || levels > 7 ||
+	    width > 1024 || height > 1024 || width == 0 || height == 0)
+	{
 		return {};
+	}
 
 	assert(levels == 1 || samples == 1);
 	assert(levels > 0);
