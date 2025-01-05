@@ -446,12 +446,14 @@ PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t levels
 
 void PageTracker::flush_render_pass(FlushReason reason)
 {
-	cb.flush(PAGE_TRACKER_FLUSH_FB_ALL, reason);
 	clear_cache_pages();
 	clear_copy_pages();
 	clear_fb_pages();
 	// While TEXFLUSH is necessary, plenty of content do not do this properly.
 	invalidate_texture_cache(UINT32_MAX);
+
+	// Call this after texture cache invalication so we can recycle textures more aggressively.
+	cb.flush(PAGE_TRACKER_FLUSH_FB_ALL, reason);
 
 	TRACE("TRACKER || FLUSH RENDER PASS\n");
 }
