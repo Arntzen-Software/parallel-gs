@@ -32,7 +32,6 @@ static constexpr uint32_t MinimumPrimitivesForFlush = 4096;
 // If there is a lot of back to back (small render passes). This should only trigger first for insane feedback loops.
 static constexpr uint32_t MinimumRenderPassForFlush = 1024;
 // If someone spams the scratch allocators too hard, we have to yield eventually.
-static constexpr VkDeviceSize MaximumAllocatedImageMemory = 100 * 1000 * 1000;
 static constexpr VkDeviceSize MaximumAllocatedScratchMemory = 100 * 1000 * 1000;
 static constexpr uint32_t MaxPendingPaletteUploads = 4096;
 static constexpr uint32_t MaxPendingCopies = 4096;
@@ -838,14 +837,24 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 
 	kick_compilation_tasks();
 
-	// Reserve 25% of our budget to slab-allocate image handles.
+	// Reserve 1/3 of our budget to slab-allocate image handles.
 	Vulkan::HeapBudget budgets[VK_MAX_MEMORY_HEAPS] = {};
 	device->get_memory_budget(budgets);
 	for (uint32_t i = 0; i < device->get_memory_properties().memoryHeapCount; i++)
+	{
 		if ((device->get_memory_properties().memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0)
-			max_image_slab_size = std::max<VkDeviceSize>(max_image_slab_size, budgets[i].budget_size / 4);
+		{
+			max_image_slab_size = std::max<VkDeviceSize>(
+					max_image_slab_size, budgets[i].budget_size / 3);
+			max_allocated_image_memory_per_flush =
+					std::max<VkDeviceSize>(max_allocated_image_memory_per_flush, budgets[i].budget_size / 10);
+		}
+	}
 
-	LOGI("Using image slab size of %llu MiB.\n", static_cast<unsigned long long>(max_image_slab_size / (1024 * 1024)));
+	LOGI("Using image slab size of %llu MiB.\n",
+	     static_cast<unsigned long long>(max_image_slab_size / (1024 * 1024)));
+	LOGI("Using max allocated image memory per flush of %llu MiB.\n",
+	     static_cast<unsigned long long>(max_allocated_image_memory_per_flush / (1024 * 1024)));
 
 	return true;
 }
@@ -857,7 +866,7 @@ void GSRenderer::check_flush_stats()
 
 	if (stats.num_primitives >= MinimumPrimitivesForFlush ||
 	    stats.num_render_passes >= MinimumRenderPassForFlush ||
-	    stats.allocated_image_memory >= MaximumAllocatedImageMemory ||
+	    stats.allocated_image_memory >= max_allocated_image_memory_per_flush ||
 	    stats.allocated_scratch_memory >= MaximumAllocatedScratchMemory ||
 	    stats.num_palette_updates >= MaxPendingPaletteUploads ||
 	    stats.num_copies >= MaxPendingCopies ||
@@ -1163,6 +1172,16 @@ void GSRenderer::flush_submit(uint64_t value)
 	// This is a delayed sync-point between CPU and GPU, and garbage collection can happen here.
 	drain_compilation_tasks_nonblock();
 	device->next_frame_context();
+
+	// If GPU is fast we can be a bit more aggressive in reclaiming memory.
+	// Try to reclaim up to 4 contexts every frame.
+	for (int i = 0; i < 3; i++)
+	{
+		if (!device->next_frame_context_is_non_blocking())
+			break;
+		device->next_frame_context();
+	}
+
 	log_timestamps();
 	check_bug_feedback();
 }

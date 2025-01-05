@@ -507,6 +507,7 @@ private:
 	Vulkan::ImageHandle pull_image_handle_from_slab(uint32_t width, uint32_t height, uint32_t levels, uint32_t samples);
 	VkDeviceSize total_image_slab_size = 0;
 	VkDeviceSize max_image_slab_size = 0;
+	VkDeviceSize max_allocated_image_memory_per_flush = 0;
 	VkDeviceSize image_slab_high_water_mark = 0;
 	void flush_slab_cache();
 
