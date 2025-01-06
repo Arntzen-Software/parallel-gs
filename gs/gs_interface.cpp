@@ -1457,10 +1457,12 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 
 	if (render_pass.is_potential_feedback &&
 	    width > uint32_t(desc.tex0.desc.TBW) * PGS_BUFFER_WIDTH_SCALE &&
-	    desc.tex0.desc.TBW != 0)
+	    desc.tex0.desc.TBW != 0 &&
+	    height > get_data_structure(psm).page_height)
 	{
 		// Speculate that we can clamp the image region.
 		// This is mostly a performance workaround, especially when using SSAA textures.
+		// Only do this if height is large enough that stride is even meaningful.
 		if (desc.clamp.desc.WMS == CLAMPBits::CLAMP || desc.clamp.desc.WMS == CLAMPBits::REPEAT)
 		{
 			desc.clamp.desc.WMS = CLAMPBits::REGION_CLAMP;
