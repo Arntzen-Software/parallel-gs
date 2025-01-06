@@ -1721,6 +1721,11 @@ void GSRenderer::allocate_scratch_buffers(Vulkan::CommandBuffer &cmd, const Rend
 uint32_t GSRenderer::get_target_hierarchical_binning(
 		uint32_t num_primitives, uint32_t coarse_tiles_width, uint32_t coarse_tiles_height) const
 {
+#ifdef __APPLE__
+	// Broken Metal drivers can't deal with the hierarchical binning for some reason.
+	return 1;
+#endif
+
 	// Only bother for large number of primitives.
 	// Simpler full-screen blit passes and similar should just use the simplified flat binner.
 	if (num_primitives < 256)
