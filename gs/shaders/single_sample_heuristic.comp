@@ -30,10 +30,18 @@ layout(set = 0, binding = BINDING_SINGLE_SAMPLE_HEURISTIC, std430) readonly buff
 
 const uint NUM_MASK_ELEMENTS = 64 * 1024 / 32;
 shared uint Full3DMask[NUM_MASK_ELEMENTS];
+shared uint SnapCandidateMask[NUM_MASK_ELEMENTS];
+shared uint PotentialSharedMask[NUM_MASK_ELEMENTS];
 shared uint HasAnyFull3D;
+shared uint PassFull3DMinZ;
+shared uint PassFull3DMaxZ;
 
 void mark_full_3d(uint z, uint zlo, uint zhi)
 {
+    atomicMin(PassFull3DMinZ, z);
+    atomicMax(PassFull3DMaxZ, z);
+
+    z = min(registers.z_max, z) >> registers.z_shift;
     if (z >= zlo && z <= zhi)
     {
         z -= zlo;
@@ -42,29 +50,117 @@ void mark_full_3d(uint z, uint zlo, uint zhi)
     atomicExchange(HasAnyFull3D, 1u);
 }
 
-bool z_can_single_sample(uint z, uint zlo, uint zhi)
+void mark_demotion_candidate(uint z, uint zlo, uint zhi)
 {
-    bool ret;
+    z = min(registers.z_max, z) >> registers.z_shift;
     if (z >= zlo && z <= zhi)
     {
         z -= zlo;
-        ret = bitfieldExtract(Full3DMask[z / 32], int(z % 32), 1) == 0;
+        atomicOr(SnapCandidateMask[z / 32], 1u << (z % 32));
+    }
+}
+
+void unmark_demotion_candidate(uint z, uint zlo, uint zhi)
+{
+    z = min(registers.z_max, z) >> registers.z_shift;
+    if (z >= zlo && z <= zhi)
+    {
+        z -= zlo;
+        atomicAnd(SnapCandidateMask[z / 32], ~(1u << (z % 32)));
+    }
+}
+
+bool is_demotion_candidate(uint snapped_z, uint zlo, uint zhi)
+{
+    bool ret = false;
+    if (snapped_z >= zlo && snapped_z <= zhi)
+    {
+        snapped_z -= zlo;
+        ret = bitfieldExtract(SnapCandidateMask[snapped_z / 32], int(snapped_z % 32), 1) != 0;
+    }
+    return ret;
+}
+
+uint hash_vertex(VertexPosition v)
+{
+    // From: https://www.shadertoy.com/view/XlXcW4 with slight modifications.
+    const uint NOISE_PRIME = 1103515245u;
+    uvec3 seed = uvec3(v.pos.x, v.pos.y, v.z);
+    seed = ((seed >> 8u) ^ seed.yzx) * NOISE_PRIME;
+    seed = ((seed >> 8u) ^ seed.yzx) * NOISE_PRIME;
+    seed = ((seed >> 8u) ^ seed.yzx) * NOISE_PRIME;
+    return seed.x >> 16u;
+}
+
+void mark_conflict_vertex(VertexPosition v, uint zlo, uint zhi)
+{
+    uint z = min(registers.z_max, v.z) >> registers.z_shift;
+    if (z >= zlo && z <= zhi)
+    {
+        z -= zlo;
+        if (bitfieldExtract(SnapCandidateMask[z / 32], int(z % 32), 1) != 0)
+        {
+            uint hashed_vertex = hash_vertex(v);
+            atomicOr(PotentialSharedMask[hashed_vertex / 32], 1u << (hashed_vertex % 32));
+        }
+    }
+}
+
+bool has_conflict_vertex(VertexPosition v)
+{
+    uint hashed_vertex = hash_vertex(v);
+    bool ret = bitfieldExtract(PotentialSharedMask[hashed_vertex / 32], int(hashed_vertex % 32), 1) != 0;
+    return ret;
+}
+
+void triangle_can_single_sample_visit(uint i, uint zlo, uint zhi)
+{
+    VertexPosition a, b, c;
+    a = vertex_position.data[3 * i + 0];
+
+    // Two layered compare. First, if we can prove there are no other 3D primitives at a certain Z range,
+    // accept it as-is.
+    uint z = min(registers.z_max, a.z) >> registers.z_shift;
+    if (z >= zlo && z <= zhi)
+    {
+        z -= zlo;
+        if (bitfieldExtract(Full3DMask[z / 32], int(z % 32), 1) == 0)
+            return;
     }
     else
     {
-        // Out of range, other workgroup will analyze.
-        ret = false;
+        // Out of range, just return early.
+        return;
     }
 
-    return ret;
+    b = vertex_position.data[3 * i + 1];
+    c = vertex_position.data[3 * i + 2];
+
+    // For demotion to break, there must be at least one 3D primitive sharing the same vertex.
+    // Otherwise, we have to assume they are from different meshes, so watertightness is irrelevant.
+    bool conflict_a = has_conflict_vertex(a);
+    bool conflict_b = has_conflict_vertex(b);
+    bool conflict_c = has_conflict_vertex(c);
+    if (conflict_a || conflict_b || conflict_c)
+        unmark_demotion_candidate(a.z, zlo, zhi);
 }
 
 void main()
 {
     for (uint i = gl_LocalInvocationIndex; i < NUM_MASK_ELEMENTS; i += gl_WorkGroupSize.x)
+    {
         Full3DMask[i] = 0u;
+        SnapCandidateMask[i] = 0u;
+        PotentialSharedMask[i] = 0u;
+    }
+
     if (gl_LocalInvocationIndex == 0u)
+    {
         HasAnyFull3D = 0u;
+        PassFull3DMaxZ = 0u;
+        PassFull3DMinZ = ~0u;
+    }
+
     barrier();
 
     uint zlo = heuristic.data.depth_range_offset[gl_WorkGroupID.x];
@@ -75,6 +171,12 @@ void main()
 
     // First, sweep over all primitives and any "full 3D" primitive should be marked.
     // For UI elements, Z values tend to be clustered together close to the near plane.
+    // Also, mark which Z values are candidates for UI demotion. This ensures that we only add to the hashmap
+    // as little as possible. This avoids false positives as much as possible.
+    const uint NO_FULL_3D_MASK = (1u << STATE_BIT_SPRITE) | (1u << STATE_BIT_LINE) | (1u << STATE_BIT_SNAP_ATTRIBUTE);
+    const uint SNAP_ATTR = 1u << STATE_BIT_SNAP_ATTRIBUTE;
+    const uint SNAP_RASTER = 1u << STATE_BIT_SNAP_RASTER;
+
     for (uint i = gl_LocalInvocationIndex; i < registers.num_primitives; i += gl_WorkGroupSize.x)
     {
         uint state = primitive_attr.data[i].state;
@@ -82,17 +184,61 @@ void main()
                 STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET,
                 STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) == registers.instance)
         {
-            const uint NO_FULL_3D_MASK = (1u << STATE_BIT_SPRITE) | (1u << STATE_BIT_LINE) | (1u << STATE_BIT_SNAP_ATTRIBUTE);
             bool is_full_3d = (state & NO_FULL_3D_MASK) == 0;
             if (is_full_3d)
             {
-                uint za = min(registers.z_max, vertex_position.data[3 * i + 0].z) >> registers.z_shift;
-                uint zb = min(registers.z_max, vertex_position.data[3 * i + 1].z) >> registers.z_shift;
-                uint zc = min(registers.z_max, vertex_position.data[3 * i + 2].z) >> registers.z_shift;
-                mark_full_3d(za, zlo, zhi);
-                mark_full_3d(zb, zlo, zhi);
-                mark_full_3d(zc, zlo, zhi);
+                mark_full_3d(vertex_position.data[3 * i + 0].z, zlo, zhi);
+                mark_full_3d(vertex_position.data[3 * i + 1].z, zlo, zhi);
+                mark_full_3d(vertex_position.data[3 * i + 2].z, zlo, zhi);
             }
+            else if ((state & (SNAP_ATTR | SNAP_RASTER)) == SNAP_ATTR || (state & (1u << STATE_BIT_LINE)) != 0)
+            {
+                // There are potentially triangular UI primitives here.
+                mark_demotion_candidate(vertex_position.data[3 * i + 0].z, zlo, zhi);
+            }
+        }
+    }
+
+    barrier();
+
+    for (uint i = gl_LocalInvocationIndex; i < registers.num_primitives; i += gl_WorkGroupSize.x)
+    {
+        uint state = primitive_attr.data[i].state;
+        if (bitfieldExtract(state,
+            STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET,
+            STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) == registers.instance)
+        {
+            bool is_full_3d = (state & NO_FULL_3D_MASK) == 0;
+            if (is_full_3d)
+            {
+                VertexPosition a, b, c;
+                a = vertex_position.data[3 * i + 0];
+                b = vertex_position.data[3 * i + 1];
+                c = vertex_position.data[3 * i + 2];
+                mark_conflict_vertex(a, zlo, zhi);
+                mark_conflict_vertex(b, zlo, zhi);
+                mark_conflict_vertex(c, zlo, zhi);
+            }
+        }
+    }
+
+    barrier();
+
+    // Check for conflicts. If there is at least one conflict for any given Z, it must propagate.
+    // All primitives sharing an edge must agree on demotion strategy, otherwise we lose watertightness.
+
+    for (uint i = gl_LocalInvocationIndex; i < registers.num_primitives; i += gl_WorkGroupSize.x)
+    {
+        // If there is nothing in the render pass that needs 3D, we should just single sample everything.
+        // Only apply this to lines for now. Lines can be used in UI rendering contexts in very unusual scenarios.
+        uint state = primitive_attr.data[i].state;
+        if (bitfieldExtract(state,
+            STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET,
+            STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) == registers.instance)
+        {
+            bool is_candidate = (state & (SNAP_ATTR | SNAP_RASTER)) == SNAP_ATTR;
+            if (is_candidate)
+                triangle_can_single_sample_visit(i, zlo, zhi);
         }
     }
 
@@ -102,6 +248,12 @@ void main()
 
     for (uint i = gl_LocalInvocationIndex; i < registers.num_primitives; i += gl_WorkGroupSize.x)
     {
+        uint z = vertex_position.data[3 * i].z;
+        uint snapped_z = min(registers.z_max, z) >> registers.z_shift;
+        bool in_range = snapped_z >= zlo && snapped_z <= zhi;
+        if (!in_range)
+            continue;
+
         // If there is nothing in the render pass that needs 3D, we should just single sample everything.
         // Only apply this to lines for now. Lines can be used in UI rendering contexts in very unusual scenarios.
         uint state = primitive_attr.data[i].state;
@@ -109,17 +261,29 @@ void main()
                 STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET,
                 STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) == registers.instance)
         {
-            bool is_candidate = (state & (1u << STATE_BIT_SNAP_ATTRIBUTE)) != 0 ||
-                (force_single_sample && (state & (1u << STATE_BIT_LINE)) != 0);
+            bool is_triangle_candidate = (state & (SNAP_ATTR | SNAP_RASTER)) == SNAP_ATTR;
+            bool is_line_candidate = force_single_sample && (state & (1u << STATE_BIT_LINE)) != 0;
 
-            if (is_candidate)
+            if (is_triangle_candidate || is_line_candidate)
             {
-                uint z = min(registers.z_max, vertex_position.data[3 * i + 0].z) >> registers.z_shift;
-                if (z_can_single_sample(z, zlo, zhi))
+                bool demote = is_demotion_candidate(snapped_z, zlo, zhi);
+
+                if (demote)
                 {
                     // Only one thread will enter this path, so it's safe.
                     state |= 1u << STATE_BIT_SNAP_RASTER;
                     primitive_attr.data[i].state = state;
+                }
+                else if ((state & ((1u << STATE_BIT_Z_TEST) | (1u << STATE_BIT_Z_WRITE))) != 0u)
+                {
+                    if (z > PassFull3DMinZ && z < PassFull3DMaxZ)
+                    {
+                        // If the primitive is Z sensitive and lives within the effective range of Z values of 3D objects,
+                        // it's unlikely this is was supposed to be a UI primitive in the first place.
+                        // Assume it was a freak accident, and just go full SSAA.
+                        state &= ~(1u << STATE_BIT_SNAP_ATTRIBUTE);
+                        primitive_attr.data[i].state = state;
+                    }
                 }
             }
         }

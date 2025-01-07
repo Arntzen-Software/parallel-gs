@@ -875,7 +875,7 @@ ShadeResultEarly shade_early(uint primitive_index)
 	// Technically, we could also have a problem where UI elements are drawn at a negative offset that is less than one pixel.
 	// With multisampling, we end up getting coverage on unexpected pixels this way as well, but that case should be rare.
 
-	if (SUPER_SAMPLE)
+	if (SUPER_SAMPLE && res.request.coverage != 0)
 	{
 		uint snap_state = prim_state & (SNAP_RASTER_BIT | SNAP_ATTR_BIT);
 		if (snap_state == SNAP_ATTR_BIT)
