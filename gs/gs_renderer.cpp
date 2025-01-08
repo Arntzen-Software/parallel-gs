@@ -1840,6 +1840,16 @@ bool GSRenderer::render_pass_instance_is_deduced_blur(const RenderPass &rp, uint
 	return false;
 }
 
+static bool render_pass_instance_might_field_render(const RenderPass &rp, uint32_t instance)
+{
+	// Some "field" rendered games actually render the frame in full res first, then downsample.
+	// In this case, we can deduce we should use normal snapping rules.
+	// Very shaky heuristic since it obviously cannot catch every case.
+	auto &inst = rp.instances[instance];
+	bool is_tall_render_pass = (inst.base_y + (inst.coarse_tiles_height << rp.coarse_tile_size_log2)) > 256;
+	return !is_tall_render_pass;
+}
+
 void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
 {
 	struct Push
@@ -1852,6 +1862,7 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 	push.num_primitives = rp.num_primitives;
 	uint32_t sampling_rate_x_log2 = 0;
 	uint32_t sampling_rate_y_log2 = 0;
+	bool allow_field_render = false;
 
 	auto *opaque_fbmasks = cmd.allocate_typed_constant_data<uint32_t>(0, BINDING_OPAQUE_FBMASKS, MaxRenderPassInstances);
 
@@ -1890,6 +1901,9 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 			if (device->consumes_debug_markers())
 				insert_label(cmd, "Instance %u, deduced blur kernel", i);
 		}
+
+		if (field_aware_super_sampling && render_pass_instance_might_field_render(rp, i))
+			allow_field_render = true;
 	}
 
 	cmd.push_constants(&push, 0, sizeof(push));
@@ -1899,7 +1913,8 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 	cmd.set_specialization_constant(0, sampling_rate_x_log2);
 	cmd.set_specialization_constant(1, sampling_rate_y_log2);
 	cmd.set_specialization_constant(2, bound_texture_has_array);
-	cmd.set_specialization_constant(3, bound_texture_has_array && field_aware_super_sampling);
+
+	cmd.set_specialization_constant(3, bound_texture_has_array && allow_field_render);
 
 	Vulkan::QueryPoolHandle start_ts, end_ts;
 	if (enable_timestamps)
@@ -2041,6 +2056,7 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 	}
 
 	set_hierarchical_binning_subgroup_config(cmd, hier_binning);
+
 	struct Push
 	{
 		uint32_t base_x, base_y;
@@ -2055,7 +2071,7 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 		base_primitive, instance, base_primitive + num_primitives,
 		1u << (inst.sampling_rate_x_log2 + inst.sampling_rate_y_log2),
 		// Technically we can decay to 2x SSAA here and splat, but that too complicated to support.
-		uint32_t(field_aware_super_sampling),
+		uint32_t(field_aware_super_sampling && render_pass_instance_might_field_render(rp, instance)),
 		allow_blend_demote ? BlendDemoteBudget : 0,
 	};
 
@@ -2371,7 +2387,7 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	cmd.set_program(shaders.ubershader[int(rp.feedback_color)][int(rp.feedback_depth)]);
 	auto snap_raster_mask = ivec2(-(1 << inst.sampling_rate_y_log2));
 	// Snap single-sampled raster to half-texel instead.
-	if (inst.sampling_rate_y_log2 && field_aware_super_sampling)
+	if (inst.sampling_rate_y_log2 && field_aware_super_sampling && render_pass_instance_might_field_render(rp, instance))
 		snap_raster_mask.y >>= 1;
 
 	// If we're doing channel shuffle, but insist on super-sampling, we must make sure
