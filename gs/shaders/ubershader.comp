@@ -1170,7 +1170,8 @@ vec4 sample_texture(uint tex_word, uint filtering, vec2 uv, float q, bool perspe
 
 			color_1 = vec4(0.0);
 			vec2 uv = (floored_uv + 0.5) * inv_scale_1 + bias;
-			bool force_nearest = !mag_linear || any(equal(floored_uv.xyxy, region_coords));
+
+			bool force_nearest = !mag_linear || ((sampler_clamp_s || sampler_clamp_t) && any(equal(floored_uv.xyxy, region_coords)));
 
 			// On the edge we risk sampling against something which does not exist.
 			// Just pick the nearest sample point which is in current texel.

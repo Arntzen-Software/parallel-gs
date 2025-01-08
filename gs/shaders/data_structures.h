@@ -98,7 +98,7 @@ struct TexInfo
 	vec4 region;
 	vec2 bias;
 	int arrayed;
-	int padding;
+	int force_sample_mapping;
 };
 
 CONSTEXPR int PGS_FB_SWIZZLE_WIDTH_LOG2 = 3;

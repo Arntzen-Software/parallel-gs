@@ -1598,7 +1598,6 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	if (desc.rect.levels == 1 && super_sampled_textures &&
 	    get_bits_per_pixel(desc.tex0.desc.PSM) >= 8 &&
 	    PRIMType(prim.desc.PRIM) == PRIMType::Sprite &&
-	    !desc.clamp.desc.has_horizontal_repeat() && !desc.clamp.desc.has_vertical_repeat() &&
 	    tracker.texture_may_super_sample(state_tracker.tex.page_rects[0]))
 	{
 		desc.samples = 1u << (sampling_rate_x_log2 + sampling_rate_y_log2);
@@ -1756,6 +1755,12 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 		if (info.info.arrayed)
 			render_pass.tex_infos_has_super_samples = true;
 
+		// Common pattern for esoteric channel re-mapping. Don't try to be clever here. Force sample mapping.
+		info.info.force_sample_mapping =
+				info.info.arrayed &&
+				is_palette_format(psm) &&
+				(desc.clamp.desc.has_horizontal_region() || desc.clamp.desc.has_vertical_region());
+
 		render_pass.tex_infos.push_back(info);
 		render_pass.tex0_infos.push_back(ctx.tex0.desc);
 		render_pass.held_images.push_back(std::move(image));
@@ -1786,8 +1791,17 @@ void GSInterface::drawing_kick_update_state(FBFeedbackMode feedback_mode, const 
 		p.tex |= ctx.tex1.desc.MMAG == TEX1Bits::LINEAR ? TEX_SAMPLER_MAG_LINEAR_BIT : 0;
 		p.tex |= ctx.clamp.desc.has_horizontal_clamp() ? TEX_SAMPLER_CLAMP_S_BIT : 0;
 		p.tex |= ctx.clamp.desc.has_vertical_clamp() ? TEX_SAMPLER_CLAMP_T_BIT : 0;
-		if (tex_index < MaxTextures && render_pass.tex_infos[tex_index].info.arrayed)
-			p.tex |= TEX_PER_SAMPLE_BIT;
+
+		if (tex_index < MaxTextures)
+		{
+			auto &info = render_pass.tex_infos[tex_index].info;
+			if (info.arrayed)
+			{
+				p.tex |= TEX_PER_SAMPLE_BIT;
+				if (info.force_sample_mapping)
+					p.tex |= TEX_SAMPLE_MAPPING_BIT;
+			}
+		}
 
 		if (ctx.tex1.desc.mmin_has_mipmap() && !hacks.disable_mipmaps)
 		{

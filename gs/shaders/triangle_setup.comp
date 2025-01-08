@@ -557,7 +557,8 @@ void main_inner(uint index)
     {
         uint tex = primitive_attr.data[index].tex;
 
-        if ((tex & TEX_PER_SAMPLE_BIT) != 0)
+        // If we have already decided on sample mapping, just do that.
+        if ((tex & (TEX_PER_SAMPLE_BIT | TEX_SAMPLE_MAPPING_BIT)) == TEX_PER_SAMPLE_BIT)
         {
             ivec2 uv_delta = abs(ivec2(attr1.uv) - ivec2(attr0.uv));
             ivec2 dist = abs(d - a);
