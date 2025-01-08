@@ -849,7 +849,7 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 			max_image_slab_size = std::max<VkDeviceSize>(
 					max_image_slab_size, budgets[i].budget_size / 3);
 			max_allocated_image_memory_per_flush =
-					std::max<VkDeviceSize>(max_allocated_image_memory_per_flush, budgets[i].budget_size / 10);
+					std::max<VkDeviceSize>(max_allocated_image_memory_per_flush, budgets[i].budget_size / 20);
 		}
 	}
 
@@ -1174,15 +1174,6 @@ void GSRenderer::flush_submit(uint64_t value)
 	// This is a delayed sync-point between CPU and GPU, and garbage collection can happen here.
 	drain_compilation_tasks_nonblock();
 	device->next_frame_context();
-
-	// If GPU is fast we can be a bit more aggressive in reclaiming memory.
-	// Try to reclaim up to 4 contexts every frame.
-	for (int i = 0; i < 3; i++)
-	{
-		if (!device->next_frame_context_is_non_blocking())
-			break;
-		device->next_frame_context();
-	}
 
 	log_timestamps();
 	check_bug_feedback();
