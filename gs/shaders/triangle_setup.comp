@@ -483,6 +483,45 @@ void main_inner(uint index)
     plane_a.x = bitfieldInsert(plane_a.x, error_flip_b, 2, 2);
     plane_a.x = bitfieldInsert(plane_a.x, error_flip_c, 4, 2);
 
+    ivec2 d = parallelogram ? (b + c - a) : c;
+
+    // Highly speculative, but appears to be needed.
+    // When DDA attempts to reconstruct the top-left sprite corner, it seems like we may need to consider rounding
+    // errors. If we suspect rounding errors are at play, bias the interpolation at epsilon offset to
+    // fake it towards the real input vertex.
+    if (sprite)
+    {
+        // D is the first vertex in the sprite. B and C are "fake" parallelogram vertices.
+        int x_dist = d.x - a.x;
+        int y_dist = d.y - a.y;
+
+        // Only adjust if NPOT, since POT scaling we expect lossless varying interpolation.
+        bool right_major_adjust = x_dist > 0 && (x_dist & (x_dist - 1)) != 0;
+        bool bottom_major_adjust = y_dist > 0 && (y_dist & (y_dist - 1)) != 0;
+
+        int di_rounding = 0;
+        int dj_rounding = 0;
+
+        if (right_major_adjust)
+        {
+            di_rounding += plane_b.x;
+            dj_rounding += plane_c.x;
+        }
+
+        if (bottom_major_adjust)
+        {
+            di_rounding += plane_b.y;
+            dj_rounding += plane_c.y;
+        }
+
+        // 1/64th of a pixel offset in interpolation. Arbitrary choice that is enough to fix issues
+        // since the ubershader applies a tiny epsilon on UVs.
+        // We don't risk sampling out of bounds on the bottom-right part of the sprite
+        // since sampling at the bottom-right edge does not have coverage. Convenient.
+        error_i += float(di_rounding) * (0.125 * inv_area_scaled);
+        error_j += float(dj_rounding) * (0.125 * inv_area_scaled);
+    }
+
     primitive_setup.data[index].a = plane_a;
     primitive_setup.data[index].inv_area = inv_area_scaled;
     primitive_setup.data[index].b = plane_b;
@@ -494,7 +533,6 @@ void main_inner(uint index)
     // precision is needed.
     primitive_setup.data[index].z = uvec4(za, floatBitsToUint(float(zb - za)), floatBitsToUint(float(zc - za)), 0);
 
-    ivec2 d = parallelogram ? (b + c - a) : c;
     ivec4 packed_bb = pack_bounding_box(a, b, c, d, multisample, SAMPLING_RATE_Y_LOG2);
 
     packed_bb = clip_bounding_box(packed_bb, ivec4(primitive_attr.data[index].bb));
