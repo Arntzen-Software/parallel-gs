@@ -4423,8 +4423,30 @@ void GSInterface::promote_render_pass_to_backbuffer(const RenderPass &rp)
 			continue;
 
 		auto &img = render_pass.tex_infos[promoted_tex_index].view->get_image();
-		hi = muglm::min(hi, ivec2(img.get_width(), img.get_height()));
-		lo = muglm::min(lo, ivec2(img.get_width(), img.get_height()));
+
+		// For purposes of promoting frame to field rendering more gracefully, assume
+		// that any field based blit should round the blit rect to something reasonable.
+		// Assume that if the height is close enough to these standard progressive heights, we should snap to that.
+		// Crude heuristic, but it's very hard to deduce frame to field blending without making some assumptions.
+		if (lo.y <= 2)
+			lo.y = 0;
+
+		static const int snapped_heights[] = { 224 * 2, 240 * 2, 256 * 2, 288 * 2 };
+
+		if (lo.y == 0)
+		{
+			for (int snapped_height : snapped_heights)
+			{
+				if (std::abs(hi.y - snapped_height) <= 2)
+				{
+					hi.y = snapped_height;
+					break;
+				}
+			}
+		}
+
+		lo = muglm::clamp(lo, ivec2(0), ivec2(img.get_width(), img.get_height()));
+		hi = muglm::clamp(hi, ivec2(0), ivec2(img.get_width(), img.get_height()));
 
 		// Assume bottom-right rules leading to rounding down here.
 		// Missing a pixel is better than including too many pixels since it may contain garbage.
@@ -4469,17 +4491,7 @@ void GSInterface::register_backbuffer_promotion_fbp(uint32_t fbp)
 
 ScanoutResult GSInterface::vsync(const VSyncInfo &info)
 {
-	// If the game is field rendered, and we want high-res scanout,
-	// snap to field resolution rather than native pixels.
-	// Ideally we should be able to achieve a "perfect" deinterlacer this way,
-	// since we can jitter a full pixel rather than half pixel.
-
-	render_pass.field_aware_rendering = info.high_resolution_scanout &&
-	                                    sampling_rate_y_log2 &&
-	                                    priv_registers.smode2.FFMD &&
-	                                    priv_registers.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
-
-	renderer.set_field_aware_super_sampling(render_pass.field_aware_rendering);
+	auto ffmd = priv_registers.smode2.FFMD;
 
 	const Vulkan::Image *promoted1 = nullptr;
 	const Vulkan::Image *promoted2 = nullptr;
@@ -4495,6 +4507,27 @@ ScanoutResult GSInterface::vsync(const VSyncInfo &info)
 		promoted2 = promoted ? promoted->img.get() : nullptr;
 	}
 
+	// If the promoted buffer looks like it was downsampled from a full frame, we can patch away FFMD
+	// and avoid unnecessary deinterlacing, also avoids doing field-adaptive rendering by mistake,
+	// since the game is clearly not actually field rendered.
+	if ((promoted1 && promoted1->get_height() > 350) ||
+	    (promoted2 && promoted2->get_height() > 350))
+	{
+		priv_registers.smode2.FFMD = 0;
+	}
+
+	// If the game is field rendered, and we want high-res scanout,
+	// snap to field resolution rather than native pixels.
+	// Ideally we should be able to achieve a "perfect" deinterlacer this way,
+	// since we can jitter a full pixel rather than half pixel.
+	render_pass.field_aware_rendering = info.high_resolution_scanout &&
+	                                    sampling_rate_y_log2 &&
+	                                    priv_registers.smode2.FFMD &&
+	                                    priv_registers.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
+
+	renderer.set_field_aware_super_sampling(render_pass.field_aware_rendering);
+
+
 	auto result = renderer.vsync(priv_registers, info,
 	                             sampling_rate_x_log2, sampling_rate_y_log2,
 								 promoted1, promoted2);
@@ -4507,6 +4540,8 @@ ScanoutResult GSInterface::vsync(const VSyncInfo &info)
 			register_backbuffer_promotion_fbp(priv_registers.dispfb2.FBP);
 	}
 
+	// Restore FFMD state.
+	priv_registers.smode2.FFMD = ffmd;
 	return result;
 }
 
