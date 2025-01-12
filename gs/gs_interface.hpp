@@ -396,6 +396,8 @@ private:
 		bool is_depth_feedback = false;
 		bool is_awkward_color_feedback = false;
 		bool is_potential_feedback = false;
+		bool is_potential_channel_shuffle = false;
+		bool current_primitive_is_channel_shuffle = false;
 
 		// For potential feedback, we need crude UV bb analysis to see if we're
 		// actually straddling into framebuffer territory.

@@ -1344,26 +1344,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 		{
 			// If game is using sprites, it's more likely than not it's doing explicit mip blurs, etc, so cache those.
 			// The main problem we always want to avoid is heavy random triangle soup geometry that does feedback.
-
-			// Channel shuffles are special PS2 hacks that abuse the swizzle layout of 16-bit formats.
-			// X coordinate [0, 8) and [8, 15) map to each halve of a 32-bit color word.
-			// This can be used to copy R/G into B/A or vice versa.
-			// If we detect this case, assume it's not a real feedback.
-			// If we don't detect this, it's 20+ RPs per shuffle, which is brutal.
-			bool is_assumed_channel_shuffle = false;
-
-			if (ctx.frame.desc.PSM == PSMCT16 || ctx.frame.desc.PSM == PSMCT16S || ctx.frame.desc.PSM == PSMZ16)
-			{
-				// If all pixels land within the same 8-pixel column, this is a clear channel shuffle case.
-				// Also sanity check that uv_bb is horizontally XOR 8 pixels to be even more safe.
-				if ((bb.x & ~7) == (bb.z & ~7) && (uv_bb.x ^ 8) == bb.x && uv_bb.y == bb.y)
-				{
-					is_assumed_channel_shuffle = true;
-					render_pass.instances[render_pass.current_instance].has_channel_shuffle = true;
-				}
-			}
-
-			long_term_cache_texture = !is_assumed_channel_shuffle;
+			long_term_cache_texture = !render_pass.current_primitive_is_channel_shuffle;
 
 			// Very crude heuristic. Some games have full-screen warping effects where
 			// they intend to render small sprites at a bias. If we force hazards in this case, performance collapses.
@@ -2093,6 +2074,7 @@ void GSInterface::update_color_feedback_state()
 	render_pass.is_depth_feedback = false;
 	render_pass.is_awkward_color_feedback = false;
 	render_pass.is_potential_feedback = false;
+	render_pass.is_potential_channel_shuffle = false;
 
 	if (!prim.desc.TME)
 		return;
@@ -2103,6 +2085,12 @@ void GSInterface::update_color_feedback_state()
 
 	auto tbp0 = uint32_t(ctx.tex0.desc.TBP0);
 	auto tex_psm = uint32_t(ctx.tex0.desc.PSM);
+
+	if (ctx.frame.desc.PSM == tex_psm &&
+	    (tex_psm == PSMCT16 || tex_psm == PSMCT16S || tex_psm == PSMZ16 || tex_psm == PSMZ16S))
+	{
+		render_pass.is_potential_channel_shuffle = true;
+	}
 
 	// A game might use REGION_CLAMP to align the effective "base pointer" of the texture to the frame buffer.
 	if (!is_palette_format(tex_psm))
@@ -2532,8 +2520,22 @@ void GSInterface::drawing_kick_append()
 		render_pass.last_triangle_is_parallelogram_candidate = is_parallelogram_candidate;
 		feedback_mode = deduce_color_feedback_mode<quad, num_vertices>(pos, attr, ctx, prim.desc, uv_bb, bb);
 	}
-	else if (render_pass.is_potential_feedback)
+	else if (render_pass.is_potential_feedback || (render_pass.is_potential_channel_shuffle && quad))
 		compute_uv_bb<quad, num_vertices, false>(attr, ctx, prim.desc, uv_bb, nullptr, nullptr);
+
+	render_pass.current_primitive_is_channel_shuffle = false;
+	if (quad && render_pass.is_potential_channel_shuffle)
+	{
+		// Channel shuffles are special PS2 hacks that abuse the swizzle layout of 16-bit formats.
+		// X coordinate [0, 8) and [8, 15) map to each halve of a 32-bit color word.
+		// This can be used to copy R/G into B/A or vice versa.
+		// If we detect this case, assume it's not a real feedback.
+		// If we don't detect this, it's 20+ RPs per shuffle, which is brutal.
+		// If all pixels land within the same 8-pixel column, this is a clear channel shuffle case.
+		// Also sanity check that uv_bb is horizontally XOR 8 pixels to be even more safe.
+		if ((bb.x & ~7) == (bb.z & ~7) && (uv_bb.x ^ 8) == bb.x && uv_bb.y == bb.y)
+			render_pass.current_primitive_is_channel_shuffle = true;
+	}
 
 	// If there's a partial transfer in-flight, flush it.
 	// The write should technically happen as soon as we write HWREG.
@@ -2735,6 +2737,8 @@ void GSInterface::drawing_kick_append()
 	render_pass.primitive_count++;
 	// Commit this here as well. Need to do it after flushing state, since that may reset any tracking state.
 	render_pass.last_triangle_is_parallelogram_candidate = is_parallelogram_candidate;
+	if (render_pass.current_primitive_is_channel_shuffle)
+		render_pass.instances[render_pass.current_instance].has_channel_shuffle = true;
 
 	// Mark state as explicitly not dirty now. If we ended up flushing render pass due to e.g. texture state,
 	// some dirty bits will remain set, despite not actually being dirty.
