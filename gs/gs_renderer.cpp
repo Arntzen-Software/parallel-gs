@@ -2260,6 +2260,173 @@ void GSRenderer::bind_debug_resources(Vulkan::CommandBuffer &cmd,
 	}
 }
 
+void GSRenderer::dispatch_shading_commands(
+		Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t instance,
+		bool post_barrier, uint32_t base_primitive, uint32_t num_primitives)
+{
+	auto &inst = rp.instances[instance];
+
+	uint32_t stride = rp.debug_capture_stride ? rp.debug_capture_stride : num_primitives;
+	uint32_t lo_primitive_index = 0;
+	uint32_t hi_primitive_index = 0;
+
+	bool debug = rp.feedback_color && device->consumes_debug_markers();
+
+	for (uint32_t i = 0; i < num_primitives; i += stride)
+	{
+		if (debug)
+		{
+			lo_primitive_index = i;
+			hi_primitive_index = std::min<uint32_t>(num_primitives, i + stride) - 1;
+			lo_primitive_index += base_primitive;
+			hi_primitive_index += base_primitive;
+			cmd.push_constants(&lo_primitive_index, offsetof(ShadingDescriptor, lo_primitive_index), sizeof(uint32_t));
+			cmd.push_constants(&hi_primitive_index, offsetof(ShadingDescriptor, hi_primitive_index), sizeof(uint32_t));
+
+			begin_region(cmd, "Prim [%u, %u]", lo_primitive_index, hi_primitive_index);
+			for (uint32_t j = lo_primitive_index; j <= hi_primitive_index; j++)
+			{
+				auto s = buffers.prim[j].state;
+
+				uint32_t prim_instance = (s >> STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET) &
+				                         ((1 << STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) - 1);
+
+				if (prim_instance != instance)
+					continue;
+
+				insert_label(cmd, "Prim #%u", j);
+				insert_label(cmd,
+				             "  State: %u, ZTST: %u, ZGE: %u, ZWRITE: %u, AA1: %u, OPAQUE: %u, SPRITE: %u, QUAD: %u, IIP: %u, LINE: %u, FBMSK: 0x%x",
+				             (s >> STATE_INDEX_BIT_OFFSET) & ((1u << STATE_INDEX_BIT_COUNT) - 1u),
+				             (s >> STATE_BIT_Z_TEST) & 1,
+				             (s >> STATE_BIT_Z_TEST_GREATER) & 1,
+				             (s >> STATE_BIT_Z_WRITE) & 1,
+				             (s >> STATE_BIT_MULTISAMPLE) & 1,
+				             (s >> STATE_BIT_OPAQUE) & 1,
+				             (s >> STATE_BIT_SPRITE) & 1,
+				             (s >> STATE_BIT_PARALLELOGRAM) & 1,
+				             (s >> STATE_BIT_IIP) & 1,
+				             (s >> STATE_BIT_LINE) & 1,
+				             buffers.prim[j].fbmsk);
+
+				auto alpha = buffers.prim[j].alpha;
+				insert_label(cmd, "  AFIX: %u, AREF: %u",
+				             (alpha >> ALPHA_AFIX_OFFSET) & ((1u << ALPHA_AFIX_BITS) - 1u),
+				             (alpha >> ALPHA_AREF_OFFSET) & ((1u << ALPHA_AREF_BITS) - 1u));
+
+				auto tex = buffers.prim[j].tex;
+				insert_label(cmd, "  TEX: %u, MXL: %u, CLAMPS: %u, CLAMPT: %u, MAG: %u, MIN: %u, MIP: %u",
+				             (tex >> TEX_TEXTURE_INDEX_OFFSET) & ((1u << TEX_TEXTURE_INDEX_BITS) - 1u),
+				             (tex >> TEX_MAX_MIP_LEVEL_OFFSET) & ((1u << TEX_MAX_MIP_LEVEL_BITS) - 1u),
+				             (tex & TEX_SAMPLER_CLAMP_S_BIT) ? 1 : 0,
+				             (tex & TEX_SAMPLER_CLAMP_T_BIT) ? 1 : 0,
+				             (tex & TEX_SAMPLER_MAG_LINEAR_BIT) ? 1 : 0,
+				             (tex & TEX_SAMPLER_MIN_LINEAR_BIT) ? 1 : 0,
+				             (tex & TEX_SAMPLER_MIPMAP_LINEAR_BIT) ? 1 : 0);
+			}
+			cmd.end_region();
+		}
+
+		if (inst.sampling_rate_y_log2 != 0)
+		{
+			cmd.set_specialization_constant(0, inst.sampling_rate_x_log2);
+			cmd.set_specialization_constant(1, inst.sampling_rate_y_log2);
+			cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
+			                       *work_list_super_sample.buffer, work_list_super_sample.offset + 256, VK_WHOLE_SIZE);
+			if (debug)
+				cmd.insert_label("super-sample");
+			cmd.dispatch_indirect(*work_list_super_sample.buffer, work_list_super_sample.offset);
+		}
+
+		cmd.set_specialization_constant(0, 0);
+		cmd.set_specialization_constant(1, 0);
+		cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
+		                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256,
+		                       VK_WHOLE_SIZE);
+		if (debug)
+			cmd.insert_label("single-sample");
+		cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
+
+		if (post_barrier || debug)
+		{
+			cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+			            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+		}
+	}
+}
+
+void GSRenderer::dispatch_read_aliased_depth_passes(Vulkan::CommandBuffer &cmd, const RenderPass &rp,
+                                                    uint32_t instance, uint32_t depth_psm,
+                                                    ShadingDescriptor &push,
+                                                    uint32_t base_primitive,
+                                                    uint32_t next_lo_index, uint32_t num_primitives)
+{
+	auto bb = ivec4(INT_MAX, INT_MAX, INT_MIN, INT_MIN);
+
+	uint32_t half_gpu_size = buffers.gpu->get_create_info().size / 2;
+	if (get_bits_per_pixel(depth_psm) == 16)
+		push.fb_index_depth_offset = half_gpu_size / sizeof(uint16_t);
+	else
+		push.fb_index_depth_offset = half_gpu_size / sizeof(uint32_t);
+
+	for (uint32_t i = next_lo_index; i < num_primitives; i++)
+	{
+		auto &state = buffers.prim[base_primitive + i].state;
+		uint32_t prim_instance = (state >> STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET) &
+		                         ((1u << STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) - 1u);
+
+		// Only care about sprites here. If we're doing normal triangle rendering,
+		// it's doubtful we're doing anything interesting with feedback on aliasing.
+		// Most likely some kind of weird post effect if anything.
+		if (instance != prim_instance || (state & (1u << STATE_BIT_SPRITE)) == 0)
+			continue;
+
+		auto &prim_bb = buffers.prim[base_primitive + i].bb;
+
+		auto hazard_bb = ivec4(std::max<int>(bb.x, prim_bb.x),
+		                       std::max<int>(bb.y, prim_bb.y),
+		                       std::min<int>(bb.z, prim_bb.z),
+		                       std::min<int>(bb.w, prim_bb.w));
+
+		bool overlap = hazard_bb.x <= hazard_bb.z && hazard_bb.y <= hazard_bb.w &&
+		               (state & ((1u << STATE_BIT_Z_TEST) | (1u << STATE_BIT_Z_WRITE))) != 0;
+
+		if (overlap)
+		{
+			push.lo_primitive_index = base_primitive + next_lo_index;
+			push.hi_primitive_index = base_primitive + i - 1;
+			cmd.push_constants(&push, 0, sizeof(push));
+			dispatch_cache_read_only_depth(cmd, rp, depth_psm, instance);
+			dispatch_shading_commands(cmd, rp, instance, true,
+			                          push.lo_primitive_index,
+			                          push.hi_primitive_index - push.lo_primitive_index + 1);
+
+			next_lo_index = i;
+			overlap = false;
+			bb = ivec4(prim_bb);
+		}
+		else
+		{
+			// Expand the BB.
+			bb = ivec4(std::min<int>(bb.x, prim_bb.x),
+			           std::min<int>(bb.y, prim_bb.y),
+			           std::max<int>(bb.z, prim_bb.z),
+			           std::max<int>(bb.w, prim_bb.w));
+		}
+	}
+
+	if (next_lo_index < num_primitives)
+	{
+		push.lo_primitive_index = base_primitive + next_lo_index;
+		push.hi_primitive_index = UINT32_MAX;
+		cmd.push_constants(&push, 0, sizeof(push));
+		dispatch_cache_read_only_depth(cmd, rp, depth_psm, instance);
+		dispatch_shading_commands(cmd, rp, instance, false, push.lo_primitive_index,
+		                          (num_primitives + base_primitive) - push.lo_primitive_index);
+	}
+}
+
 void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t instance,
                                   uint32_t base_primitive, uint32_t num_primitives)
 {
@@ -2306,6 +2473,7 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	uint32_t variant_flags = 0;
 
 	bool fb_z_alias = inst.z_sensitive && inst.fb.frame.desc.FBP == inst.fb.z.desc.ZBP;
+	uint32_t first_primitive_index_z_sensitive = UINT32_MAX;
 	uint32_t last_primitive_index_single_step = 0;
 	uint32_t last_primitive_index_z_sensitive = 0;
 	bool single_primitive_step = false;
@@ -2314,16 +2482,26 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	{
 		for (uint32_t i = 0; i < num_primitives; i++)
 		{
+			auto &state = buffers.prim[base_primitive + i].state;
+
+			uint32_t prim_instance = (state >> STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET) &
+			                         ((1u << STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) - 1u);
+
+			if (prim_instance != instance)
+				continue;
+
 			// If we have duelling color and Z write we're in deep trouble, so have to fall back
 			// to single primitive stepping.
-			if ((buffers.prim[base_primitive + i].state & (1u << STATE_BIT_Z_WRITE)) != 0)
+			if ((state & (1u << STATE_BIT_Z_WRITE)) != 0)
 			{
 				single_primitive_step = true;
 				last_primitive_index_single_step = i;
-				last_primitive_index_z_sensitive = i;
 			}
-			else if ((buffers.prim[base_primitive + i].state & (1u << STATE_BIT_Z_TEST)) != 0)
+
+			if ((state & ((1u << STATE_BIT_Z_TEST) | (1u << STATE_BIT_Z_WRITE))) != 0)
 			{
+				if (first_primitive_index_z_sensitive == UINT32_MAX)
+					first_primitive_index_z_sensitive = i;
 				last_primitive_index_z_sensitive = i;
 			}
 		}
@@ -2362,19 +2540,6 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	assert(inst.sampling_rate_x_log2 <= 2);
 	assert(inst.sampling_rate_y_log2 <= 3);
 
-	// Only way to make this work is to cache VRAM into a shadow copy.
-	uint32_t fb_index_depth_offset = 0;
-	if (fb_z_alias && !single_primitive_step)
-	{
-		uint32_t half_gpu_size = buffers.gpu->get_create_info().size / 2;
-		if (get_bits_per_pixel(depth_psm) == 16)
-			fb_index_depth_offset = half_gpu_size / sizeof(uint16_t);
-		else
-			fb_index_depth_offset = half_gpu_size / sizeof(uint32_t);
-
-		dispatch_cache_read_only_depth(cmd, rp, depth_psm, instance);
-	}
-
 	cmd.set_program(shaders.ubershader[int(rp.feedback_color)][int(rp.feedback_depth)]);
 	auto snap_raster_mask = ivec2(-(1 << inst.sampling_rate_y_log2));
 	// Snap single-sampled raster to half-texel instead.
@@ -2390,14 +2555,19 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 		uint32_t(inst.channel_shuffle && inst.sampling_rate_y_log2 != 0),
 		base_primitive,
 		base_primitive + num_primitives - 1,
-		fb_index_depth_offset
+		0, // Offset filled in later.
 	};
 
-	if (rp.feedback_color)
+	// First, dispatch any work which is not reliant on Z at all.
+	if (fb_z_alias && first_primitive_index_z_sensitive != 0)
 	{
-		dispatch_shading_debug(cmd, rp, push, instance, base_primitive, num_primitives, single_primitive_step);
+		push.lo_primitive_index = base_primitive;
+		push.hi_primitive_index = base_primitive + first_primitive_index_z_sensitive - 1;
+		cmd.push_constants(&push, 0, sizeof(push));
+		dispatch_shading_commands(cmd, rp, instance, true, push.lo_primitive_index, first_primitive_index_z_sensitive);
 	}
-	else if (single_primitive_step)
+
+	if (single_primitive_step)
 	{
 		// Pure mayhem, game will rely on non-local feedback effects due to Z swizzling.
 		// Render one primitive at a time.
@@ -2405,188 +2575,51 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 		// and then do barrier() after every primitive and exchange color and depth values as needed.
 		// That however, is complete insanity, but if we end up seeing content that really hammers
 		// this hard, we might not have a choice ...
-		for (uint32_t i = 0; i <= last_primitive_index_single_step; i++)
+		for (uint32_t i = first_primitive_index_z_sensitive; i <= last_primitive_index_single_step; i++)
 		{
 			push.lo_primitive_index = base_primitive + i;
 			push.hi_primitive_index = base_primitive + i;
 			cmd.push_constants(&push, 0, sizeof(push));
-
-			if (inst.sampling_rate_y_log2 != 0)
-			{
-				cmd.set_specialization_constant(0, inst.sampling_rate_x_log2);
-				cmd.set_specialization_constant(1, inst.sampling_rate_y_log2);
-				cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
-				                       *work_list_super_sample.buffer, work_list_super_sample.offset + 256, VK_WHOLE_SIZE);
-				cmd.dispatch_indirect(*work_list_super_sample.buffer, work_list_super_sample.offset);
-			}
-
-			cmd.set_specialization_constant(0, 0);
-			cmd.set_specialization_constant(1, 0);
-			cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
-			                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256,
-			                       VK_WHOLE_SIZE);
-			cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
-
-			cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-			            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+			dispatch_shading_commands(cmd, rp, instance, true, push.lo_primitive_index, 1);
 		}
 
-		// If there is still work to do that is read-only, use cached depth for the rest of the render pass.
 		if (last_primitive_index_single_step + 1 < num_primitives)
 		{
 			if (last_primitive_index_z_sensitive > last_primitive_index_single_step)
 			{
-				// If we still need to read depth, have to cache it read-only.
-				uint32_t half_gpu_size = buffers.gpu->get_create_info().size / 2;
-				if (get_bits_per_pixel(depth_psm) == 16)
-					fb_index_depth_offset = half_gpu_size / sizeof(uint16_t);
-				else
-					fb_index_depth_offset = half_gpu_size / sizeof(uint32_t);
-				push.fb_index_depth_offset = fb_index_depth_offset;
-
-				dispatch_cache_read_only_depth(cmd, rp, depth_psm, instance);
+				// If there is still work to do that is read-only, use cached depth for the rest of the render pass.
+				dispatch_read_aliased_depth_passes(
+						cmd, rp, instance, depth_psm, push,
+						base_primitive, last_primitive_index_single_step + 1,
+						num_primitives);
 			}
 			else
 			{
 				// If no further primitives need to read-depth, treat it as non-depth to speed up things.
 				cmd.set_specialization_constant(3, UINT32_MAX);
+				push.lo_primitive_index = base_primitive + last_primitive_index_single_step + 1;
+				push.hi_primitive_index = UINT32_MAX;
+				cmd.push_constants(&push, 0, sizeof(push));
+				dispatch_shading_commands(cmd, rp, instance, false,
+				                          push.lo_primitive_index,
+				                          (base_primitive + num_primitives) - push.lo_primitive_index);
 			}
-
-			push.lo_primitive_index = base_primitive + last_primitive_index_single_step + 1;
-			push.hi_primitive_index = UINT32_MAX;
-			cmd.push_constants(&push, 0, sizeof(push));
-
-			if (inst.sampling_rate_y_log2 != 0)
-			{
-				cmd.set_specialization_constant(0, inst.sampling_rate_x_log2);
-				cmd.set_specialization_constant(1, inst.sampling_rate_y_log2);
-				cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
-				                       *work_list_super_sample.buffer, work_list_super_sample.offset + 256, VK_WHOLE_SIZE);
-				cmd.dispatch_indirect(*work_list_super_sample.buffer, work_list_super_sample.offset);
-			}
-
-			cmd.set_specialization_constant(0, 0);
-			cmd.set_specialization_constant(1, 0);
-			cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
-			                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256,
-			                       VK_WHOLE_SIZE);
-			cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
 		}
+	}
+	else if (fb_z_alias)
+	{
+		dispatch_read_aliased_depth_passes(
+				cmd, rp, instance, depth_psm, push,
+				base_primitive, first_primitive_index_z_sensitive, num_primitives);
 	}
 	else
 	{
 		cmd.push_constants(&push, 0, sizeof(push));
-
-		if (inst.sampling_rate_y_log2 != 0)
-		{
-			cmd.set_specialization_constant(0, inst.sampling_rate_x_log2);
-			cmd.set_specialization_constant(1, inst.sampling_rate_y_log2);
-			cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
-			                       *work_list_super_sample.buffer, work_list_super_sample.offset + 256, VK_WHOLE_SIZE);
-			cmd.dispatch_indirect(*work_list_super_sample.buffer, work_list_super_sample.offset);
-		}
-
-		cmd.set_specialization_constant(0, 0);
-		cmd.set_specialization_constant(1, 0);
-		cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
-		                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256,
-		                       VK_WHOLE_SIZE);
-		cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
+		dispatch_shading_commands(cmd, rp, instance, false, base_primitive, num_primitives);
 	}
 
 	cmd.end_region();
 	cmd.enable_subgroup_size_control(false);
-}
-
-void GSRenderer::dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const RenderPass &rp,
-                                        ShadingDescriptor push, uint32_t instance,
-                                        uint32_t base_primitive, uint32_t num_primitives,
-                                        bool single_primitive_step)
-{
-	auto &inst = rp.instances[instance];
-
-	uint32_t stride = rp.debug_capture_stride ? rp.debug_capture_stride : num_primitives;
-	if (single_primitive_step)
-		stride = 1;
-
-	for (uint32_t i = 0; i < num_primitives; i += stride)
-	{
-		push.lo_primitive_index = i;
-		push.hi_primitive_index = std::min<uint32_t>(num_primitives, i + stride) - 1;
-		push.lo_primitive_index += base_primitive;
-		push.hi_primitive_index += base_primitive;
-
-		cmd.push_constants(&push, 0, sizeof(push));
-
-		if (device->consumes_debug_markers())
-		{
-			begin_region(cmd, "Prim [%u, %u]", push.lo_primitive_index, push.hi_primitive_index);
-			for (uint32_t j = push.lo_primitive_index; j <= push.hi_primitive_index; j++)
-			{
-				auto s = buffers.prim[j].state;
-
-				uint32_t prim_instance = (s >> STATE_VERTEX_RENDER_PASS_INSTANCE_OFFSET) &
-				                         ((1 << STATE_VERTEX_RENDER_PASS_INSTANCE_COUNT) - 1);
-
-				if (prim_instance != instance)
-					continue;
-
-				insert_label(cmd, "Prim #%u", j);
-				insert_label(cmd,
-				             "  State: %u, ZTST: %u, ZGE: %u, ZWRITE: %u, AA1: %u, OPAQUE: %u, SPRITE: %u, QUAD: %u, IIP: %u, LINE: %u, FBMSK: 0x%x",
-				             (s >> STATE_INDEX_BIT_OFFSET) & ((1u << STATE_INDEX_BIT_COUNT) - 1u),
-				             (s >> STATE_BIT_Z_TEST) & 1,
-				             (s >> STATE_BIT_Z_TEST_GREATER) & 1,
-				             (s >> STATE_BIT_Z_WRITE) & 1,
-				             (s >> STATE_BIT_MULTISAMPLE) & 1,
-				             (s >> STATE_BIT_OPAQUE) & 1,
-				             (s >> STATE_BIT_SPRITE) & 1,
-				             (s >> STATE_BIT_PARALLELOGRAM) & 1,
-				             (s >> STATE_BIT_IIP) & 1,
-				             (s >> STATE_BIT_LINE) & 1,
-							 buffers.prim[j].fbmsk);
-
-				auto alpha = buffers.prim[j].alpha;
-				insert_label(cmd, "  AFIX: %u, AREF: %u",
-				             (alpha >> ALPHA_AFIX_OFFSET) & ((1u << ALPHA_AFIX_BITS) - 1u),
-				             (alpha >> ALPHA_AREF_OFFSET) & ((1u << ALPHA_AREF_BITS) - 1u));
-
-				auto tex = buffers.prim[j].tex;
-				insert_label(cmd, "  TEX: %u, MXL: %u, CLAMPS: %u, CLAMPT: %u, MAG: %u, MIN: %u, MIP: %u",
-				             (tex >> TEX_TEXTURE_INDEX_OFFSET) & ((1u << TEX_TEXTURE_INDEX_BITS) - 1u),
-				             (tex >> TEX_MAX_MIP_LEVEL_OFFSET) & ((1u << TEX_MAX_MIP_LEVEL_BITS) - 1u),
-				             (tex & TEX_SAMPLER_CLAMP_S_BIT) ? 1 : 0,
-				             (tex & TEX_SAMPLER_CLAMP_T_BIT) ? 1 : 0,
-				             (tex & TEX_SAMPLER_MAG_LINEAR_BIT) ? 1 : 0,
-				             (tex & TEX_SAMPLER_MIN_LINEAR_BIT) ? 1 : 0,
-				             (tex & TEX_SAMPLER_MIPMAP_LINEAR_BIT) ? 1 : 0);
-			}
-			cmd.end_region();
-		}
-
-		if (inst.sampling_rate_y_log2 != 0)
-		{
-			cmd.set_specialization_constant(0, inst.sampling_rate_x_log2);
-			cmd.set_specialization_constant(1, inst.sampling_rate_y_log2);
-			cmd.insert_label("super-sample");
-			cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
-			                       *work_list_super_sample.buffer, work_list_super_sample.offset + 256, VK_WHOLE_SIZE);
-			cmd.dispatch_indirect(*work_list_super_sample.buffer, work_list_super_sample.offset);
-		}
-
-		cmd.set_specialization_constant(0, 0);
-		cmd.set_specialization_constant(1, 0);
-		cmd.insert_label("single-sample");
-		cmd.set_storage_buffer(DESCRIPTOR_SET_WORKGROUP_LIST, 0,
-		                       *work_list_single_sample.buffer, work_list_single_sample.offset + 256,
-		                       VK_WHOLE_SIZE);
-		cmd.dispatch_indirect(*work_list_single_sample.buffer, work_list_single_sample.offset);
-
-		cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-		            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-		            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-	}
 }
 
 static bool copy_is_fused_nibble(const CopyDescriptor &desc)

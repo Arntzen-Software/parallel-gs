@@ -423,10 +423,19 @@ private:
 	void dispatch_single_sample_heuristic(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
 	void dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t instance,
 	                      uint32_t base_primitive, uint32_t num_primitives);
-	void dispatch_shading_debug(Vulkan::CommandBuffer &cmd, const RenderPass &rp,
-	                            ShadingDescriptor push, uint32_t instance,
-	                            uint32_t base_primitive, uint32_t num_primitives,
-	                            bool single_primitive_step);
+
+	void dispatch_shading_commands(Vulkan::CommandBuffer &cmd,
+	                               const RenderPass &rp,
+	                               uint32_t instance,
+	                               bool post_barrier,
+	                               uint32_t base_primitive,
+	                               uint32_t num_primitives);
+
+	void dispatch_read_aliased_depth_passes(
+			Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t instance, uint32_t depth_psm,
+			ShadingDescriptor &push,
+			uint32_t base_primitive, uint32_t first_z_sensitive, uint32_t num_primitives);
+
 	void flush_palette_upload();
 
 	bool render_pass_instance_is_deduced_blur(const RenderPass &rp, uint32_t instance) const;
