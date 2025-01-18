@@ -112,6 +112,7 @@ struct PaletteUploadDescriptor
 	float csm2_x_scale;
 	uint32_t csm1_reference_base;
 	uint32_t csm1_mask;
+	uint32_t incoming_clut_instance;
 	bool fully_replaces_clut_upload(const PaletteUploadDescriptor &old) const;
 };
 

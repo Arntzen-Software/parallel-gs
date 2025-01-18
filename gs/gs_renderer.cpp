@@ -3321,7 +3321,9 @@ uint32_t GSRenderer::update_palette_cache(const PaletteUploadDescriptor &desc)
 	if (!last_clut_update_is_read && !palette_uploads.empty() &&
 	    desc.fully_replaces_clut_upload(palette_uploads.back()))
 	{
+		uint32_t old_incoming = palette_uploads.back().incoming_clut_instance;
 		palette_uploads.back() = desc;
+		palette_uploads.back().incoming_clut_instance = old_incoming;
 	}
 	else
 	{
@@ -3594,7 +3596,7 @@ void GSRenderer::flush_palette_upload()
 		for (size_t i = 0, n = palette_uploads.size(); i < n; i++)
 		{
 			auto &upload = palette_uploads[i];
-			insert_label(cmd, "Bank %u - 0x%x - %s - %u colors - CSA %u - CSM %u - COU/V %u, %u - S/B %.3f, %u",
+			insert_label(cmd, "Bank %u - 0x%x - %s - %u colors - CSA %u - CSM %u - COU/V %u, %u - S/B %.3f, %u, incoming %u",
 			             uint32_t(base_clut_instance + 1 + i) % CLUTInstances,
 			             uint32_t(upload.tex0.desc.CBP) * PGS_BLOCK_ALIGNMENT_BYTES,
 			             psm_to_str(uint32_t(upload.tex0.desc.CPSM)),
@@ -3604,7 +3606,7 @@ void GSRenderer::flush_palette_upload()
 			             uint32_t(upload.tex0.desc.CSM),
 			             upload.texclut.desc.COU * 16,
 			             upload.texclut.desc.COV,
-			             upload.csm2_x_scale, upload.csm2_x_bias);
+			             upload.csm2_x_scale, upload.csm2_x_bias, upload.incoming_clut_instance);
 		}
 	}
 
@@ -3613,16 +3615,22 @@ void GSRenderer::flush_palette_upload()
 		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 	Push push = {};
-	push.read_index = base_clut_instance;
+	push.read_index = palette_uploads[0].incoming_clut_instance;
 
 	size_t next_begin_index = 0;
 
 	for (size_t i = 0, n = palette_uploads.size(); i < n; i++)
 	{
 		auto &clut = palette_uploads[i].tex0.desc;
-		if (clut.CSA == 0 && clut.CPSM == PSMCT32 && get_bits_per_pixel(clut.PSM) == 8)
+
+		uint32_t write_clut_index = (base_clut_instance + 1 + i) % CLUTInstances;
+		bool full_replacement = clut.CSA == 0 && clut.CPSM == PSMCT32 && get_bits_per_pixel(clut.PSM) == 8;
+		bool out_of_order_read = (palette_uploads[i].incoming_clut_instance + 1) % CLUTInstances != write_clut_index;
+
+		assert(write_clut_index != palette_uploads[i].incoming_clut_instance);
+
+		if (full_replacement || out_of_order_read)
 		{
-			// This will overwrite the full CLUT, so can split dispatch.
 			if (i != next_begin_index)
 			{
 				// Flush all pending work.
@@ -3632,11 +3640,27 @@ void GSRenderer::flush_palette_upload()
 				if (device->consumes_debug_markers())
 					insert_label(cmd, "Split [%u, %u)", push.wg_offset, push.wg_offset + push.count);
 				cmd.dispatch(1, 1, 1);
+
+				if (out_of_order_read)
+				{
+					cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+					            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+				}
 			}
 
+			next_begin_index = i;
+		}
+
+		if (full_replacement)
+		{
+			// This will overwrite the full CLUT, so can split dispatch.
 			// The next batch will start with a full CLUT clear, so no need to read from CLUT.
 			push.read_index = UINT32_MAX;
-			next_begin_index = i;
+		}
+		else if (out_of_order_read)
+		{
+			push.read_index = palette_uploads[i].incoming_clut_instance;
+			insert_label(cmd, "Hazard - incoming %u", push.read_index);
 		}
 	}
 
