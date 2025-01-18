@@ -1863,7 +1863,10 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 
 		opaque_fbmasks[i] = inst.opaque_fbmask;
 
-		switch (inst.fb.z.desc.PSM | ZBUFBits::PSM_MSB)
+		// If we don't know, assume 24-bit range. If Z buffer isn't used at all, it's unlikely there will be proper 3D objects anyway.
+		uint32_t depth_psm = inst.z_sensitive ? (inst.fb.z.desc.PSM | ZBUFBits::PSM_MSB) : PSMZ24;
+
+		switch (depth_psm)
 		{
 		case PSMZ16S:
 		case PSMZ16:
