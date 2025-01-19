@@ -103,6 +103,22 @@ bool PageTracker::page_has_fb_write(const PageRect &rect) const
 	return false;
 }
 
+bool PageTracker::page_is_copy_cached_sensitive(const PageRect& rect) const
+{
+	for (unsigned y = 0; y < rect.page_height; y++)
+	{
+		for (unsigned x = 0; x < rect.page_width; x++)
+		{
+			unsigned page = rect.base_page + y * rect.page_stride + x;
+			auto &state = page_state[page & page_state_mask];
+			if (((state.cached_read_block_mask | state.copy_write_block_mask | state.copy_read_block_mask) & rect.block_mask) != 0)
+				return true;
+		}
+	}
+
+	return false;
+}
+
 void PageTracker::mark_external_write(const PageRect &rect)
 {
 	for (unsigned y = 0; y < rect.page_height; y++)
@@ -391,6 +407,28 @@ void PageTracker::register_short_term_cached_texture(
 	}
 }
 
+bool PageTracker::has_punchthrough_host_write(const PageRect &rect) const
+{
+	for (unsigned y = 0; y < rect.page_height; y++)
+	{
+		for (unsigned x = 0; x < rect.page_width; x++)
+		{
+			unsigned page = rect.base_page + y * rect.page_stride + x;
+			auto &state = page_state[page & page_state_mask];
+
+			// This is quite hacky, and should just be seen as a heuristic.
+			if (state.punchthrough_host_write_mask == 0 ||
+			    state.copy_write_block_mask != 0 ||
+			    state.cached_read_block_mask != 0)
+			{
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
+
 PageTracker::UploadStrategy
 PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t levels,
                                      uint32_t csa_mask, uint32_t clut_instance,
@@ -416,7 +454,8 @@ PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t levels
 	bool promote_to_cpu = levels == 1 &&
 	                      level_rect[0].page_width == 1 &&
 	                      level_rect[0].page_height == 1 &&
-	                      get_host_read_timeline(level_rect[0]) <= cb.query_timeline();
+	                      (has_punchthrough_host_write(level_rect[0]) ||
+	                       get_host_read_timeline(level_rect[0]) <= cb.query_timeline());
 
 	for (unsigned level = 0; level < levels; level++)
 	{
@@ -668,6 +707,22 @@ void PageTracker::commit_host_write(const PageRect &rect)
 	}
 }
 
+void PageTracker::commit_punchthrough_host_write(const ParallelGS::PageRect &rect)
+{
+	for (unsigned y = 0; y < rect.page_height; y++)
+	{
+		for (unsigned x = 0; x < rect.page_width; x++)
+		{
+			unsigned page = rect.base_page + y * rect.page_stride + x;
+			page &= page_state_mask;
+			auto &state = page_state[page];
+
+			register_accessed_readback_page(page);
+			state.punchthrough_host_write_mask |= rect.block_mask;
+		}
+	}
+}
+
 void PageTracker::register_potential_invalidated_indices(uint32_t page)
 {
 	auto &state = page_state[page];
@@ -685,8 +740,12 @@ void PageTracker::register_accessed_cache_pages(uint32_t page)
 void PageTracker::register_accessed_readback_page(uint32_t page)
 {
 	auto &state = page_state[page];
-	if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
+	if (state.need_host_write_timeline_mask == 0 &&
+	    state.need_host_read_timeline_mask == 0 &&
+	    state.punchthrough_host_write_mask == 0)
+	{
 		accessed_readback_pages.push_back(page);
+	}
 }
 
 void PageTracker::register_accessed_fb_pages(uint32_t page)
@@ -726,14 +785,8 @@ uint64_t PageTracker::get_host_read_timeline(const PageRect &rect) const
 	return read_timeline;
 }
 
-uint64_t PageTracker::get_host_write_timeline(const PageRect &rect) const
+uint64_t PageTracker::get_submitted_host_write_timeline(const PageRect &rect) const
 {
-	if (page_has_host_write_timeline_update(rect))
-	{
-		// We have not committed to a host write timeline yet, because there are unflushed writes or reads.
-		return UINT64_MAX;
-	}
-
 	uint64_t write_timeline = 0;
 
 	for (unsigned y = 0; y < rect.page_height; y++)
@@ -747,6 +800,17 @@ uint64_t PageTracker::get_host_write_timeline(const PageRect &rect) const
 	}
 
 	return write_timeline;
+}
+
+uint64_t PageTracker::get_host_write_timeline(const PageRect &rect) const
+{
+	if (page_has_host_write_timeline_update(rect))
+	{
+		// We have not committed to a host write timeline yet, because there are unflushed writes or reads.
+		return UINT64_MAX;
+	}
+
+	return get_submitted_host_write_timeline(rect);
 }
 
 Vulkan::ImageHandle PageTracker::find_cached_texture(Util::Hash hash) const
@@ -879,6 +943,7 @@ uint64_t PageTracker::mark_submission_timeline(FlushReason reason)
 
 		page.need_host_read_timeline_mask = 0;
 		page.need_host_write_timeline_mask = 0;
+		page.punchthrough_host_write_mask = 0;
 	}
 
 	accessed_readback_pages.clear();

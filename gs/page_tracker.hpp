@@ -76,6 +76,7 @@ struct PageState
 	uint32_t fb_read_mask = 0;
 	uint32_t need_host_read_timeline_mask = 0;
 	uint32_t need_host_write_timeline_mask = 0;
+	uint32_t punchthrough_host_write_mask = 0;
 
 	uint32_t pending_fb_access_mask = 0;
 
@@ -183,8 +184,10 @@ public:
 	// If there are hazards, this returns UINT64_MAX. Must explicitly call mark_submission_timeline first.
 	uint64_t get_host_read_timeline(const PageRect &rect) const;
 	uint64_t get_host_write_timeline(const PageRect &rect) const;
+	uint64_t get_submitted_host_write_timeline(const PageRect &rect) const;
 	bool acquire_host_write(const PageRect &rect, uint64_t max_timeline);
 	void commit_host_write(const PageRect &rect);
+	void commit_punchthrough_host_write(const PageRect &rect);
 
 	// Explicitly flush render pass, does not force a submit as well.
 	void flush_render_pass(FlushReason reason);
@@ -194,6 +197,10 @@ public:
 	uint64_t mark_submission_timeline(FlushReason reason = FlushReason::SubmissionFlush);
 
 	bool texture_may_super_sample(const PageRect &rect) const;
+
+	bool page_has_fb_read_write(const PageRect &rect) const;
+	bool page_has_fb_write(const PageRect &rect) const;
+	bool page_is_copy_cached_sensitive(const PageRect &rect) const;
 
 private:
 	GSInterface &cb;
@@ -223,9 +230,9 @@ private:
 	                                uint32_t block_mask, uint32_t write_mask, uint32_t clut_instance);
 	bool page_has_host_write_timeline_update(const PageRect &rect) const;
 	bool page_has_host_read_timeline_update(const PageRect &rect) const;
-	bool page_has_fb_read_write(const PageRect &rect) const;
-	bool page_has_fb_write(const PageRect &rect) const;
 	BlockState get_block_state(const PageRect &rect) const;
+
+	bool has_punchthrough_host_write(const PageRect &rect) const;
 
 	void flush_copy();
 	void flush_cached();

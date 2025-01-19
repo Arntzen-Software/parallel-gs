@@ -2986,16 +2986,34 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 
 			if (!copy_cpu && heuristic_force_cpu_wait)
 			{
-				// If we've observed the same upload -> cache pattern over and over again,
-				// we assume it's best to stall and do CPU forwarded uploads instead.
-				uint64_t host_timeline = tracker.get_host_write_timeline(dst_rect);
-				if (host_timeline == UINT64_MAX)
+				if (!tracker.page_is_copy_cached_sensitive(dst_rect))
 				{
-					host_timeline = tracker.mark_submission_timeline(FlushReason::HostAccess);
-					renderer.flush_submit(host_timeline);
+					// We want to avoid real race conditions. We'll just end up doing work out of order.
+					uint64_t host_timeline = tracker.get_submitted_host_write_timeline(dst_rect);
+					renderer.wait_timeline(host_timeline);
+
+					// Highly speculative, but if the only concern is a stray FB write, we assume that the ordering
+					// between these two is not important, since we'll be overwriting the value anyway.
+					// Avoids some extremely bad feedback loops which don't seem to be relevant.
+					copy_cpu = true;
+
+					// This is unsynced, but forward to the promotion algorithms that we can ignore hazards.
+					tracker.commit_punchthrough_host_write(dst_rect);
 				}
-				renderer.wait_timeline(host_timeline);
-				copy_cpu = tracker.acquire_host_write(dst_rect, renderer.query_timeline());
+				else
+				{
+					// If we've observed the same upload -> cache pattern over and over again,
+					// we assume it's best to stall and do CPU forwarded uploads instead.
+					uint64_t host_timeline = tracker.get_host_write_timeline(dst_rect);
+					if (host_timeline == UINT64_MAX)
+					{
+						host_timeline = tracker.mark_submission_timeline(FlushReason::HostAccess);
+						renderer.flush_submit(host_timeline);
+					}
+					renderer.wait_timeline(host_timeline);
+					copy_cpu = tracker.acquire_host_write(dst_rect, renderer.query_timeline());
+				}
+
 				assert(copy_cpu);
 			}
 		}
