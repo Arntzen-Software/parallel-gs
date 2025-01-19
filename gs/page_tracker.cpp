@@ -808,11 +808,11 @@ void PageTracker::invalidate_texture_cache(uint32_t clut_instance)
 		cb.mark_texture_state_dirty_with_flush();
 }
 
-uint64_t PageTracker::mark_submission_timeline()
+uint64_t PageTracker::mark_submission_timeline(FlushReason reason)
 {
 	++timeline;
 
-	flush_render_pass(FlushReason::SubmissionFlush);
+	flush_render_pass(reason);
 
 	for (uint32_t page_index : accessed_readback_pages)
 	{
@@ -832,7 +832,7 @@ uint64_t PageTracker::mark_submission_timeline()
 
 	accessed_readback_pages.clear();
 
-	cb.flush(PAGE_TRACKER_FLUSH_WRITE_BACK_BIT, FlushReason::SubmissionFlush);
+	cb.flush(PAGE_TRACKER_FLUSH_WRITE_BACK_BIT, reason);
 	return timeline;
 }
 

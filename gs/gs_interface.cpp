@@ -2967,7 +2967,7 @@ void GSInterface::flush_pending_transfer(bool keep_alive)
 				uint64_t host_timeline = tracker.get_host_write_timeline(dst_rect);
 				if (host_timeline == UINT64_MAX)
 				{
-					host_timeline = tracker.mark_submission_timeline();
+					host_timeline = tracker.mark_submission_timeline(FlushReason::HostAccess);
 					renderer.flush_submit(host_timeline);
 				}
 				renderer.wait_timeline(host_timeline);
@@ -3133,7 +3133,7 @@ void GSInterface::init_transfer()
 
 		if (host_timeline == UINT64_MAX)
 		{
-			host_timeline = tracker.mark_submission_timeline();
+			host_timeline = tracker.mark_submission_timeline(FlushReason::HostAccess);
 			renderer.flush_submit(host_timeline);
 			if (debug_mode.deterministic_timeline_query)
 				renderer.wait_timeline(host_timeline);
@@ -4074,7 +4074,7 @@ void *GSInterface::map_vram_write(size_t offset, size_t size)
 	uint64_t host_write_timeline = tracker.get_host_write_timeline(page_rect);
 	if (host_write_timeline == UINT64_MAX)
 	{
-		host_write_timeline = tracker.mark_submission_timeline();
+		host_write_timeline = tracker.mark_submission_timeline(FlushReason::HostAccess);
 		renderer.flush_submit(host_write_timeline);
 	}
 
@@ -4116,7 +4116,7 @@ const void *GSInterface::map_vram_read(size_t offset, size_t size)
 	uint64_t host_read_timeline = tracker.get_host_read_timeline(page_rect);
 	if (host_read_timeline == UINT64_MAX)
 	{
-		host_read_timeline = tracker.mark_submission_timeline();
+		host_read_timeline = tracker.mark_submission_timeline(FlushReason::HostAccess);
 		renderer.flush_submit(host_read_timeline);
 	}
 

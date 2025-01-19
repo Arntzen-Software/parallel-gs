@@ -128,7 +128,8 @@ enum class FlushReason
 	Overflow,
 	TextureHazard,
 	CopyHazard,
-	SubmissionFlush
+	SubmissionFlush,
+	HostAccess
 };
 
 class GSInterface;
@@ -194,7 +195,7 @@ public:
 
 	// Mark an explicit flush. All batched GPU operations will complete and resolve fully.
 	// Once the timeline reaches the value in uint64_t, CPU can safely read host copy.
-	uint64_t mark_submission_timeline();
+	uint64_t mark_submission_timeline(FlushReason reason = FlushReason::SubmissionFlush);
 
 	bool texture_may_super_sample(const PageRect &rect) const;
 

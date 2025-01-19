@@ -2820,6 +2820,8 @@ static const char *reason_to_str(FlushReason reason)
 		return "Overflow";
 	case FlushReason::FBPointer:
 		return "FBPointer";
+	case FlushReason::HostAccess:
+		return "HostAccess";
 	default:
 		return "";
 	}
