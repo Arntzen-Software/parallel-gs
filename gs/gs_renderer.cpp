@@ -1425,8 +1425,9 @@ void GSRenderer::end_host_write_vram_access()
 	device->unmap_host_buffer(*buffers.cpu, Vulkan::MEMORY_ACCESS_WRITE_BIT);
 }
 
-void GSRenderer::copy_pages(Vulkan::CommandBuffer &cmd, const Vulkan::Buffer &dst, const Vulkan::Buffer &src,
-                            const uint32_t *page_indices, uint32_t num_indices, bool invalidate_super_sampling)
+void GSRenderer::copy_blocks(Vulkan::CommandBuffer &cmd, const Vulkan::Buffer &dst, const Vulkan::Buffer &src,
+                             const uint32_t *page_indices, uint32_t num_indices, bool invalidate_super_sampling,
+                             uint32_t block_size)
 {
 	RangeMerger merger;
 
@@ -1441,11 +1442,11 @@ void GSRenderer::copy_pages(Vulkan::CommandBuffer &cmd, const Vulkan::Buffer &ds
 	};
 
 	for (uint32_t i = 0; i < num_indices; i++)
-		merger.push(page_indices[i] * PageSize, PageSize, flush_cb);
+		merger.push(page_indices[i] * block_size, block_size, flush_cb);
 	merger.flush(flush_cb);
 }
 
-void GSRenderer::flush_host_vram_copy(const uint32_t *page_indices, uint32_t num_indices)
+void GSRenderer::flush_host_vram_copy(const uint32_t *block_indices, uint32_t num_indices)
 {
 	if (buffers.gpu == buffers.cpu)
 		return;
@@ -1470,8 +1471,9 @@ void GSRenderer::flush_host_vram_copy(const uint32_t *page_indices, uint32_t num
 	if (enable_timestamps)
 		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-	copy_pages(cmd, *buffers.gpu, *buffers.cpu, page_indices, num_indices, invalidate_super_sampling);
-	stats.num_copies += num_indices;
+	copy_blocks(cmd, *buffers.gpu, *buffers.cpu, block_indices, num_indices, invalidate_super_sampling,
+	            PGS_BLOCK_ALIGNMENT_BYTES);
+	stats.num_copies++;
 
 	if (enable_timestamps)
 	{
@@ -1499,8 +1501,8 @@ void GSRenderer::flush_readback(const uint32_t *page_indices, uint32_t num_indic
 	Vulkan::QueryPoolHandle start_ts, end_ts;
 	if (enable_timestamps)
 		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
-	copy_pages(cmd, *buffers.cpu, *buffers.gpu, page_indices, num_indices, false);
-	stats.num_copies += num_indices;
+	copy_blocks(cmd, *buffers.cpu, *buffers.gpu, page_indices, num_indices, false, PageSize);
+	stats.num_copies++;
 
 	if (enable_timestamps)
 	{

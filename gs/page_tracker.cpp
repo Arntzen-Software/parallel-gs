@@ -33,7 +33,7 @@ void PageTracker::set_num_pages(unsigned num_pages)
 	accessed_readback_pages.reserve(num_pages);
 }
 
-bool PageTracker::page_has_flag(const PageRect &rect, PageStateFlags flags) const
+bool PageTracker::page_has_host_write_timeline_update(const PageRect &rect) const
 {
 	for (unsigned y = 0; y < rect.page_height; y++)
 	{
@@ -41,7 +41,7 @@ bool PageTracker::page_has_flag(const PageRect &rect, PageStateFlags flags) cons
 		{
 			unsigned page = rect.base_page + y * rect.page_stride + x;
 			auto &state = page_state[page & page_state_mask];
-			if ((state.flags & flags) != 0)
+			if ((state.need_host_write_timeline_mask & rect.block_mask) != 0)
 				return true;
 		}
 	}
@@ -49,8 +49,7 @@ bool PageTracker::page_has_flag(const PageRect &rect, PageStateFlags flags) cons
 	return false;
 }
 
-bool PageTracker::page_has_flag_with_fb_access_mask(
-		const PageRect &rect, PageStateFlags flags, uint32_t write_mask) const
+bool PageTracker::page_has_host_read_timeline_update(const PageRect &rect) const
 {
 	for (unsigned y = 0; y < rect.page_height; y++)
 	{
@@ -58,8 +57,46 @@ bool PageTracker::page_has_flag_with_fb_access_mask(
 		{
 			unsigned page = rect.base_page + y * rect.page_stride + x;
 			auto &state = page_state[page & page_state_mask];
-			if ((state.flags & flags) != 0 && (state.pending_fb_access_mask & write_mask) != 0)
+			if ((state.need_host_read_timeline_mask & rect.block_mask) != 0)
 				return true;
+		}
+	}
+
+	return false;
+}
+
+bool PageTracker::page_has_fb_read_write(const PageRect &rect) const
+{
+	for (unsigned y = 0; y < rect.page_height; y++)
+	{
+		for (unsigned x = 0; x < rect.page_width; x++)
+		{
+			unsigned page = rect.base_page + y * rect.page_stride + x;
+			auto &state = page_state[page & page_state_mask];
+			if (((state.fb_write_mask | state.fb_read_mask) & rect.block_mask) != 0 &&
+			    (state.pending_fb_access_mask & rect.write_mask) != 0)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+bool PageTracker::page_has_fb_write(const PageRect &rect) const
+{
+	for (unsigned y = 0; y < rect.page_height; y++)
+	{
+		for (unsigned x = 0; x < rect.page_width; x++)
+		{
+			unsigned page = rect.base_page + y * rect.page_stride + x;
+			auto &state = page_state[page & page_state_mask];
+			if ((state.fb_write_mask & rect.block_mask) != 0 &&
+			    (state.pending_fb_access_mask & rect.write_mask) != 0)
+			{
+				return true;
+			}
 		}
 	}
 
@@ -77,15 +114,16 @@ void PageTracker::mark_external_write(const PageRect &rect)
 			page &= page_state_mask;
 			auto &state = page_state[page];
 
-			if ((state.flags & (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
+			if (state.need_host_read_timeline_mask == 0 && state.need_host_write_timeline_mask == 0)
 				accessed_readback_pages.push_back(page);
 
-			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT;
+			state.need_host_read_timeline_mask |= rect.block_mask;
+			state.need_host_write_timeline_mask |= rect.block_mask;
+
 			if (state.texture_cache_needs_invalidate_block_mask == 0)
 				potential_invalidated_indices.push_back(page);
-			state.texture_cache_needs_invalidate_block_mask |= UINT32_MAX;
-			state.texture_cache_needs_invalidate_write_mask |= UINT32_MAX;
-			state.pending_fb_access_mask |= rect.write_mask;
+			state.texture_cache_needs_invalidate_block_mask |= rect.block_mask;
+			state.texture_cache_needs_invalidate_write_mask |= rect.block_mask;
 			TRACE("TRACKER || PAGE 0x%x, EXT write\n", page);
 		}
 	}
@@ -115,16 +153,16 @@ void PageTracker::mark_fb_write(const PageRect &rect)
 			page &= page_state_mask;
 			auto &state = page_state[page];
 
-			if ((state.flags & (PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT)) == 0)
+			if (state.fb_read_mask == 0 && state.fb_write_mask == 0)
 				accessed_fb_pages.push_back(page);
-			if ((state.flags & (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
+			if (state.need_host_read_timeline_mask == 0 && state.need_host_write_timeline_mask == 0)
 				accessed_readback_pages.push_back(page);
 
-			state.flags |=
-				PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT |
-				PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT |
-				PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT |
-				PAGE_STATE_MAY_SUPER_SAMPLE_BIT;
+			state.fb_read_mask |= rect.block_mask;
+			state.fb_write_mask |= rect.block_mask;
+			state.need_host_write_timeline_mask |= rect.block_mask;
+			state.need_host_read_timeline_mask |= rect.block_mask;
+			state.flags |= PAGE_STATE_MAY_SUPER_SAMPLE_BIT;
 
 			if (state.texture_cache_needs_invalidate_block_mask == 0)
 				potential_invalidated_indices.push_back(page);
@@ -157,11 +195,14 @@ void PageTracker::mark_fb_read(const PageRect &rect)
 			unsigned page = rect.base_page + y * rect.page_stride + x;
 			page &= page_state_mask;
 			auto &state = page_state[page];
-			if ((state.flags & (PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT)) == 0)
+
+			if (state.fb_read_mask == 0 && state.fb_write_mask == 0)
 				accessed_fb_pages.push_back(page);
-			if ((state.flags & (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
+			if (state.need_host_read_timeline_mask == 0 && state.need_host_write_timeline_mask == 0)
 				accessed_readback_pages.push_back(page);
-			state.flags |= PAGE_STATE_FB_READ_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
+
+			state.fb_read_mask |= rect.block_mask;
+			state.need_host_write_timeline_mask |= rect.block_mask;
 			state.pending_fb_access_mask |= rect.write_mask;
 			TRACE("TRACKER || PAGE 0x%x, FB read\n", page & page_state_mask);
 		}
@@ -176,10 +217,7 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 	bool need_tex_invalidate = false;
 	bool has_hazard = false;
 
-	if (page_has_flag_with_fb_access_mask(
-			dst_rect, PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT, dst_rect.write_mask) ||
-	    page_has_flag_with_fb_access_mask(
-			src_rect, PAGE_STATE_FB_WRITE_BIT, src_rect.write_mask))
+	if (page_has_fb_read_write(dst_rect) || page_has_fb_write(src_rect))
 	{
 		flush_render_pass(FlushReason::CopyHazard);
 	}
@@ -204,10 +242,11 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 			unsigned page = dst_rect.base_page + y * dst_rect.page_stride + x;
 			page &= page_state_mask;
 			auto &state = page_state[page];
-			if ((state.flags & (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
+
+			if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
 				accessed_readback_pages.push_back(page);
-			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT |
-			               PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT;
+			state.need_host_write_timeline_mask |= dst_rect.block_mask;
+			state.need_host_read_timeline_mask |= dst_rect.block_mask;
 			state.flags &= ~PAGE_STATE_MAY_SUPER_SAMPLE_BIT;
 			if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
 				accessed_copy_pages.push_back(page);
@@ -234,13 +273,13 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 			auto &state = page_state[page];
 			if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
 				accessed_copy_pages.push_back(page);
-			if ((state.flags & (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
+			if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
 				accessed_readback_pages.push_back(page);
 
 			if ((src_rect.block_mask & state.copy_write_block_mask) != 0)
 				has_hazard = true;
 
-			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
+			state.need_host_write_timeline_mask |= dst_rect.block_mask;
 			state.copy_read_block_mask |= src_rect.block_mask;
 			TRACE("TRACKER || PAGE 0x%x, READ |= 0x%x -> 0x%x\n",
 			      page & page_state_mask,
@@ -292,8 +331,7 @@ void PageTracker::mark_texture_read(const PageRect &rect)
 
 	// Strict interpretation of minimal caching.
 	// Lots of content forgets TEXFLUSH, insert it automatically if we're trying to read after write.
-	if (page_has_flag_with_fb_access_mask(
-			rect, PAGE_STATE_FB_WRITE_BIT, rect.write_mask))
+	if (page_has_fb_write(rect))
 		flush_render_pass(FlushReason::TextureHazard);
 }
 
@@ -310,9 +348,9 @@ void PageTracker::register_cached_clut_clobber(const PageRectCLUT &rect)
 			page &= page_state_mask;
 			auto &state = page_state[page];
 			// Need to resolve WAR hazard.
-			if ((state.flags & (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
+			if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
 				accessed_readback_pages.push_back(page);
-			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
+			state.need_host_write_timeline_mask |= rect.block_mask;
 			if (state.cached_read_block_mask == 0)
 				accessed_cache_pages.push_back(page);
 			state.cached_read_block_mask |= rect.block_mask;
@@ -344,13 +382,9 @@ void PageTracker::register_short_term_cached_texture(
 				auto &state = page_state[page];
 
 				// Need to resolve WAR hazard.
-				if ((state.flags &
-				     (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
-				{
+				if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
 					accessed_readback_pages.push_back(page);
-				}
-
-				state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
+				state.need_host_write_timeline_mask |= rect.block_mask;
 
 				if (state.cached_read_block_mask == 0)
 					accessed_cache_pages.push_back(page);
@@ -412,13 +446,9 @@ PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t levels
 				if (!promote_to_cpu)
 				{
 					// Need to resolve WAR hazard.
-					if ((state.flags &
-					     (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
-					{
+					if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
 						accessed_readback_pages.push_back(page);
-					}
-
-					state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
+					state.need_host_write_timeline_mask |= rect.block_mask;
 
 					if (state.cached_read_block_mask == 0)
 						accessed_cache_pages.push_back(page);
@@ -493,7 +523,8 @@ void PageTracker::clear_fb_pages()
 	for (uint32_t page_index : accessed_fb_pages)
 	{
 		auto &page = page_state[page_index];
-		page.flags &= ~(PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT);
+		page.fb_read_mask = 0;
+		page.fb_write_mask = 0;
 		page.pending_fb_access_mask = 0;
 	}
 	accessed_fb_pages.clear();
@@ -559,8 +590,7 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 
 	// There are hazards if there is pending work that is dispatched after or concurrently.
 	auto block = get_block_state(rect);
-	if (page_has_flag_with_fb_access_mask(
-			rect, PAGE_STATE_FB_WRITE_BIT | PAGE_STATE_FB_READ_BIT, rect.write_mask) != 0)
+	if (page_has_fb_read_write(rect))
 	{
 		flush_render_pass(FlushReason::CopyHazard);
 	}
@@ -582,18 +612,22 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 			unsigned page = rect.base_page + y * rect.page_stride + x;
 			page &= page_state_mask;
 			auto &state = page_state[page];
-			if ((state.flags & (PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT)) == 0)
+
+			if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
 				accessed_readback_pages.push_back(page);
-			state.flags |= PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT |
-			               PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT;
-			state.flags &= ~PAGE_STATE_MAY_SUPER_SAMPLE_BIT;
+			state.need_host_write_timeline_mask |= rect.block_mask;
+			state.need_host_read_timeline_mask |= rect.block_mask;
+
 			if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
 				accessed_copy_pages.push_back(page);
 			state.copy_write_block_mask |= rect.block_mask;
+
 			if (state.texture_cache_needs_invalidate_block_mask == 0)
 				potential_invalidated_indices.push_back(page);
 			state.texture_cache_needs_invalidate_block_mask |= rect.block_mask;
 			state.texture_cache_needs_invalidate_write_mask |= rect.write_mask;
+
+			state.flags &= ~PAGE_STATE_MAY_SUPER_SAMPLE_BIT;
 
 			TRACE("TRACKER || PAGE 0x%x, WRITE |= 0x%x -> 0x%x\n",
 			      page,
@@ -610,9 +644,9 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 
 bool PageTracker::acquire_host_write(const PageRect &rect, uint64_t max_timeline)
 {
-	if (page_has_flag(rect, PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT))
+	if (page_has_host_write_timeline_update(rect))
 	{
-		// We have not committed to a host write timeline yet, because there are unflushed writes.
+		// We have not committed to a host write timeline yet, because there are unflushed reads or writes.
 		return false;
 	}
 
@@ -642,7 +676,7 @@ void PageTracker::commit_host_write(const PageRect &rect)
 		{
 			unsigned page = rect.base_page + y * rect.page_stride + x;
 			page &= page_state_mask;
-			cb.sync_host_vram_page(page);
+			cb.sync_host_vram_page(page, rect.block_mask);
 			auto &state = page_state[page];
 			state.flags &= ~PAGE_STATE_MAY_SUPER_SAMPLE_BIT;
 			if (state.texture_cache_needs_invalidate_block_mask == 0)
@@ -655,7 +689,7 @@ void PageTracker::commit_host_write(const PageRect &rect)
 
 uint64_t PageTracker::get_host_read_timeline(const PageRect &rect) const
 {
-	if (page_has_flag(rect, PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT))
+	if (page_has_host_read_timeline_update(rect))
 	{
 		// We have not committed to a host read timeline yet, because there are unflushed writes.
 		return UINT64_MAX;
@@ -678,7 +712,7 @@ uint64_t PageTracker::get_host_read_timeline(const PageRect &rect) const
 
 uint64_t PageTracker::get_host_write_timeline(const PageRect &rect) const
 {
-	if (page_has_flag(rect, PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT))
+	if (page_has_host_write_timeline_update(rect))
 	{
 		// We have not committed to a host write timeline yet, because there are unflushed writes or reads.
 		return UINT64_MAX;
@@ -818,16 +852,17 @@ uint64_t PageTracker::mark_submission_timeline(FlushReason reason)
 	{
 		auto &page = page_state[page_index];
 
-		if ((page.flags & PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT) != 0)
+		if (page.need_host_read_timeline_mask != 0)
 		{
 			page.host_read_timeline = timeline;
 			cb.sync_vram_host_page(page_index);
 		}
 
-		if ((page.flags & PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT) != 0)
+		if (page.need_host_write_timeline_mask != 0)
 			page.host_write_timeline = timeline;
 
-		page.flags &= ~(PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT | PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT);
+		page.need_host_read_timeline_mask = 0;
+		page.need_host_write_timeline_mask = 0;
 	}
 
 	accessed_readback_pages.clear();

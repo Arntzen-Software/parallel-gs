@@ -44,9 +44,9 @@ bool GSInterface::init(Vulkan::Device *device, const GSOptions &options)
 	uint32_t num_pages = vram_size / PageSize;
 	tracker.set_num_pages(num_pages);
 	uint32_t num_pages_u32 = (num_pages + 31) / 32;
-	sync_host_vram_pages.resize(num_pages_u32);
+	sync_host_vram_blocks.resize(num_pages * PGS_BLOCKS_PER_PAGE / 32);
 	sync_vram_host_pages.resize(num_pages_u32);
-	page_buffer.reserve(num_pages_u32);
+	block_buffer.reserve(num_pages_u32);
 
 	if (!renderer.init(device, options))
 		return false;
@@ -341,7 +341,7 @@ void GSInterface::flush_render_pass(FlushReason reason)
 	render_pass.has_scanmsk = false;
 	render_pass.has_short_term_texture_caching = false;
 	state_tracker.dirty_flags = STATE_DIRTY_ALL_BITS;
-	state_tracker.current_copy_cache_hazard_counter = 0;
+	//state_tracker.current_copy_cache_hazard_counter = 0;
 
 	renderer.reserve_primitive_buffers(MaxPrimitivesPerFlush);
 	render_pass.positions = renderer.get_reserved_vertex_positions();
@@ -353,17 +353,17 @@ void GSInterface::flush(PageTrackerFlushFlags flags, FlushReason reason)
 {
 	if ((flags & PAGE_TRACKER_FLUSH_HOST_VRAM_SYNC_BIT) != 0)
 	{
-		page_buffer.clear();
-		for (size_t i = 0, n = sync_host_vram_pages.size(); i < n; i++)
+		block_buffer.clear();
+		for (size_t i = 0, n = sync_host_vram_blocks.size(); i < n; i++)
 		{
-			Util::for_each_bit(sync_host_vram_pages[i], [i, this](uint32_t bit) {
-				page_buffer.push_back(i * 32 + bit);
+			Util::for_each_bit(sync_host_vram_blocks[i], [i, this](uint32_t bit) {
+				block_buffer.push_back(i * 32 + bit);
 			});
-			sync_host_vram_pages[i] = 0;
+			sync_host_vram_blocks[i] = 0;
 		}
 
-		if (!page_buffer.empty())
-			renderer.flush_host_vram_copy(page_buffer.data(), page_buffer.size());
+		if (!block_buffer.empty())
+			renderer.flush_host_vram_copy(block_buffer.data(), block_buffer.size());
 
 		TRACE_HEADER("FLUSH HOST VRAM", Reg64<DummyBits>{0});
 	}
@@ -397,23 +397,23 @@ void GSInterface::flush(PageTrackerFlushFlags flags, FlushReason reason)
 	if ((flags & PAGE_TRACKER_FLUSH_WRITE_BACK_BIT) != 0)
 	{
 		TRACE_HEADER("FLUSH WRITE BACK", Reg64<DummyBits>{0});
-		page_buffer.clear();
+		block_buffer.clear();
 		for (size_t i = 0, n = sync_vram_host_pages.size(); i < n; i++)
 		{
 			Util::for_each_bit(sync_vram_host_pages[i], [i, this](uint32_t bit) {
-				page_buffer.push_back(i * 32 + bit);
+				block_buffer.push_back(i * 32 + bit);
 			});
 			sync_vram_host_pages[i] = 0;
 		}
 
-		if (!page_buffer.empty())
-			renderer.flush_readback(page_buffer.data(), page_buffer.size());
+		if (!block_buffer.empty())
+			renderer.flush_readback(block_buffer.data(), block_buffer.size());
 	}
 }
 
-void GSInterface::sync_host_vram_page(uint32_t page_index)
+void GSInterface::sync_host_vram_page(uint32_t page_index, uint32_t block_mask)
 {
-	sync_host_vram_pages[page_index / 32] |= 1u << (page_index & 31);
+	sync_host_vram_blocks[page_index] |= block_mask;
 }
 
 void GSInterface::sync_vram_host_page(uint32_t page_index)
@@ -1926,6 +1926,18 @@ PageRect GSInterface::compute_fb_rect() const
 	page.base_page = inst.frame.desc.FBP;
 	page.page_width = bb_page.z - bb_page.x + 1;
 	page.page_height = bb_page.w - bb_page.y + 1;
+
+	// We may benefit from sub-page FB write tracking.
+	// Don't enter this path by default, since it's more expensive to setup.
+	// It assumes we'll need sub-block tracking.
+	if (page.page_width == 1 && page.page_height == 1)
+	{
+		return compute_page_rect(inst.frame.desc.FBP * PGS_BLOCKS_PER_PAGE,
+		                         inst.bb.x, inst.bb.y, inst.bb.z - inst.bb.x + 1,
+		                         inst.bb.w - inst.bb.y + 1, inst.frame.desc.FBW,
+		                         inst.frame.desc.PSM);
+	}
+
 	page.page_stride = inst.frame.desc.FBW;
 	page.base_page += bb_page.x + bb_page.y * page.page_stride;
 	page.block_mask = UINT32_MAX;
@@ -1947,6 +1959,18 @@ PageRect GSInterface::compute_z_rect() const
 	page.base_page = inst.zbuf.desc.ZBP;
 	page.page_width = bb_page.z - bb_page.x + 1;
 	page.page_height = bb_page.w - bb_page.y + 1;
+
+	// We may benefit from sub-page FB write tracking.
+	// Don't enter this path by default, since it's more expensive to setup.
+	// It assumes we'll need sub-block tracking.
+	if (page.page_width == 1 && page.page_height == 1)
+	{
+		return compute_page_rect(inst.zbuf.desc.ZBP * PGS_BLOCKS_PER_PAGE,
+		                         inst.bb.x, inst.bb.y, inst.bb.z - inst.bb.x + 1,
+		                         inst.bb.w - inst.bb.y + 1, inst.frame.desc.FBW,
+		                         inst.zbuf.desc.PSM | ZBUFBits::PSM_MSB);
+	}
+
 	page.page_stride = inst.frame.desc.FBW;
 	page.base_page += bb_page.x + bb_page.y * page.page_stride;
 	page.block_mask = UINT32_MAX;
@@ -4070,6 +4094,8 @@ void *GSInterface::map_vram_write(size_t offset, size_t size)
 	page_rect.base_page = begin_page;
 	page_rect.page_width = end_page - begin_page + 1;
 	page_rect.page_height = 1;
+	page_rect.block_mask = UINT32_MAX;
+	page_rect.write_mask = UINT32_MAX;
 
 	uint64_t host_write_timeline = tracker.get_host_write_timeline(page_rect);
 	if (host_write_timeline == UINT64_MAX)
@@ -4095,6 +4121,8 @@ void GSInterface::end_vram_write(size_t offset, size_t size)
 	page_rect.base_page = begin_page;
 	page_rect.page_width = end_page - begin_page + 1;
 	page_rect.page_height = 1;
+	page_rect.block_mask = UINT32_MAX;
+	page_rect.write_mask = UINT32_MAX;
 
 	renderer.end_host_write_vram_access();
 	tracker.commit_host_write(page_rect);
@@ -4112,6 +4140,8 @@ const void *GSInterface::map_vram_read(size_t offset, size_t size)
 	page_rect.base_page = begin_page;
 	page_rect.page_width = end_page - begin_page + 1;
 	page_rect.page_height = 1;
+	page_rect.block_mask = UINT32_MAX;
+	page_rect.write_mask = UINT32_MAX;
 
 	uint64_t host_read_timeline = tracker.get_host_read_timeline(page_rect);
 	if (host_read_timeline == UINT64_MAX)

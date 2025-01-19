@@ -286,7 +286,7 @@ public:
 private:
 	friend class PageTracker;
 	void flush(PageTrackerFlushFlags flags, FlushReason reason);
-	void sync_host_vram_page(uint32_t page_index);
+	void sync_host_vram_page(uint32_t page_index, uint32_t block_mask);
 	void sync_vram_host_page(uint32_t page_index);
 	void sync_shadow_page(uint32_t page_index);
 	void invalidate_texture_hash(Util::Hash hash, bool clut);
@@ -304,9 +304,9 @@ private:
 	DebugMode debug_mode;
 	Hacks hacks;
 
-	std::vector<uint32_t> sync_host_vram_pages;
+	std::vector<uint32_t> sync_host_vram_blocks;
 	std::vector<uint32_t> sync_vram_host_pages;
-	std::vector<uint32_t> page_buffer;
+	std::vector<uint32_t> block_buffer;
 
 	struct TransferState
 	{

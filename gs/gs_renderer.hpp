@@ -240,7 +240,7 @@ public:
 
 	// Copies host VRAM into GPU VRAM.
 	// First logical stage.
-	void flush_host_vram_copy(const uint32_t *page_indices, uint32_t num_indices);
+	void flush_host_vram_copy(const uint32_t *block_indices, uint32_t num_indices);
 
 	// Caching stage.
 	uint32_t update_palette_cache(const PaletteUploadDescriptor &desc);
@@ -464,8 +464,9 @@ private:
 	                                         const DISPLAYBits &display, bool force_progressive,
 	                                         const Vulkan::Image *promoted);
 
-	void copy_pages(Vulkan::CommandBuffer &cmd, const Vulkan::Buffer &dst, const Vulkan::Buffer &src,
-	                const uint32_t *page_indices, uint32_t num_indices, bool invalidate_super_sampling);
+	void copy_blocks(Vulkan::CommandBuffer &cmd, const Vulkan::Buffer &dst, const Vulkan::Buffer &src,
+	                 const uint32_t *page_indices, uint32_t num_indices, bool invalidate_super_sampling,
+	                 uint32_t block_size);
 
 	struct CopyDescriptorPayload
 	{

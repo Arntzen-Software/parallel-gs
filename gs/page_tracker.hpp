@@ -31,17 +31,8 @@ using CachedTextureHandle = Util::IntrusivePtr<CachedTexture>;
 
 enum PageStateFlagBits : uint32_t
 {
-	// There are pending render pass operations.
-	PAGE_STATE_FB_WRITE_BIT = 1 << 0,
-	PAGE_STATE_FB_READ_BIT = 1 << 1,
-
-	// On mark submission, page will get updated host read timeline.
-	PAGE_STATE_TIMELINE_UPDATE_HOST_READ_BIT = 1 << 2,
-	// On mark submission, page will get updated host write timeline.
-	PAGE_STATE_TIMELINE_UPDATE_HOST_WRITE_BIT = 1 << 3,
-
-	PAGE_STATE_NEEDS_SHADOW_PAGE_BIT = 1 << 4,
-	PAGE_STATE_MAY_SUPER_SAMPLE_BIT = 1 << 5
+	PAGE_STATE_NEEDS_SHADOW_PAGE_BIT = 1 << 0,
+	PAGE_STATE_MAY_SUPER_SAMPLE_BIT = 1 << 1
 };
 using PageStateFlags = uint32_t;
 
@@ -80,6 +71,11 @@ struct PageState
 	uint32_t copy_read_block_mask = 0;
 	uint32_t cached_read_block_mask = 0;
 	uint32_t texture_cache_needs_invalidate_block_mask = 0;
+
+	uint32_t fb_write_mask = 0;
+	uint32_t fb_read_mask = 0;
+	uint32_t need_host_read_timeline_mask = 0;
+	uint32_t need_host_write_timeline_mask = 0;
 
 	uint32_t pending_fb_access_mask = 0;
 
@@ -225,8 +221,10 @@ private:
 
 	bool invalidate_cached_textures(std::vector<CachedTextureMasked> &textures,
 	                                uint32_t block_mask, uint32_t write_mask, uint32_t clut_instance);
-	bool page_has_flag(const PageRect &rect, PageStateFlags flags) const;
-	bool page_has_flag_with_fb_access_mask(const PageRect &rect, PageStateFlags flags, uint32_t write_mask) const;
+	bool page_has_host_write_timeline_update(const PageRect &rect) const;
+	bool page_has_host_read_timeline_update(const PageRect &rect) const;
+	bool page_has_fb_read_write(const PageRect &rect) const;
+	bool page_has_fb_write(const PageRect &rect) const;
 	BlockState get_block_state(const PageRect &rect) const;
 
 	void flush_copy();
