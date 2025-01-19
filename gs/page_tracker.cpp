@@ -114,14 +114,11 @@ void PageTracker::mark_external_write(const PageRect &rect)
 			page &= page_state_mask;
 			auto &state = page_state[page];
 
-			if (state.need_host_read_timeline_mask == 0 && state.need_host_write_timeline_mask == 0)
-				accessed_readback_pages.push_back(page);
+			register_accessed_readback_page(page);
+			register_potential_invalidated_indices(page);
 
 			state.need_host_read_timeline_mask |= rect.block_mask;
 			state.need_host_write_timeline_mask |= rect.block_mask;
-
-			if (state.texture_cache_needs_invalidate_block_mask == 0)
-				potential_invalidated_indices.push_back(page);
 			state.texture_cache_needs_invalidate_block_mask |= rect.block_mask;
 			state.texture_cache_needs_invalidate_write_mask |= rect.block_mask;
 			TRACE("TRACKER || PAGE 0x%x, EXT write\n", page);
@@ -153,10 +150,8 @@ void PageTracker::mark_fb_write(const PageRect &rect)
 			page &= page_state_mask;
 			auto &state = page_state[page];
 
-			if (state.fb_read_mask == 0 && state.fb_write_mask == 0)
-				accessed_fb_pages.push_back(page);
-			if (state.need_host_read_timeline_mask == 0 && state.need_host_write_timeline_mask == 0)
-				accessed_readback_pages.push_back(page);
+			register_accessed_fb_pages(page);
+			register_accessed_readback_page(page);
 
 			state.fb_read_mask |= rect.block_mask;
 			state.fb_write_mask |= rect.block_mask;
@@ -196,10 +191,8 @@ void PageTracker::mark_fb_read(const PageRect &rect)
 			page &= page_state_mask;
 			auto &state = page_state[page];
 
-			if (state.fb_read_mask == 0 && state.fb_write_mask == 0)
-				accessed_fb_pages.push_back(page);
-			if (state.need_host_read_timeline_mask == 0 && state.need_host_write_timeline_mask == 0)
-				accessed_readback_pages.push_back(page);
+			register_accessed_fb_pages(page);
+			register_accessed_readback_page(page);
 
 			state.fb_read_mask |= rect.block_mask;
 			state.need_host_write_timeline_mask |= rect.block_mask;
@@ -243,18 +236,18 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 			page &= page_state_mask;
 			auto &state = page_state[page];
 
-			if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
-				accessed_readback_pages.push_back(page);
+			register_accessed_readback_page(page);
+			register_accessed_copy_pages(page);
+			register_potential_invalidated_indices(page);
+
 			state.need_host_write_timeline_mask |= dst_rect.block_mask;
 			state.need_host_read_timeline_mask |= dst_rect.block_mask;
-			state.flags &= ~PAGE_STATE_MAY_SUPER_SAMPLE_BIT;
-			if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
-				accessed_copy_pages.push_back(page);
 			state.copy_write_block_mask |= dst_rect.block_mask;
-			if (state.texture_cache_needs_invalidate_block_mask == 0)
-				potential_invalidated_indices.push_back(page);
 			state.texture_cache_needs_invalidate_block_mask |= dst_rect.block_mask;
 			state.texture_cache_needs_invalidate_write_mask |= dst_rect.write_mask;
+
+			state.flags &= ~PAGE_STATE_MAY_SUPER_SAMPLE_BIT;
+
 			TRACE("TRACKER || PAGE 0x%x, WRITE |= 0x%x -> 0x%x\n",
 			      page,
 			      dst_rect.block_mask, state.copy_write_block_mask);
@@ -271,16 +264,16 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 			unsigned page = src_rect.base_page + y * src_rect.page_stride + x;
 			page &= page_state_mask;
 			auto &state = page_state[page];
-			if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
-				accessed_copy_pages.push_back(page);
-			if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
-				accessed_readback_pages.push_back(page);
+
+			register_accessed_copy_pages(page);
+			register_accessed_readback_page(page);
 
 			if ((src_rect.block_mask & state.copy_write_block_mask) != 0)
 				has_hazard = true;
 
 			state.need_host_write_timeline_mask |= dst_rect.block_mask;
 			state.copy_read_block_mask |= src_rect.block_mask;
+
 			TRACE("TRACKER || PAGE 0x%x, READ |= 0x%x -> 0x%x\n",
 			      page & page_state_mask,
 			      src_rect.block_mask, state.copy_read_block_mask);
@@ -348,11 +341,9 @@ void PageTracker::register_cached_clut_clobber(const PageRectCLUT &rect)
 			page &= page_state_mask;
 			auto &state = page_state[page];
 			// Need to resolve WAR hazard.
-			if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
-				accessed_readback_pages.push_back(page);
+			register_accessed_cache_pages(page);
+			register_accessed_readback_page(page);
 			state.need_host_write_timeline_mask |= rect.block_mask;
-			if (state.cached_read_block_mask == 0)
-				accessed_cache_pages.push_back(page);
 			state.cached_read_block_mask |= rect.block_mask;
 			TRACE("TRACKER || PAGE 0x%x, CACHED |= 0x%x -> 0x%x\n",
 				  page,
@@ -382,12 +373,9 @@ void PageTracker::register_short_term_cached_texture(
 				auto &state = page_state[page];
 
 				// Need to resolve WAR hazard.
-				if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
-					accessed_readback_pages.push_back(page);
+				register_accessed_readback_page(page);
+				register_accessed_cache_pages(page);
 				state.need_host_write_timeline_mask |= rect.block_mask;
-
-				if (state.cached_read_block_mask == 0)
-					accessed_cache_pages.push_back(page);
 				state.cached_read_block_mask |= rect.block_mask;
 
 				TRACE("TRACKER || PAGE 0x%x, CACHED |= 0x%x -> 0x%x\n",
@@ -446,12 +434,9 @@ PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t levels
 				if (!promote_to_cpu)
 				{
 					// Need to resolve WAR hazard.
-					if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
-						accessed_readback_pages.push_back(page);
+					register_accessed_readback_page(page);
+					register_accessed_cache_pages(page);
 					state.need_host_write_timeline_mask |= rect.block_mask;
-
-					if (state.cached_read_block_mask == 0)
-						accessed_cache_pages.push_back(page);
 					state.cached_read_block_mask |= rect.block_mask;
 				}
 
@@ -613,17 +598,13 @@ void PageTracker::mark_transfer_write(const PageRect &rect)
 			page &= page_state_mask;
 			auto &state = page_state[page];
 
-			if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
-				accessed_readback_pages.push_back(page);
+			register_accessed_readback_page(page);
+			register_accessed_copy_pages(page);
+			register_potential_invalidated_indices(page);
+
 			state.need_host_write_timeline_mask |= rect.block_mask;
 			state.need_host_read_timeline_mask |= rect.block_mask;
-
-			if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
-				accessed_copy_pages.push_back(page);
 			state.copy_write_block_mask |= rect.block_mask;
-
-			if (state.texture_cache_needs_invalidate_block_mask == 0)
-				potential_invalidated_indices.push_back(page);
 			state.texture_cache_needs_invalidate_block_mask |= rect.block_mask;
 			state.texture_cache_needs_invalidate_write_mask |= rect.write_mask;
 
@@ -679,12 +660,47 @@ void PageTracker::commit_host_write(const PageRect &rect)
 			cb.sync_host_vram_page(page, rect.block_mask);
 			auto &state = page_state[page];
 			state.flags &= ~PAGE_STATE_MAY_SUPER_SAMPLE_BIT;
-			if (state.texture_cache_needs_invalidate_block_mask == 0)
-				potential_invalidated_indices.push_back(page);
+
+			register_potential_invalidated_indices(page);
 			state.texture_cache_needs_invalidate_block_mask |= UINT32_MAX;
 			state.texture_cache_needs_invalidate_write_mask |= UINT32_MAX;
 		}
 	}
+}
+
+void PageTracker::register_potential_invalidated_indices(uint32_t page)
+{
+	auto &state = page_state[page];
+	if (state.texture_cache_needs_invalidate_block_mask == 0)
+		potential_invalidated_indices.push_back(page);
+}
+
+void PageTracker::register_accessed_cache_pages(uint32_t page)
+{
+	auto &state = page_state[page];
+	if (state.cached_read_block_mask == 0)
+		accessed_cache_pages.push_back(page);
+}
+
+void PageTracker::register_accessed_readback_page(uint32_t page)
+{
+	auto &state = page_state[page];
+	if (state.need_host_write_timeline_mask == 0 && state.need_host_read_timeline_mask == 0)
+		accessed_readback_pages.push_back(page);
+}
+
+void PageTracker::register_accessed_fb_pages(uint32_t page)
+{
+	auto &state = page_state[page];
+	if (state.fb_read_mask == 0 && state.fb_write_mask == 0)
+		accessed_fb_pages.push_back(page);
+}
+
+void PageTracker::register_accessed_copy_pages(uint32_t page)
+{
+	auto &state = page_state[page];
+	if (state.copy_read_block_mask == 0 && state.copy_write_block_mask == 0)
+		accessed_copy_pages.push_back(page);
 }
 
 uint64_t PageTracker::get_host_read_timeline(const PageRect &rect) const

@@ -231,5 +231,11 @@ private:
 	void flush_cached();
 	void garbage_collect_texture_masked_handles(std::vector<CachedTextureMasked> &textures);
 	std::vector<uint32_t> potential_invalidated_indices;
+
+	void register_potential_invalidated_indices(uint32_t page);
+	void register_accessed_readback_page(uint32_t page);
+	void register_accessed_copy_pages(uint32_t page);
+	void register_accessed_fb_pages(uint32_t page);
+	void register_accessed_cache_pages(uint32_t page);
 };
 }
