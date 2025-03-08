@@ -34,7 +34,7 @@ static constexpr uint32_t MinimumRenderPassForFlush = 1024;
 // If someone spams the scratch allocators too hard, we have to yield eventually.
 static constexpr VkDeviceSize MaximumAllocatedScratchMemory = 100 * 1000 * 1000;
 static constexpr uint32_t MaxPendingPaletteUploads = 4096;
-static constexpr uint32_t MaxPendingCopies = 4096;
+static constexpr uint32_t MaxPendingCopies = 16 * 1024;
 static constexpr uint32_t MaxPendingCopyThreads = 4 * 1024 * 1024; // 22 bits.
 static constexpr uint32_t MaxPendingCopiesWithoutFlush = 1023; // 10 bits. Reserve highest value for unlinked node.
 
@@ -870,10 +870,8 @@ void GSRenderer::check_flush_stats()
 	    stats.num_render_passes >= MinimumRenderPassForFlush ||
 	    stats.allocated_image_memory >= max_allocated_image_memory_per_flush ||
 	    stats.allocated_scratch_memory >= MaximumAllocatedScratchMemory ||
-	    stats.num_palette_updates >= MaxPendingPaletteUploads ||
 	    stats.num_copies >= MaxPendingCopies ||
-		pending_copies.size() >= MaxPendingCopiesWithoutFlush ||
-		stats.num_copy_threads >= MaxPendingCopyThreads)
+	    stats.num_palette_updates >= MaxPendingPaletteUploads)
 	{
 #ifdef PARALLEL_GS_DEBUG
 		LOGI("Too much pending work, flushing:\n");
@@ -883,15 +881,24 @@ void GSRenderer::check_flush_stats()
 		LOGI("  %u MiB allocated scratch memory\n", unsigned(stats.allocated_scratch_memory / (1024 * 1024)));
 		LOGI("  %u palette updates\n", stats.num_palette_updates);
 		LOGI("  %u copies\n", stats.num_copies);
+		LOGI("  %zu pending copies\n", pending_copies.size());
 		LOGI("  %u copy threads\n", stats.num_copy_threads);
 		LOGI("  %u copy barriers\n", stats.num_copy_barriers);
 #endif
 		// Flush the work that is considered pending right now.
 		// Render passes always commit their work to a command buffer right away.
 		flush_transfer();
+		// If we flush submissions now, we will never know if a future primitive depends on a texture,
+		// so have to upload the full thing. We have already committed to using indirect dispatch.
+		ensure_conservative_indirect_texture_uploads();
 		flush_cache_upload();
 		// Calls next_frame_context and does garbage collection.
 		flush_submit(0);
+	}
+	else if (pending_copies.size() >= MaxPendingCopiesWithoutFlush || stats.num_copy_threads >= MaxPendingCopyThreads)
+	{
+		// Deal with soft limits. We have to flush since our algorithms need it, not because of pressure.
+		flush_transfer();
 	}
 }
 
@@ -1061,6 +1068,31 @@ uint64_t GSRenderer::query_timeline()
 	return timeline_value.load(std::memory_order_acquire);
 }
 
+void GSRenderer::flush_qword_clears()
+{
+	ensure_clear_cmd();
+
+	uint32_t count = qword_clears.size();
+	auto offset = allocate_device_scratch(count * sizeof(qword_clears.front()), buffers.rebar_scratch, qword_clears.data());
+	clear_cmd->set_program(shaders.qword_clear);
+	clear_cmd->set_storage_buffer(0, 0, *buffers.rebar_scratch.buffer, offset, count * sizeof(qword_clears.front()));
+	clear_cmd->push_constants(&count, 0, sizeof(count));
+
+	uint32_t wgx = (count + 63) / 64;
+
+	if (wgx <= device->get_gpu_properties().limits.maxComputeWorkGroupCount[0])
+	{
+		clear_cmd->dispatch(wgx, 1, 1);
+	}
+	else
+	{
+		// Shouldn't really happen, but if it does, just eat the extra dummy threads.
+		clear_cmd->dispatch(0xffff, (wgx + 0xfffe) / 0xffff, 1);
+	}
+
+	qword_clears.clear();
+}
+
 void GSRenderer::flush_submit(uint64_t value)
 {
 	if (!device)
@@ -1087,28 +1119,8 @@ void GSRenderer::flush_submit(uint64_t value)
 	}
 
 	// This must come before async transfer cmd since we risk allocating a transfer.
-	if (clear_cmd && !qword_clears.empty())
-	{
-		uint32_t count = qword_clears.size();
-		auto offset = allocate_device_scratch(count * sizeof(qword_clears.front()), buffers.rebar_scratch, qword_clears.data());
-		clear_cmd->set_program(shaders.qword_clear);
-		clear_cmd->set_storage_buffer(0, 0, *buffers.rebar_scratch.buffer, offset, count * sizeof(qword_clears.front()));
-		clear_cmd->push_constants(&count, 0, sizeof(count));
-
-		uint32_t wgx = (count + 63) / 64;
-
-		if (wgx <= device->get_gpu_properties().limits.maxComputeWorkGroupCount[0])
-		{
-			clear_cmd->dispatch(wgx, 1, 1);
-		}
-		else
-		{
-			// Shouldn't really happen, but if it does, just eat the extra dummy threads.
-			clear_cmd->dispatch(0xffff, (wgx + 0xfffe) / 0xffff, 1);
-		}
-
-		qword_clears.clear();
-	}
+	if (!qword_clears.empty())
+		flush_qword_clears();
 
 	if (async_transfer_cmd)
 	{
@@ -1121,10 +1133,12 @@ void GSRenderer::flush_submit(uint64_t value)
 
 	if (clear_cmd)
 	{
-		clear_cmd->barrier(VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+		clear_cmd->barrier(VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_COPY_BIT |
+		                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
 		                   VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+		                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+		                   VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
 
 		clear_cmd->end_region();
 		device->submit(clear_cmd);
@@ -1378,12 +1392,97 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 	return img;
 }
 
-void GSRenderer::commit_cached_texture()
+void GSRenderer::allocate_upload_indirection(TextureAnalysis &analysis, TextureUpload &upload)
 {
-	// Assert that there were no stray flushed between create_cached_texture() and commit_cached_texture().
+	uint32_t horiz_blocks = (upload.desc.rect.width + 7) / 8;
+	uint32_t vert_blocks = (upload.desc.rect.height + 7) / 8;
+	uint32_t num_blocks = horiz_blocks * vert_blocks;
+	uint32_t qword_blocks = (num_blocks + 127) / 128;
+
+	analysis = {};
+	analysis.flags = TextureAnalysis::ENABLED_BIT;
+	analysis.block_stride = horiz_blocks;
+	analysis.layers = upload.image->get_create_info().layers;
+
+	VkDeviceSize indirect_workgroups_offset = allocate_device_scratch(sizeof(uvec4), buffers.device_scratch, nullptr);
+	analysis.indirect_dispatch_va = buffers.device_scratch.buffer->get_device_address() + indirect_workgroups_offset;
+	upload.indirection.indirect = buffers.device_scratch.buffer;
+	upload.indirection.indirect_offset = indirect_workgroups_offset;
+	qword_clears.push_back(analysis.indirect_dispatch_va);
+
+	VkDeviceSize bit_block_offset = allocate_device_scratch(qword_blocks * sizeof(uvec4), buffers.device_scratch, nullptr);
+	analysis.indirect_bitmask_va = buffers.device_scratch.buffer->get_device_address() + bit_block_offset;
+
+	for (uint32_t i = 0; i < qword_blocks; i++)
+		qword_clears.push_back(analysis.indirect_bitmask_va + sizeof(uvec4) * i);
+
+	VkDeviceSize workgroups_offset = allocate_device_scratch(
+			sizeof(uvec4) + num_blocks * sizeof(uvec2), buffers.device_scratch, nullptr);
+	analysis.indirect_workgroups_va = buffers.device_scratch.buffer->get_device_address() + workgroups_offset;
+	upload.indirection.buffer = buffers.device_scratch.buffer;
+	upload.indirection.offset = workgroups_offset;
+	upload.indirection.size = sizeof(uvec4) + num_blocks * sizeof(uvec2);
+	qword_clears.push_back(analysis.indirect_workgroups_va);
+
+	analysis.base = u16vec2(upload.desc.rect.x, upload.desc.rect.y);
+	analysis.size_minus_1 = uvec2(upload.desc.rect.width - 1, upload.desc.rect.height - 1);
+
+	pending_indirect_uploads.push_back({ upload.indirection.indirect, upload.indirection.indirect_offset,
+	                                     { uint16_t(horiz_blocks),
+	                                       uint16_t(vert_blocks),
+	                                       uint16_t(upload.image->get_create_info().layers) }});
+}
+
+void GSRenderer::commit_cached_texture(uint32_t tex_info_index, bool sampler_feedback)
+{
+	// Assert that there were no stray flushes between create_cached_texture() and commit_cached_texture().
 	assert(!texture_uploads.empty());
+
+	if (sampler_feedback)
+	{
+		texture_analysis.resize(std::max<size_t>(texture_analysis.size(), tex_info_index + 1));
+		allocate_upload_indirection(texture_analysis[tex_info_index], texture_uploads.back());
+	}
+
 	// Delay any flushing since we may want to modify the texture upload based on the page tracker later.
 	check_flush_stats();
+}
+
+void GSRenderer::ensure_conservative_indirect_texture_uploads()
+{
+	if (pending_indirect_uploads.empty())
+		return;
+
+	if (!qword_clears.empty())
+	{
+		flush_qword_clears();
+		// Ensure that update_buffer_inline is ordered after the qword clears.
+		clear_cmd->barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+	}
+
+	ensure_clear_cmd();
+
+	// Ensure that any previously recorded command will indirect dispatch with the normal direct dispatch sizes.
+	clear_cmd->begin_region("ensure-conservative-indirect-upload");
+	for (auto &upload : pending_indirect_uploads)
+	{
+		uvec3 fallback = uvec3(upload.fallback_dispatch);
+		clear_cmd->update_buffer_inline(*upload.indirect, upload.indirect_offset,
+		                                sizeof(fallback), &fallback);
+	}
+
+	for (auto &dispatch : pending_indirect_analysis)
+		qword_clears.push_back(dispatch.indirect->get_device_address() + dispatch.indirect_offset);
+
+	clear_cmd->end_region();
+	pending_indirect_uploads.clear();
+	pending_indirect_analysis.clear();
+
+	// For any pending work we've yet to record, disable the indirection.
+	texture_analysis.clear();
+	for (auto &upload : texture_uploads)
+		upload.indirection = {};
 }
 
 void GSRenderer::promote_cached_texture_upload_cpu(const PageRect &rect)
@@ -1687,6 +1786,8 @@ void GSRenderer::allocate_scratch_buffers(Vulkan::CommandBuffer &cmd, const Rend
 	                       *buffers.device_scratch.buffer, transformed_attributes_offset, transformed_attributes_size);
 	triangle_setup_cmd->set_storage_buffer(0, BINDING_TRANSFORMED_ATTRIBUTES,
 	                                       *buffers.device_scratch.buffer, transformed_attributes_offset, transformed_attributes_size);
+	binning_cmd->set_storage_buffer(0, BINDING_TRANSFORMED_ATTRIBUTES,
+	                                *buffers.device_scratch.buffer, transformed_attributes_offset, transformed_attributes_size);
 
 	auto single_sampled_heuristic_offset =
 			allocate_device_scratch(sizeof(SingleSampleHeuristic), buffers.device_scratch, nullptr);
@@ -3056,21 +3157,30 @@ PrimitiveAttribute *GSRenderer::get_reserved_primitive_attributes() const
 	return buffers.prim;
 }
 
+void GSRenderer::ensure_clear_cmd()
+{
+	// Attempted async compute here for binning, etc, but it's not very useful in practice.
+	bool first_clear_cmd = !clear_cmd;
+	ensure_command_buffer(clear_cmd, Vulkan::CommandBuffer::Type::Generic);
+	if (first_clear_cmd)
+		clear_cmd->begin_region("clear-memory");
+}
+
 void GSRenderer::flush_rendering(const RenderPass &rp)
 {
 	if (rp.num_primitives == 0)
 		return;
 	assert(rp.num_primitives <= MaxPrimitivesPerFlush);
 
+	// We didn't end up flushing indirect texture uploads before flushing the full render pass, so we're safe.
+	pending_indirect_uploads.clear();
+	pending_indirect_analysis.clear();
+
 #ifdef PARALLEL_GS_DEBUG
 	sanitize_state_indices(buffers.prim, rp);
 #endif
 
-	// Attempted async compute here for binning, etc, but it's not very useful in practice.
-	bool first_clear_cmd = !clear_cmd;
-	ensure_command_buffer(clear_cmd, Vulkan::CommandBuffer::Type::Generic);
-	if (first_clear_cmd)
-		clear_cmd->begin_region("clear-memory");
+	ensure_clear_cmd();
 
 	ensure_command_buffer(triangle_setup_cmd, Vulkan::CommandBuffer::Type::Generic);
 	bool needs_single_sample_heuristic = false;
@@ -3083,6 +3193,7 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 			break;
 		}
 	}
+
 	ensure_command_buffer(binning_cmd, Vulkan::CommandBuffer::Type::Generic);
 	ensure_command_buffer(direct_cmd, Vulkan::CommandBuffer::Type::Generic);
 	auto &cmd = *direct_cmd;
@@ -3106,6 +3217,16 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 			heuristic_cmd->end_region();
 	}
 	indirect_single_sample_heuristic = {};
+
+	if (!texture_analysis.empty())
+	{
+		if (device->consumes_debug_markers())
+			begin_region(*binning_cmd, "Texture analysis %u", rp.label_key);
+		dispatch_texture_analysis(*binning_cmd, rp);
+		if (device->consumes_debug_markers())
+			binning_cmd->end_region();
+		texture_analysis.clear();
+	}
 
 	// Flush rendering work.
 	{
@@ -3344,6 +3465,47 @@ uint32_t GSRenderer::update_palette_cache(const PaletteUploadDescriptor &desc)
 	return next_clut_instance;
 }
 
+void GSRenderer::dispatch_texture_analysis(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
+{
+	cmd.set_program(shaders.sampler_feedback);
+	memcpy(cmd.allocate_typed_constant_data<TextureAnalysis>(1, 0, texture_analysis.size()),
+	       texture_analysis.data(),
+	       texture_analysis.size() * sizeof(TextureAnalysis));
+
+	memcpy(cmd.allocate_typed_constant_data<StateVector>(
+			       0, BINDING_STATE_VECTORS, std::max<uint32_t>(1, rp.num_states)),
+	       rp.states, rp.num_states * sizeof(StateVector));
+
+	VK_ASSERT(rp.num_textures <= MaxTextures);
+	auto *tex_infos = cmd.allocate_typed_constant_data<TexInfo>(
+			0, BINDING_TEXTURE_INFO, std::max<uint32_t>(1, rp.num_textures));
+	for (uint32_t i = 0; i < rp.num_textures; i++)
+		tex_infos[i] = rp.textures[i].info;
+
+	uint32_t ssaa_sample_offset = 0;
+	for (uint32_t i = 0; i < rp.num_instances; i++)
+	{
+		uint32_t max_local_coord = 1u << rp.instances[i].sampling_rate_y_log2;
+		max_local_coord--;
+		max_local_coord <<= (PGS_RASTER_SUBSAMPLE_BITS - rp.instances[i].sampling_rate_y_log2);
+		ssaa_sample_offset = std::max<uint32_t>(ssaa_sample_offset, max_local_coord);
+	}
+
+	struct
+	{
+		uint32_t num_primitives;
+		uint32_t num_textures;
+		uint32_t ssaa_sample_offset;
+	} push = { rp.num_primitives, uint32_t(texture_analysis.size()), ssaa_sample_offset };
+	cmd.push_constants(&push, 0, sizeof(push));
+
+	uint32_t indirect_data[] = { (rp.num_primitives + 255) / 256, 1, 1, 0 };
+	VkDeviceSize indirect_offset = allocate_device_scratch(sizeof(indirect_data), buffers.rebar_scratch, indirect_data);
+	cmd.dispatch_indirect(*buffers.rebar_scratch.buffer, indirect_offset);
+	// In case we have to cancel the analysis late and fallback.
+	pending_indirect_analysis.push_back({ buffers.rebar_scratch.buffer, indirect_offset });
+}
+
 void GSRenderer::upload_texture(const TextureUpload &upload)
 {
 	auto &desc = upload.desc;
@@ -3358,6 +3520,11 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 	else
 		cmd.set_storage_buffer(0, 0, *buffers.gpu);
 	cmd.set_storage_buffer(0, BINDING_CLUT, *buffers.clut);
+
+	if (upload.indirection.buffer)
+		cmd.set_storage_buffer(0, 2, *upload.indirection.buffer, upload.indirection.offset, upload.indirection.size);
+	else
+		cmd.set_storage_buffer(0, 2, *buffers.gpu);
 
 	struct UploadInfo
 	{
@@ -3413,9 +3580,10 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 		{ uint32_t(desc.miptbp4_6.desc.TBP3), uint32_t(desc.miptbp4_6.desc.TBW3) },
 	};
 
-	cmd.set_specialization_constant_mask(0x7);
+	cmd.set_specialization_constant_mask(0xf);
 	cmd.set_specialization_constant(0, uint32_t(desc.tex0.desc.PSM));
 	cmd.set_specialization_constant(2, uint32_t(desc.tex0.desc.CPSM));
+	cmd.set_specialization_constant(3, bool(upload.indirection.buffer));
 
 	// Makes it feasible to handle REGION_CLAMP where we only access one page, but at an offset.
 	if (scratch.buffer)
@@ -3450,8 +3618,11 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 
 		cmd.set_storage_texture_level(0, 1, img.get_view(), level);
 		cmd.push_constants(&info, 0, sizeof(info));
-		cmd.dispatch((info.width + 7) / 8, (info.height + 7) / 8,
-		             img.get_create_info().layers);
+
+		if (upload.indirection.buffer)
+			cmd.dispatch_indirect(*upload.indirection.indirect, upload.indirection.indirect_offset);
+		else
+			cmd.dispatch((info.width + 7) / 8, (info.height + 7) / 8, img.get_create_info().layers);
 
 		if (levels > 1)
 		{
@@ -3741,6 +3912,8 @@ void GSRenderer::mark_shadow_page_sync(uint32_t page_index)
 void GSRenderer::flush_transfer()
 {
 	tracker.clear_copy_pages();
+	total_stats.num_copy_threads += stats.num_copy_threads;
+	stats.num_copy_threads = 0;
 
 	if (pending_copies.empty())
 		return;

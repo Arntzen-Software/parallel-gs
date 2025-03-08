@@ -608,6 +608,16 @@ BlockState PageTracker::get_block_state(const PageRect &rect) const
 	return block;
 }
 
+void PageTracker::invalidate_fb_write_short_term_references()
+{
+	for (uint32_t page : accessed_fb_pages)
+	{
+		auto &state = page_state[page];
+		if (!state.short_term_cached_textures.empty())
+			invalidate_cached_textures(state.short_term_cached_textures, UINT32_MAX, state.fb_write_mask, UINT32_MAX);
+	}
+}
+
 void PageTracker::mark_transfer_write(const PageRect &rect)
 {
 	bool need_tex_invalidate = false;

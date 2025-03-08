@@ -11,6 +11,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(constant_id = 0) const uint TEXTURE_FMT = 0;
 layout(constant_id = 1) const uint VRAM_MASK = 4 * 1024 * 1024 - 1;
 layout(constant_id = 2) const uint CLUT_FMT = 0;
+layout(constant_id = 3) const bool WORKGRAPH_INDIRECTION = false;
 
 #include "utils.h"
 #include "swizzle_utils.h"
@@ -41,6 +42,12 @@ layout(rgba8, set = 0, binding = 1) writeonly uniform image2DArray uImage;
 #else
 layout(rgba8, set = 0, binding = 1) writeonly uniform image2D uImage;
 #endif
+
+layout(set = 0, binding = 2) readonly buffer Indirections
+{
+	uint valid;
+	layout(offset = 16) uvec2 workgroup_coords[];
+} indirection;
 
 layout(push_constant) uniform Registers
 {
@@ -100,7 +107,13 @@ uint get_clut_color(uint index, uint offset)
 
 void main()
 {
-	ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 coord;
+
+	if (WORKGRAPH_INDIRECTION && indirection.valid != 0)
+		coord = ivec2(indirection.workgroup_coords[gl_WorkGroupID.x] * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+	else
+		coord = ivec2(gl_GlobalInvocationID.xy);
+
 	if (any(greaterThanEqual(coord, registers.resolution)))
 		return;
 

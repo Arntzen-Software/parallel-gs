@@ -165,6 +165,8 @@ public:
 	// This kind of CLUT flushing is mostly relevant to avoid false invalidations inside a render pass.
 	void invalidate_texture_cache(uint32_t clut_instance_match);
 
+	void invalidate_fb_write_short_term_references();
+
 	void mark_texture_read(const PageRect &rect);
 	void register_cached_clut_clobber(const PageRectCLUT &rect);
 

@@ -339,7 +339,8 @@ void GSInterface::flush_render_pass(FlushReason reason)
 	render_pass.feedback_mode = RenderPass::Feedback::None;
 	render_pass.has_aa1 = false;
 	render_pass.has_scanmsk = false;
-	render_pass.has_short_term_texture_caching = false;
+	render_pass.has_hazardous_short_term_texture_caching = false;
+	render_pass.has_optimized_short_term_texture_caching = false;
 	state_tracker.dirty_flags = STATE_DIRTY_ALL_BITS;
 	//state_tracker.current_copy_cache_hazard_counter = 0;
 
@@ -941,7 +942,7 @@ void GSInterface::check_frame_buffer_state()
 	{
 		render_pass.current_instance = render_pass.num_instances;
 
-		bool can_fuse_render_pass = !render_pass.has_short_term_texture_caching;
+		bool can_fuse_render_pass = !render_pass.has_hazardous_short_term_texture_caching;
 
 		// If we have short-term cached textures, any framebuffer change will need to invalidate those textures,
 		// and therefore end the render pass.
@@ -968,6 +969,8 @@ void GSInterface::check_frame_buffer_state()
 				render_pass.instances[render_pass.current_instance] = {};
 				render_pass.num_instances++;
 				tracker.invalidate_texture_cache(render_pass.clut_instance);
+				if (render_pass.has_optimized_short_term_texture_caching)
+					tracker.invalidate_fb_write_short_term_references();
 			}
 			else
 			{
@@ -1630,7 +1633,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	}
 
 	if (!long_term_cache_texture)
-		render_pass.has_short_term_texture_caching = true;
+		render_pass.has_hazardous_short_term_texture_caching = true;
 
 	if (state_tracker.last_texture_index != UINT32_MAX &&
 	    !render_pass.tex_infos.empty() &&
@@ -1656,6 +1659,24 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 			texture_page_rects_read_safe_region();
 		else if (!long_term_cache_texture || skip_hazard_checks)
 			texture_page_rects_read_full();
+
+		if (!debug_mode.disable_sampler_feedback && long_term_cache_texture)
+		{
+			// Framebuffer textures should be analyzed properly.
+			// It's very unlikely that these textures will persist across multiple render passes anyway.
+			// For very large textures that are probably not 1k in reality should also get analysis passes.
+			// Update long_term_cache_texture after setting hazardous_short_term, since this
+			// is purely done for optimization purposes, and not due to potential feedback.
+			uint32_t pixel_count = desc.rect.width * desc.rect.height;
+			const uint32_t pixel_threshold = tracker.texture_may_super_sample(state_tracker.tex.page_rects[0]) ?
+			                                 128 * 128 : 512 * 512;
+			if (desc.rect.levels == 1 &&
+			    (pixel_count > pixel_threshold || desc.rect.width >= 1024 || desc.rect.height >= 1024))
+			{
+				long_term_cache_texture = false;
+				render_pass.has_optimized_short_term_texture_caching = true;
+			}
+		}
 
 		auto image = tracker.find_cached_texture(hasher.get());
 		if (!image)
@@ -1692,7 +1713,9 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 				recycle_image_handle(image);
 			}
 
-			renderer.commit_cached_texture();
+			renderer.commit_cached_texture(render_pass.tex_infos.size(),
+			                               desc.rect.levels == 1 && !long_term_cache_texture &&
+			                               !debug_mode.disable_sampler_feedback);
 		}
 
 		texture_index = render_pass.tex_infos.size();
@@ -1738,14 +1761,13 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 		info.info.bias.y = -float(desc.rect.y) * info.info.sizes.w;
 
 		info.info.arrayed = int(desc.samples > 1);
+		info.info.flags = long_term_cache_texture ? TEX_INFO_LONG_TERM_REFERENCE : 0;
 		if (info.info.arrayed)
 			render_pass.tex_infos_has_super_samples = true;
 
 		// Common pattern for esoteric channel re-mapping. Don't try to be clever here. Force sample mapping.
-		info.info.force_sample_mapping =
-				info.info.arrayed &&
-				is_palette_format(psm) &&
-				(desc.clamp.desc.has_horizontal_region() || desc.clamp.desc.has_vertical_region());
+		if (info.info.arrayed && is_palette_format(psm) && desc.clamp.desc.has_region_repeat())
+			info.info.flags |= TEX_INFO_FORCE_SAMPLE_MAPPING;
 
 		render_pass.tex_infos.push_back(info);
 		render_pass.tex0_infos.push_back(ctx.tex0.desc);
@@ -1784,7 +1806,7 @@ void GSInterface::drawing_kick_update_state(FBFeedbackMode feedback_mode, const 
 			if (info.arrayed)
 			{
 				p.tex |= TEX_PER_SAMPLE_BIT;
-				if (info.force_sample_mapping)
+				if ((info.flags & TEX_INFO_FORCE_SAMPLE_MAPPING) != 0)
 					p.tex |= TEX_SAMPLE_MAPPING_BIT;
 			}
 		}
