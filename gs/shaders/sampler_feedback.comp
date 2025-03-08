@@ -1,0 +1,280 @@
+#version 450
+// SPDX-FileCopyrightText: 2025 Arntzen Software AS
+// SPDX-FileContributor: Hans-Kristian Arntzen
+// SPDX-License-Identifier: LGPL-3.0+
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_spirv_intrinsics : require
+
+#define PRIMITIVE_SETUP_QUALIFIER readonly
+#define NEED_PRIMITIVE_SETUP
+#define NEED_PRIMITIVE_ATTRIBUTE
+#define NEED_TRANSFORMED_ATTRIBUTE
+#define NEED_STATE_VECTORS
+#define NEED_TEXTURE_INFO
+
+#include "data_buffers.h"
+#include "data_structures.h"
+#include "math_utils.h"
+#include "intersect.h"
+#include "utils.h"
+
+layout(local_size_x = 256) in;
+
+layout(buffer_reference, buffer_reference_align = 16, std430) buffer IndirectDispatch
+{
+    uint dispatch[3];
+};
+
+layout(buffer_reference, buffer_reference_align = 16, std430) buffer WorkGroupBuffer
+{
+    uint valid;
+    layout(offset = 16) uvec2 workgroup_indices[];
+};
+
+layout(buffer_reference, buffer_reference_align = 16, std430) buffer BitMaskBuffer
+{
+    uint data[];
+};
+
+const uint ENABLED_BIT = 1 << 0;
+
+struct TextureAnalysis
+{
+    IndirectDispatch indirect_dispatch_va;
+    WorkGroupBuffer indirect_workgroups_va;
+    BitMaskBuffer indirect_bitmask_va;
+    uvec2 size_minus_1;
+    u16vec2 base;
+    uint16_t block_stride;
+    uint16_t layers;
+    uint flags;
+};
+
+layout(set = 1, binding = 0, std140) uniform AnalysisBuffer
+{
+    TextureAnalysis data[1024];
+} texture_analysis;
+
+layout(push_constant) uniform Registers
+{
+    uint num_primitives;
+    uint num_textures;
+    int super_sample_offset;
+} registers;
+
+void allocate_block(IndirectDispatch dispatch_va, WorkGroupBuffer workgroup_va, BitMaskBuffer bitmask_va,
+                    uvec2 block, uint stride, uint layers)
+{
+    uint linear_block = block.x + block.y * stride;
+
+    uint mask = 1u << (linear_block & 31u);
+    uint old_mask = atomicOr(bitmask_va.data[linear_block / 32], mask);
+
+    if ((mask & old_mask) == 0u)
+    {
+        uint old_value = atomicExchange(workgroup_va.valid, 1u);
+        if (old_value == 0u)
+        {
+            dispatch_va.dispatch[1] = 1;
+            dispatch_va.dispatch[2] = layers;
+        }
+
+        uint index = atomicAdd(dispatch_va.dispatch[0], 1u);
+        workgroup_va.workgroup_indices[index] = block;
+    }
+}
+
+spirv_instruction(set = "GLSL.std.450", id = 81) vec2 spvNClamp(vec2, vec2, vec2);
+
+bool compute_tex_index_and_damage_region(uint index, out uint tex_index, out ivec2 lo, out ivec2 hi, out TextureAnalysis analysis)
+{
+    if (index >= registers.num_primitives)
+        return false;
+
+    ivec4 bb = ivec4(primitive_attr.data[index].bb) << PGS_RASTER_SUBSAMPLE_BITS;
+    if (bb.x > bb.z || bb.y > bb.w)
+        return false;
+
+    uint state_word = primitive_attr.data[index].state;
+    uint state_index = state_get_index(state_word);
+    if ((state_vectors.data[state_index].combiner & COMBINER_TME_BIT) == 0)
+        return false;
+
+    uint tex_word = primitive_attr.data[index].tex;
+    tex_index = bitfieldExtract(tex_word, TEX_TEXTURE_INDEX_OFFSET, TEX_TEXTURE_INDEX_BITS);
+    if (tex_index >= registers.num_textures)
+        return false;
+
+    analysis = texture_analysis.data[tex_index];
+    if ((analysis.flags & ENABLED_BIT) == 0)
+        return false;
+
+    bool perspective = state_is_perspective(state_word);
+
+    ivec2 c00 = bb.xy;
+    ivec2 c10 = bb.zy;
+    ivec2 c01 = bb.xw;
+    ivec2 c11 = bb.zw;
+
+    if ((state_word & (1u << STATE_BIT_SNAP_ATTRIBUTE)) == 0)
+    {
+        // We'll sample UVs in a super-sampled fashion. Take this into account.
+        c10.x += registers.super_sample_offset;
+        c01.y += registers.super_sample_offset;
+        c11 += registers.super_sample_offset;
+    }
+
+    PrimitiveSetup prim = primitive_setup.data[index];
+    vec4 stqf0 = transformed_attr.data[index].stqf0;
+    vec4 stqf1 = transformed_attr.data[index].stqf1;
+    vec4 stqf2 = transformed_attr.data[index].stqf2;
+
+#define bary(coord) \
+    evaluate_barycentric_ij(prim.b, prim.c, prim.inv_area, prim.error_i, prim.error_j, coord, PGS_RASTER_SUBSAMPLE_BITS)
+    vec2 ij00 = bary(c00); vec2 ij10 = bary(c10); vec2 ij01 = bary(c01); vec2 ij11 = bary(c11);
+#define stq(ij) stqf0.xyz + ij.x * stqf1.xyz + ij.y * stqf2.xyz
+    vec3 stq00 = stq(ij00); vec3 stq10 = stq(ij10); vec3 stq01 = stq(ij01); vec3 stq11 = stq(ij11);
+
+    if (perspective)
+    {
+        vec2 base_scale = texture_info.data[tex_index].sizes.xy;
+        stq00.xy /= stq00.z; stq10.xy /= stq10.z; stq01.xy /= stq01.z; stq11.xy /= stq11.z;
+        stq00.xy *= base_scale; stq10.xy *= base_scale; stq01.xy *= base_scale; stq11.xy *= base_scale;
+    }
+
+    stq00.xy = spvNClamp(stq00.xy, vec2(-2047.0), vec2(2047.0));
+    stq10.xy = spvNClamp(stq10.xy, vec2(-2047.0), vec2(2047.0));
+    stq01.xy = spvNClamp(stq01.xy, vec2(-2047.0), vec2(2047.0));
+    stq11.xy = spvNClamp(stq11.xy, vec2(-2047.0), vec2(2047.0));
+
+    bool sampler_clamp_s = (tex_word & TEX_SAMPLER_CLAMP_S_BIT) != 0;
+    bool sampler_clamp_t = (tex_word & TEX_SAMPLER_CLAMP_T_BIT) != 0;
+    bool mag_linear = (tex_word & TEX_SAMPLER_MAG_LINEAR_BIT) != 0;
+
+    // Be a little conservative and consider FP accuracy when computing the BB.
+    vec2 uv_lo = min(min(stq00.xy, stq01.xy), min(stq10.xy, stq11.xy)) - 1.0 / 256.0;
+    vec2 uv_hi = max(max(stq00.xy, stq01.xy), max(stq10.xy, stq11.xy)) + 1.0 / 256.0;
+
+    if (mag_linear)
+    {
+        uv_lo -= 0.5;
+        uv_hi += 0.5;
+    }
+
+    lo = ivec2(floor(uv_lo));
+    hi = ivec2(floor(uv_hi));
+    lo -= ivec2(analysis.base);
+    hi -= ivec2(analysis.base);
+
+    if (sampler_clamp_s)
+    {
+        lo.x = clamp(lo.x, 0, int(analysis.size_minus_1.x));
+        hi.x = clamp(hi.x, 0, int(analysis.size_minus_1.x));
+    }
+
+    if (sampler_clamp_t)
+    {
+        lo.y = clamp(lo.y, 0, int(analysis.size_minus_1.y));
+        hi.y = clamp(hi.y, 0, int(analysis.size_minus_1.y));
+    }
+
+    // If the range is massive, clamp the work range to not explode.
+    if (hi.x - lo.x >= int(analysis.size_minus_1.x))
+    {
+        lo.x = 0;
+        hi.x = int(analysis.size_minus_1.x);
+    }
+
+    if (hi.y - lo.y >= int(analysis.size_minus_1.y))
+    {
+        lo.y = 0;
+        hi.y = int(analysis.size_minus_1.y);
+    }
+
+    lo >>= 3;
+    hi >>= 3;
+
+    return true;
+}
+
+shared uint shared_large_access_count;
+shared uint shared_tex_index[256];
+shared ivec2 shared_tex_lo[256];
+shared ivec2 shared_tex_hi[256];
+
+void main()
+{
+    TextureAnalysis analysis;
+    uint tex_index;
+    ivec2 lo, hi;
+
+    if (gl_LocalInvocationIndex == 0)
+        shared_large_access_count = 0;
+    barrier();
+
+    uint index = gl_GlobalInvocationID.x;
+
+    if (compute_tex_index_and_damage_region(index, tex_index, lo, hi, analysis))
+    {
+        int num_blocks = (hi.x - lo.x + 1) * (hi.y - lo.y + 1);
+        if (num_blocks >= 64)
+        {
+            // Consider this a large access. Defer, and cooperatively iterate over the block.
+            // This way we can avoid some huge texture outliers spending a long time with extremely low occupancy.
+            uint shared_index = atomicAdd(shared_large_access_count, 1u);
+            shared_tex_index[shared_index] = tex_index;
+            shared_tex_lo[shared_index] = lo;
+            shared_tex_hi[shared_index] = hi;
+        }
+        else
+        {
+            // Round up to POT in case we have sliced textures with REPEAT + non-POT for whatever reason.
+            uvec2 block_mask = (uvec2(1u) << (findMSB(analysis.size_minus_1) + 1u)) - 1u;
+            block_mask >>= 3;
+
+            for (int y = lo.y; y <= hi.y; y++)
+            {
+                for (int x = lo.x; x <= hi.x; x++)
+                {
+                    uvec2 block = uvec2(x, y) & block_mask;
+                    allocate_block(
+                        analysis.indirect_dispatch_va, analysis.indirect_workgroups_va, analysis.indirect_bitmask_va,
+                        block, analysis.block_stride, analysis.layers);
+                }
+            }
+        }
+    }
+
+    barrier();
+
+    for (uint i = 0; i < shared_large_access_count; i++)
+    {
+        tex_index = shared_tex_index[i];
+        lo = shared_tex_lo[i];
+        hi = shared_tex_hi[i];
+        analysis = texture_analysis.data[tex_index];
+
+        int num_blocks_x = hi.x - lo.x + 1;
+        int num_blocks_y = hi.y - lo.y + 1;
+        int num_blocks = num_blocks_x * num_blocks_y;
+        float block_divider = 1.0 / float(num_blocks_x);
+
+        // Round up to POT in case we have sliced textures with REPEAT + non-POT for whatever reason.
+        uvec2 block_mask = (uvec2(1u) << (findMSB(analysis.size_minus_1) + 1u)) - 1u;
+        block_mask >>= 3;
+
+        for (int block_index = int(gl_LocalInvocationIndex); block_index < num_blocks; block_index += int(gl_WorkGroupSize.x))
+        {
+            int block_offset_y = int((float(block_index) + 0.5) * block_divider);
+            int block_offset_x = block_index - num_blocks_x * block_offset_y;
+            int x = lo.x + block_offset_x;
+            int y = lo.y + block_offset_y;
+            uvec2 block = uvec2(x, y) & block_mask;
+            allocate_block(
+                analysis.indirect_dispatch_va, analysis.indirect_workgroups_va, analysis.indirect_bitmask_va,
+                block, analysis.block_stride, analysis.layers);
+        }
+    }
+}

@@ -78,7 +78,7 @@ const int MAX_PRIMITIVES = 64 * 1024;
 layout(set = 0, binding = BINDING_TEXTURE_INFO, std140)
 uniform TextureInfo
 {
-	TexInfo data[2048];
+	TexInfo data[1024];
 } texture_info;
 #endif
 

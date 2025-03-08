@@ -14,8 +14,9 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_samplerless_texture_functions : require
 
-//#extension GL_EXT_spirv_intrinsics : require
+#extension GL_EXT_spirv_intrinsics : require
 //spirv_execution_mode(extensions = ["SPV_KHR_float_controls"], capabilities = [4467], 4462, 32);
+spirv_instruction(set = "GLSL.std.450", id = 81) vec2 spvNClamp(vec2, vec2, vec2);
 
 layout(local_size_x = 64) in;
 layout(constant_id = 0) const int NUM_SAMPLES_X_LOG2 = 0;
@@ -1298,7 +1299,7 @@ vec4 compute_combined_color(
 		vec2 uv = stq.xy;
 		if (perspective && stq.z != 1.0)
 			uv /= stq.z;
-		uv = clamp(uv, vec2(-2047.0), vec2(2047.0));
+		uv = spvNClamp(uv, vec2(-2047.0), vec2(2047.0));
 
 		uint tex2 = primitive_attr.data[primitive_index].tex2;
 		vec4 sampled = sample_texture(tex, tex2, uv, stq.z, perspective);

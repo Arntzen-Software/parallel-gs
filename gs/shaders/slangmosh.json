@@ -93,6 +93,11 @@
 			"name": "qword_clear",
 			"path": "qword_clear.comp",
 			"compute": true
+		},
+		{
+			"name": "sampler_feedback",
+			"path": "sampler_feedback.comp",
+			"compute": true
 		}
 	]
 }

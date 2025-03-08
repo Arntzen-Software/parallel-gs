@@ -252,7 +252,7 @@ public:
 	// We'll be able to do some last minute modifications to the upload descriptor
 	// depending on the page tracker state, e.g. to enable shadow copy strategy.
 	void promote_cached_texture_upload_cpu(const PageRect &rect);
-	void commit_cached_texture();
+	void commit_cached_texture(uint32_t tex_info_index, bool sampler_feedback);
 
 	Vulkan::ImageHandle copy_cached_texture(const Vulkan::Image &img, const VkRect2D &rect);
 
@@ -353,8 +353,48 @@ private:
 		Vulkan::ImageHandle image;
 		TextureDescriptor desc;
 		Scratch scratch;
+		struct
+		{
+			Vulkan::BufferHandle buffer;
+			VkDeviceSize offset;
+			VkDeviceSize size;
+			Vulkan::BufferHandle indirect;
+			VkDeviceSize indirect_offset;
+		} indirection;
 	};
+
+	struct TextureAnalysis
+	{
+		VkDeviceAddress indirect_dispatch_va;
+		VkDeviceAddress indirect_workgroups_va;
+		VkDeviceAddress indirect_bitmask_va;
+		uvec2 size_minus_1;
+		u16vec2 base;
+		uint16_t block_stride;
+		uint16_t layers;
+		uint32_t flags;
+		enum { ENABLED_BIT = 1 << 0 };
+	};
+	static_assert(sizeof(TextureAnalysis) % 16 == 0, "Unaligned TextureAnalysis");
+	static_assert(sizeof(TextureAnalysis) * MaxTextures <= Vulkan::VULKAN_MAX_UBO_SIZE, "Too large analysis struct.");
+
 	std::vector<TextureUpload> texture_uploads;
+	std::vector<TextureAnalysis> texture_analysis;
+
+	struct PendingIndirectTextureUpload
+	{
+		Vulkan::BufferHandle indirect;
+		VkDeviceSize indirect_offset;
+		u16vec3 fallback_dispatch;
+	};
+	std::vector<PendingIndirectTextureUpload> pending_indirect_uploads;
+
+	struct PendingIndirectAnalysis
+	{
+		Vulkan::BufferHandle indirect;
+		VkDeviceSize indirect_offset;
+	};
+	std::vector<PendingIndirectAnalysis> pending_indirect_analysis;
 
 	struct
 	{
@@ -422,6 +462,7 @@ private:
 	void dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t instance,
 	                      uint32_t base_primitive, uint32_t num_primitives);
 	void dispatch_single_sample_heuristic(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
+	void dispatch_texture_analysis(Vulkan::CommandBuffer &cmd, const RenderPass &rp);
 	void dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &rp, uint32_t instance,
 	                      uint32_t base_primitive, uint32_t num_primitives);
 
@@ -532,5 +573,11 @@ private:
 	bool scanout_is_interlaced(const PrivRegisterState &priv, const VSyncInfo &info) const;
 	uint32_t get_target_hierarchical_binning(uint32_t num_primitives, uint32_t coarse_tiles_width, uint32_t coarse_tiles_height) const;
 	void set_hierarchical_binning_subgroup_config(Vulkan::CommandBuffer &cmd, uint32_t hier_factor) const;
+
+	void allocate_upload_indirection(TextureAnalysis &analysis, TextureUpload &upload);
+	void ensure_conservative_indirect_texture_uploads();
+
+	void flush_qword_clears();
+	void ensure_clear_cmd();
 };
 }

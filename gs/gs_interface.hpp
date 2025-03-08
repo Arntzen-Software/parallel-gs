@@ -140,6 +140,7 @@ struct DebugMode
 	bool timestamps = false;
 	// Makes sure the CPU upload heuristics does the same thing every run.
 	bool deterministic_timeline_query = false;
+	bool disable_sampler_feedback = false;
 
 	enum class DrawDebugMode
 	{
@@ -414,7 +415,8 @@ private:
 		RenderPass::Feedback feedback_mode = RenderPass::Feedback::None;
 		bool has_aa1 = false;
 		bool has_scanmsk = false;
-		bool has_short_term_texture_caching = false;
+		bool has_hazardous_short_term_texture_caching = false;
+		bool has_optimized_short_term_texture_caching = false;
 		bool field_aware_rendering = false;
 
 		ivec3 last_triangle_parallelogram_order;

@@ -31,6 +31,7 @@ struct Shaders
 	Shader blit = {};
 	Program extwrite = {};
 	Program qword_clear = {};
+	Program sampler_feedback = {};
 	Shaders() = default;
 
 	template <typename Device, typename Layout, typename Resolver>

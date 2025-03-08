@@ -290,6 +290,7 @@ struct CLAMPBits
 	inline bool has_vertical_repeat() const { return WMT == REPEAT || WMT == REGION_REPEAT; }
 	inline bool has_horizontal_region() const { return WMS >= REGION_CLAMP; }
 	inline bool has_vertical_region() const { return WMT >= REGION_CLAMP; }
+	inline bool has_region_repeat() const { return WMS == REGION_REPEAT || WMT == REGION_REPEAT; }
 	inline bool has_horizontal_clamp() const { return WMS == CLAMP || WMS == REGION_CLAMP; }
 	inline bool has_vertical_clamp() const { return WMT == CLAMP || WMT == REGION_CLAMP; }
 };

@@ -98,8 +98,11 @@ struct TexInfo
 	vec4 region;
 	vec2 bias;
 	int arrayed;
-	int force_sample_mapping;
+	int flags;
 };
+
+CONSTEXPR int TEX_INFO_FORCE_SAMPLE_MAPPING = 0x1;
+CONSTEXPR int TEX_INFO_LONG_TERM_REFERENCE = 0x2;
 
 CONSTEXPR int PGS_FB_SWIZZLE_WIDTH_LOG2 = 3;
 CONSTEXPR int PGS_FB_SWIZZLE_HEIGHT_LOG2 = 3;
