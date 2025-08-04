@@ -5,7 +5,7 @@
 # Contributor: Themaister <post@themaister.net>
 
 pkgname=pcsx2-parallel-gs-git
-pkgver=2.2.0.r1.gdad9bb2111
+pkgver=2.5.93.r1.gb432b744a8
 pkgrel=1
 pkgdesc='A Sony PlayStation 2 emulator with experimental paraLLEl-GS support'
 arch=(x86_64)
@@ -13,89 +13,75 @@ url=https://github.com/PCSX2/pcsx2
 license=(GPLV3)
 
 depends=(
-    libaio
-    libpcap
-    libglvnd
-    libxrandr
     alsa-lib
     ffmpeg
-    sdl2
-    lld
+    hicolor-icon-theme
+    libaio
+    libbacktrace
+    libglvnd
+    libpcap
+    libpng
+    libxi
+    libxrandr
     qt6-base
     qt6-svg
+    plutosvg
+    plutovg
+    sdl3
+    shaderc
     soundtouch
     wayland
-    libpng
-    hicolor-icon-theme
     xcb-util-cursor
+    kddockwidgets-qt6
 )
 makedepends=(
+    7zip
+    clang
     cmake
     extra-cmake-modules
-    clang
+    git
+    libpipewire
+    libpulse
     lld
     llvm
-    git
     ninja
-    libpulse
-    libpipewire
-    p7zip
-    # See .github/workflows/scripts/linux/build-dependencies-qt.sh
-    libjpeg-turbo
     qt6-tools
     qt6-wayland
+    vulkan-headers
 )
 optdepends=(
-    'qt6-wayland: Wayland support'
-    'libpulse: Pulseaudio support'
+    'alsa-utils: Sound player for RetroAchievements'
+    'gstreamer: Backup sound player for RetroAchievements'
     'libpipewire: Pipewire support'
+    'libpulse: Pulseaudio support'
+    'qt6-wayland: Wayland support'
 )
+
 provides=(pcsx2 pcsx2-git)
 conflicts=(pcsx2 pcsx2-git)
 options=(!lto)
 
-LIBBACKTRACE=ad106d5fdd5d960bd33fae1c48a351af567fd075
-SHADERC=2024.1
-SHADERC_GLSLANG=142052fa30f9eca191aa9dcf65359fcaed09eeec
-SHADERC_SPIRVHEADERS=5e3ad389ee56fca27c9705d093ae5387ce404df4
-SHADERC_SPIRVTOOLS=dd4b663e13c07fea4fbb3f70c1c91c86731099f7
-# See .github/workflows/scripts/linux/build-dependencies-qt.sh
-INSTALLDIR="${srcdir}/deps-build"
-
 source=(
-    git+https://github.com/PCSX2/pcsx2.git#tag=v2.2.0
+    git+https://github.com/PCSX2/pcsx2.git#tag=v2.5.93
     git+https://github.com/Arntzen-Software/parallel-gs.git
     git+https://github.com/PCSX2/pcsx2_patches.git
-    git+https://github.com/ianlancetaylor/libbacktrace.git#commit=$LIBBACKTRACE
-    git+https://github.com/google/shaderc.git#tag=v$SHADERC
-    git+https://github.com/KhronosGroup/glslang.git#commit=$SHADERC_GLSLANG
-    git+https://github.com/KhronosGroup/SPIRV-Headers.git#commit=$SHADERC_SPIRVHEADERS
-    git+https://github.com/KhronosGroup/SPIRV-Tools.git#commit=$SHADERC_SPIRVTOOLS
-    pcsx2-qt.sh
-	0001-Early-integration-of-parallel-GS.patch
+    0001-Early-integration-of-parallel-GS.patch
 )
 
 prepare() 
 {
-    cd "shaderc/third_party"
-    mv -n ../../glslang . 
-    mv -n ../../SPIRV-Headers spirv-headers
-    mv -n ../../SPIRV-Tools spirv-tools
-    cd ..
-    patch -p1 < "${srcdir}/pcsx2/.github/workflows/scripts/common/shaderc-changes.patch"
-
     cd ${srcdir}
 
-	echo "Patching PCSX2 with paraLLEl-GS support ..."
-	cd pcsx2
-	git am "${srcdir}/0001-Early-integration-of-parallel-GS.patch"
+    echo "Patching PCSX2 with paraLLEl-GS support ..."
+    cd pcsx2
+    git am "${srcdir}/0001-Early-integration-of-parallel-GS.patch"
 
-	echo "Linking in parallel-gs."
-	cd pcsx2/GS
-	ln -sf "${srcdir}/parallel-gs" parallel-gs
-	cd parallel-gs
-	echo "Updating parallel-gs submodules."
-	./checkout_submodules.sh
+    echo "Linking in parallel-gs."
+    cd pcsx2/GS
+    ln -sf "${srcdir}/parallel-gs" parallel-gs
+    cd parallel-gs
+    echo "Updating parallel-gs submodules."
+    ./checkout_submodules.sh
 }
 
 pkgver() {
@@ -105,26 +91,6 @@ pkgver() {
 
 build() 
 {
-    echo "Building libbacktrace..."
-    cd libbacktrace
-    ./configure --prefix="${srcdir}/deps-build"
-    make
-    make install
-    cd ${srcdir}
-
-    echo "Building shaderc..."
-    cd shaderc
-    cmake -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_PREFIX_PATH="${srcdir}/deps-build" \
-        -DCMAKE_INSTALL_PREFIX="${srcdir}/deps-build" \
-        -DSHADERC_SKIP_TESTS=ON \
-        -DSHADERC_SKIP_EXAMPLES=ON \
-        -DSHADERC_SKIP_COPYRIGHT_CHECK=ON \
-        -B build -G Ninja
-    cmake --build build --parallel
-    ninja -C build install
-    cd ..
-
     # See .github/workflows/scripts/linux/generate-cmake-qt.sh
     cmake -S pcsx2 -B build \
     -G Ninja \
@@ -139,34 +105,29 @@ build()
     -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
     -DDISABLE_ADVANCE_SIMD=ON \
     -DCMAKE_PREFIX_PATH="${srcdir}/deps-build" \
-    -DCMAKE_BUILD_RPATH="/opt/pcsx2-parallel-gs/lib"
+    -DCMAKE_BUILD_RPATH="/opt/pcsx2-parallel-gs/lib" \
+    -DPACKAGE_MODE=ON
 
-	ninja -C build --verbose
+    ninja -C build --verbose
     
     cd pcsx2_patches
     7z a -r ../patches.zip patches/.
 }
 
 package() {
-    install -dm755  "${pkgdir}"/opt/
-    cp -r build/bin "${pkgdir}"/opt/"${pkgname%-git}"
-    install -Dm755 pcsx2-qt.sh "$pkgdir"/usr/bin/pcsx2-qt
+    DESTDIR="${pkgdir}" cmake --install build
+
     install -Dm644 pcsx2/.github/workflows/scripts/linux/pcsx2-qt.desktop \
     "${pkgdir}"/usr/share/applications/PCSX2.desktop
     install -Dm644 pcsx2/bin/resources/icons/AppIconLarge.png \
     "${pkgdir}"/usr/share/icons/hicolor/512x512/apps/PCSX2.png
-    install -Dm644 -t "${pkgdir}"/opt/"${pkgname%-git}"/resources/ patches.zip
-    install -Dm644 -t "${pkgdir}"/opt/"${pkgname%-git}"/lib ${srcdir}/deps-build/lib/libshaderc_shared.so.1
+    install -Dm644 -t "${pkgdir}"/usr/share/PCSX2/resources/ patches.zip
 }
 
 sha256sums=(
-	'SKIP'
-	'SKIP'
-	'SKIP'
-	'SKIP'
-	'SKIP'
-	'SKIP'
-	'SKIP'
-	'SKIP'
-	'176748c2ed9b578359f559125afbcf212fd35ea60667b683dc2862d682673964'
-	'SKIP')
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+)
+
