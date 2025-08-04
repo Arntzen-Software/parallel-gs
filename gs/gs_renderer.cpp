@@ -1657,7 +1657,7 @@ void GSRenderer::bind_textures(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
 		return;
 	}
 
-	if (rp.num_textures == 0 && bindless_allocator->get_descriptor_set() != VK_NULL_HANDLE)
+	if (rp.num_textures == 0 && bindless_allocator->get_descriptor_set())
 	{
 		// Just bind dummy set and forget.
 		cmd.set_bindless(DESCRIPTOR_SET_IMAGES, bindless_allocator->get_descriptor_set());
