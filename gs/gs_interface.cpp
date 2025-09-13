@@ -4640,7 +4640,7 @@ ScanoutResult GSInterface::vsync(const VSyncInfo &info_)
 
 bool GSInterface::vsync_can_skip(const VSyncInfo &info) const
 {
-	return renderer.vsync_can_skip(priv_registers, info);
+	return state_tracker.has_complex_scanmsk_timeout == 0 && renderer.vsync_can_skip(priv_registers, info);
 }
 
 FlushStats GSInterface::consume_flush_stats()
