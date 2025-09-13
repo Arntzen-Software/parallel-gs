@@ -144,8 +144,6 @@ bool GSDumpParser::iterate_until_vsync(bool high_res_scanout)
 	while (!eof)
 	{
 		auto type = GSDumpPacketType(read_u8());
-		if (eof)
-			return false;
 
 		switch (type)
 		{

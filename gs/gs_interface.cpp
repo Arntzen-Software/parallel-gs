@@ -1925,6 +1925,15 @@ void GSInterface::drawing_kick_update_state(FBFeedbackMode feedback_mode, const 
 	{
 		p.state |= 1u << (STATE_BIT_SCANMSK_EVEN + registers.scanmsk.desc.MSK - SCANMSKBits::MSK_SKIP_EVEN);
 		render_pass.has_scanmsk = true;
+
+		// Heuristic to catch known games that hit this.
+		// If game is rendering a tall scanmsk-ed primitive, assume this is needed.
+		if (bb.y + 400 < bb.w)
+		{
+			// Somewhat of a hack to avoid having to turn off force_progressive manually.
+			// Scanmask punches a hole in the progressive assumption.
+			state_tracker.has_complex_scanmsk_timeout = 4;
+		}
 	}
 
 	if (!prim.desc.FST)
@@ -4564,9 +4573,18 @@ void GSInterface::register_backbuffer_promotion_fbp(uint32_t fbp)
 	num_promoted_backbuffers++;
 }
 
-ScanoutResult GSInterface::vsync(const VSyncInfo &info)
+ScanoutResult GSInterface::vsync(const VSyncInfo &info_)
 {
+	auto info = info_;
 	auto ffmd = priv_registers.smode2.FFMD;
+
+	// Somewhat of a hack to avoid having to turn off force_progressive manually.
+	if (state_tracker.has_complex_scanmsk_timeout)
+	{
+		info.force_progressive = false;
+		// If the game stops using complex scanmasks, eventually flip back to normal operation.
+		state_tracker.has_complex_scanmsk_timeout--;
+	}
 
 	const Vulkan::Image *promoted1 = nullptr;
 	const Vulkan::Image *promoted2 = nullptr;
