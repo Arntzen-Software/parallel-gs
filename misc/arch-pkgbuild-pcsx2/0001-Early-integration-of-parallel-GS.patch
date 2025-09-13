@@ -1,4 +1,4 @@
-From dd546cea546af60434232933bc7fe5499baf1d92 Mon Sep 17 00:00:00 2001
+From b35b7d5dc8cbbb49f101f5b699774ee8061450cd Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sun, 23 Jun 2024 14:54:43 +0200
 Subject: [PATCH] Early integration of parallel-GS.
@@ -1911,7 +1911,7 @@ index 0000000000..d3447f6f7d
 +
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 new file mode 100644
-index 0000000000..42ca38d80c
+index 0000000000..39644fdfca
 --- /dev/null
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 @@ -0,0 +1,856 @@
@@ -2437,10 +2437,10 @@ index 0000000000..42ca38d80c
 +	info.high_resolution_scanout = GSConfig.PGSHighResScanout != 0;
 +
 +	auto stats = iface.consume_flush_stats();
-+	bool frame_is_duped = !registers_written && stats.num_render_passes == 0 && stats.num_copies == 0;
++	bool frame_is_duped = !registers_written && stats.num_render_passes == 0 && stats.num_copies == 0 && iface.vsync_can_skip(info);
 +
 +	// Don't waste GPU time scanning out the same thing twice.
-+	if (!frame_is_duped || !vsync.image || !iface.vsync_can_skip(info))
++	if (!frame_is_duped || !vsync.image)
 +		vsync = iface.vsync(info);
 +
 +	// Experimental heuristic. If running on an iGPU / APU, we're quite wary about draining the GPU for work
