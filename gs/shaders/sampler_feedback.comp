@@ -233,15 +233,19 @@ void main()
             // Round up to POT in case we have sliced textures with REPEAT + non-POT for whatever reason.
             uvec2 block_mask = (uvec2(1u) << (findMSB(analysis.size_minus_1) + 1u)) - 1u;
             block_mask >>= 3;
+            uvec2 max_block = analysis.size_minus_1 >> 3;
 
             for (int y = lo.y; y <= hi.y; y++)
             {
                 for (int x = lo.x; x <= hi.x; x++)
                 {
                     uvec2 block = uvec2(x, y) & block_mask;
-                    allocate_block(
-                        analysis.indirect_dispatch_va, analysis.indirect_workgroups_va, analysis.indirect_bitmask_va,
-                        block, analysis.block_stride, analysis.layers);
+                    if (all(lessThanEqual(block, max_block)))
+                    {
+                        allocate_block(
+                            analysis.indirect_dispatch_va, analysis.indirect_workgroups_va, analysis.indirect_bitmask_va,
+                            block, analysis.block_stride, analysis.layers);
+                    }
                 }
             }
         }
@@ -265,6 +269,8 @@ void main()
         uvec2 block_mask = (uvec2(1u) << (findMSB(analysis.size_minus_1) + 1u)) - 1u;
         block_mask >>= 3;
 
+        uvec2 max_block = analysis.size_minus_1 >> 3;
+
         for (int block_index = int(gl_LocalInvocationIndex); block_index < num_blocks; block_index += int(gl_WorkGroupSize.x))
         {
             int block_offset_y = int((float(block_index) + 0.5) * block_divider);
@@ -272,9 +278,14 @@ void main()
             int x = lo.x + block_offset_x;
             int y = lo.y + block_offset_y;
             uvec2 block = uvec2(x, y) & block_mask;
-            allocate_block(
-                analysis.indirect_dispatch_va, analysis.indirect_workgroups_va, analysis.indirect_bitmask_va,
-                block, analysis.block_stride, analysis.layers);
+            if (all(lessThanEqual(block, max_block)))
+            {
+                // Don't try to allocate blocks outside the range we're interested in.
+                // We will get false aliasing that way.
+                allocate_block(
+                    analysis.indirect_dispatch_va, analysis.indirect_workgroups_va, analysis.indirect_bitmask_va,
+                    block, analysis.block_stride, analysis.layers);
+            }
         }
     }
 }
