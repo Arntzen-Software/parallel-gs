@@ -12,7 +12,8 @@ namespace ParallelGS
 class GSInterface;
 
 // Current GSdx state version.
-static constexpr uint32_t STATE_VERSION = 8;
+static constexpr uint32_t STATE_VERSION = 9;
+static constexpr uint32_t STATE_VERSION_MIN = 8;
 
 enum class GSDumpPacketType : uint8_t
 {

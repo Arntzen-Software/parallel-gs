@@ -21,7 +21,7 @@ bool GSDumpParser::restart()
 	if (header_size < sizeof(header))
 		return false;
 	read_data(&header, sizeof(header));
-	if (header.version != STATE_VERSION)
+	if (header.version < STATE_VERSION_MIN || header.version > STATE_VERSION)
 		return false;
 
 	// Skip over serial and screenshot data.
@@ -81,7 +81,7 @@ bool GSDumpParser::open(const char *path, uint32_t vram_size_, GSInterface *ifac
 void GSDumpParser::read_register_state()
 {
 	auto &regs = iface->get_register_state();
-	read_u32(); // STATE_VERSION
+	uint32_t version = read_u32(); // STATE_VERSION
 	read_reg(regs.prim);
 	read_reg(regs.prmodecont);
 	read_reg(regs.texclut);
@@ -126,6 +126,12 @@ void GSDumpParser::read_register_state()
 	// Dummy transfer X/Y
 	read_u32();
 	read_u32();
+
+	if (version >= 9)
+	{
+		// Skip dummy state.
+		read_skip(61);
+	}
 }
 
 bool GSDumpParser::iterate_until_vsync(bool high_res_scanout)
