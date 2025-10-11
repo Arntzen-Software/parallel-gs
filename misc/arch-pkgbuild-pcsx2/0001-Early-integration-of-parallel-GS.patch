@@ -1,4 +1,4 @@
-From b35b7d5dc8cbbb49f101f5b699774ee8061450cd Mon Sep 17 00:00:00 2001
+From 40f0f147e8c12d35ee270c1eac93c043f6ece12b Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sun, 23 Jun 2024 14:54:43 +0200
 Subject: [PATCH] Early integration of parallel-GS.
@@ -9,8 +9,9 @@ Subject: [PATCH] Early integration of parallel-GS.
  CMakeLists.txt                                |   8 +
  pcsx2-gsrunner/Main.cpp                       |   4 +
  pcsx2-qt/MainWindow.cpp                       |   3 +
- pcsx2-qt/Settings/GraphicsSettingsWidget.cpp  |  78 +-
- pcsx2-qt/Settings/GraphicsSettingsWidget.ui   | 100 ++
+ .../GraphicsPGSRenderingSettingsTab.ui        | 129 +++
+ pcsx2-qt/Settings/GraphicsSettingsWidget.cpp  |  64 ++
+ pcsx2-qt/Settings/GraphicsSettingsWidget.h    |   3 +
  pcsx2-qt/pcsx2-qt.vcxproj                     |   1 +
  pcsx2/CMakeLists.txt                          |  18 +
  pcsx2/Config.h                                |   8 +
@@ -28,7 +29,8 @@ Subject: [PATCH] Early integration of parallel-GS.
  pcsx2/ImGui/ImGuiFullscreen.cpp               |   2 +
  pcsx2/Pcsx2Config.cpp                         |  17 +-
  pcsx2/pcsx2.vcxproj                           |  53 +-
- 24 files changed, 1889 insertions(+), 200 deletions(-)
+ 25 files changed, 1915 insertions(+), 192 deletions(-)
+ create mode 100644 pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui
  create mode 100644 pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
@@ -689,7 +691,7 @@ index 8056208434..f14d0c87a9 100644
  #define VK_KHR_acceleration_structure 1
  #define VK_KHR_ACCELERATION_STRUCTURE_SPEC_VERSION 13
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index d18b7d12a9..aafffd9b1f 100644
+index fb0136d3a8..86adfbfa33 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -33,6 +33,14 @@ check_no_parenthesis_in_path()
@@ -708,10 +710,10 @@ index d18b7d12a9..aafffd9b1f 100644
  # Include specific module
  include(BuildParameters)
 diff --git a/pcsx2-gsrunner/Main.cpp b/pcsx2-gsrunner/Main.cpp
-index f1ecaffb24..5e43d8faef 100644
+index f664397e66..f2905f09f8 100644
 --- a/pcsx2-gsrunner/Main.cpp
 +++ b/pcsx2-gsrunner/Main.cpp
-@@ -639,6 +639,10 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
+@@ -649,6 +649,10 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
  				else if (StringUtil::Strcasecmp(rname, "dx12") == 0)
  					type = GSRendererType::DX12;
  #endif
@@ -723,10 +725,10 @@ index f1ecaffb24..5e43d8faef 100644
  				else if (StringUtil::Strcasecmp(rname, "gl") == 0)
  					type = GSRendererType::OGL;
 diff --git a/pcsx2-qt/MainWindow.cpp b/pcsx2-qt/MainWindow.cpp
-index 3f3739e76d..0d73a4d5af 100644
+index db68d43d37..474a874dd9 100644
 --- a/pcsx2-qt/MainWindow.cpp
 +++ b/pcsx2-qt/MainWindow.cpp
-@@ -491,6 +491,9 @@ void MainWindow::createRendererSwitchMenu()
+@@ -493,6 +493,9 @@ void MainWindow::createRendererSwitchMenu()
  {
  	static constexpr const GSRendererType renderers[] = {
  		GSRendererType::Auto,
@@ -736,8 +738,143 @@ index 3f3739e76d..0d73a4d5af 100644
  #if defined(_WIN32)
  		GSRendererType::DX11,
  		GSRendererType::DX12,
+diff --git a/pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui b/pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui
+new file mode 100644
+index 0000000000..3b8499cb14
+--- /dev/null
++++ b/pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui
+@@ -0,0 +1,129 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<ui version="4.0">
++ <class>GraphicsPGSRenderingSettingsTab</class>
++ <widget class="QWidget" name="GraphicsPGSRenderingSettingsTab">
++  <property name="geometry">
++   <rect>
++    <x>0</x>
++    <y>0</y>
++    <width>700</width>
++    <height>500</height>
++   </rect>
++  </property>
++
++  <property name="windowTitle">
++   <string/>
++  </property>
++
++  <layout class="QGridLayout" name="gridLayout" columnstretch="0,1">
++   <item row="0" column="0">
++    <widget class="QLabel" name="pgsSuperSamplingLabel">
++     <property name="text">
++      <string>Super Sampling:</string>
++     </property>
++    </widget>
++   </item>
++   <item row="0" column="1">
++    <widget class="QComboBox" name="pgsSuperSampling">
++     <property name="enabled">
++      <bool>true</bool>
++     </property>
++     <property name="sizePolicy">
++      <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
++       <horstretch>0</horstretch>
++       <verstretch>0</verstretch>
++      </sizepolicy>
++     </property>
++     <property name="layoutDirection">
++      <enum>Qt::LayoutDirection::LeftToRight</enum>
++     </property>
++     <item>
++      <property name="text">
++       <string>1x (native)</string>
++      </property>
++     </item>
++     <item>
++      <property name="text">
++       <string>2x SSAA (checkerboard)</string>
++      </property>
++     </item>
++     <item>
++      <property name="text">
++       <string>4x SSAA (sparse grid)</string>
++      </property>
++     </item>
++     <item>
++      <property name="text">
++       <string>4x SSAA (ordered grid, high-res output capable)</string>
++      </property>
++     </item>
++     <item>
++      <property name="text">
++       <string>8x SSAA (checkerboard, high-res output capable)</string>
++      </property>
++     </item>
++     <item>
++      <property name="text">
++       <string>16x SSAA (sparse grid, high-res output capable)</string>
++      </property>
++     </item>
++    </widget>
++   </item>
++   <item row="1" column="0">
++    <widget class="QCheckBox" name="pgsHighResScanout">
++     <property name="text">
++      <string>High-resolution scanout</string>
++     </property>
++    </widget>
++   </item>
++   <item row="1" column="1">
++    <widget class="QCheckBox" name="pgsSuperSampleTextures">
++     <property name="text">
++      <string>Super-sample textures</string>
++     </property>
++    </widget>
++   </item>
++   <item row="2" column="0">
++    <widget class="QCheckBox" name="pgsDisableMipmaps">
++     <property name="text">
++      <string>Disable mip-mapping</string>
++     </property>
++    </widget>
++   </item>
++   <item row="2" column="1">
++    <widget class="QCheckBox" name="pgsDisableReadbackSync">
++     <property name="text">
++      <string>Disable readback sync</string>
++     </property>
++    </widget>
++   </item>
++   <item row="3" column="0">
++    <widget class="QCheckBox" name="pgsSharpBackbuffer">
++     <property name="text">
++      <string>Sharp backbuffer hack</string>
++     </property>
++    </widget>
++   </item>
++   <item row="3" column="1">
++    <widget class="QCheckBox" name="pgsBlendDemotion">
++     <property name="text">
++      <string>Blend demotion hack</string>
++     </property>
++    </widget>
++   </item>
++   <item row="4" column="0">
++    <spacer name="verticalSpacer">
++     <property name="orientation">
++      <enum>Qt::Vertical</enum>
++     </property>
++     <property name="sizeHint" stdset="0">
++      <size>
++       <width>20</width>
++       <height>0</height>
++      </size>
++     </property>
++    </spacer>
++   </item>
++  </layout>
++ </widget>
++</ui>
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
-index f8dd68f4c6..1c937fd6e9 100644
+index 29ca6c0de1..8409430422 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 @@ -21,6 +21,9 @@ struct RendererInfo
@@ -750,237 +887,146 @@ index f8dd68f4c6..1c937fd6e9 100644
  #ifdef _WIN32
  	//: Graphics backend/engine type. Leave as-is.
  	{QT_TRANSLATE_NOOP("GraphicsSettingsWidget", "Direct3D 11"), GSRendererType::DX11},
-@@ -270,6 +273,17 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
- 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.swAutoFlush, "EmuCore/GS", "autoflush_sw", true);
- 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.swMipmap, "EmuCore/GS", "mipmap", true);
+@@ -63,6 +66,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
+ 	m_display_tab = setupTab(m_display, tr("Display"));
+ 	m_hardware_rendering_tab = setupTab(m_hw, tr("Rendering"));
+ 	m_software_rendering_tab = setupTab(m_sw, tr("Rendering"));
++	m_pgs_rendering_tab = setupTab(m_pgs, tr("Rendering"));
+ 	m_hardware_fixes_tab = setupTab(m_fixes, tr("Hardware Fixes"));
+ 	m_upscaling_fixes_tab = setupTab(m_upscaling, tr("Upscaling Fixes"));
+ 	m_texture_replacement_tab = setupTab(m_texture, tr("Texture Replacement"));
+@@ -274,6 +278,17 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
+ 
+ 	setTabVisible(m_advanced_tab, QtHost::ShouldShowAdvancedSettings());
  
 +	//////////////////////////////////////////////////////////////////////////
 +	// PGS Settings
 +	//////////////////////////////////////////////////////////////////////////
-+	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsSuperSampling, "EmuCore/GS", "pgsSuperSampling", 0);
-+	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsHighResScanout, "EmuCore/GS", "pgsHighResScanout", 0);
-+	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsSuperSampleTextures, "EmuCore/GS", "pgsSuperSampleTextures", 0);
-+	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsDisableMipmaps, "EmuCore/GS", "pgsDisableMipmaps", 0);
-+	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsDisableReadbackSync, "EmuCore/GS", "pgsDisableReadbackSync", 0);
-+	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsSharpBackbuffer, "EmuCore/GS", "pgsSharpBackbuffer", 0);
-+	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.pgsBlendDemotion, "EmuCore/GS", "pgsBlendDemotion", 0);
++	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsSuperSampling, "EmuCore/GS", "pgsSuperSampling", 0);
++	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsHighResScanout, "EmuCore/GS", "pgsHighResScanout", 0);
++	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsSuperSampleTextures, "EmuCore/GS", "pgsSuperSampleTextures", 0);
++	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsDisableMipmaps, "EmuCore/GS", "pgsDisableMipmaps", 0);
++	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsDisableReadbackSync, "EmuCore/GS", "pgsDisableReadbackSync", 0);
++	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsSharpBackbuffer, "EmuCore/GS", "pgsSharpBackbuffer", 0);
++	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsBlendDemotion, "EmuCore/GS", "pgsBlendDemotion", 0);
 +
  	//////////////////////////////////////////////////////////////////////////
  	// Non-trivial settings
  	//////////////////////////////////////////////////////////////////////////
-@@ -305,6 +319,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
- 	connect(m_ui.extendedUpscales, &QCheckBox::checkStateChanged, this, &GraphicsSettingsWidget::updateRendererDependentOptions);
- 	connect(m_ui.textureFiltering, &QComboBox::currentIndexChanged, this, &GraphicsSettingsWidget::onTextureFilteringChange);
- 	connect(m_ui.swTextureFiltering, &QComboBox::currentIndexChanged, this, &GraphicsSettingsWidget::onSWTextureFilteringChange);
-+
- 	updateRendererDependentOptions();
+@@ -582,6 +597,43 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
  
- #ifndef _WIN32
-@@ -603,6 +618,42 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* dialog, QWidget*
- 
- 		dialog->registerWidgetHelp(
- 			m_ui.swMipmap, tr("Mipmapping"), tr("Checked"), tr("Enables mipmapping, which some games require to render correctly."));
+ 		dialog()->registerWidgetHelp(
+ 			m_sw.swMipmap, tr("Mipmapping"), tr("Checked"), tr("Enables mipmapping, which some games require to render correctly."));
 +
-+		dialog->registerWidgetHelp(m_ui.pgsSuperSampling, tr("paraLLEl-GS Super Sampling"), tr("1x (native)"),
-+		                           tr("Number of super samples used by paraLLEl-GS before down-sampling to native resolution. "
-+		                              "More than 4x SSAA is not recommended as there is diminishing returns in output quality. "
-+		                              "16x SSAA yields a very nice result, but requires reasonably powerful hardware in some games."));
++		// parallel-gs
++		dialog()->registerWidgetHelp(m_pgs.pgsSuperSampling, tr("paraLLEl-GS Super Sampling"), tr("1x (native)"),
++			tr("Number of super samples used by paraLLEl-GS before down-sampling to native resolution. "
++				"More than 4x SSAA (sparse) is not recommended as there is diminishing returns in output quality. "
++				"16x SSAA yields a very nice result, but requires reasonably powerful hardware in some games."));
 +
-+		dialog->registerWidgetHelp(m_ui.pgsSharpBackbuffer, tr("Sharp backbuffer hacks (experimental)"), tr("Unchecked"),
-+		                           tr("Some games perform a blit to the backbuffer. "
-+		                              "This can significantly reduce image quality, since games tend to either scale the image, or convert the image to 16-bit colors. "
-+		                              "This hack attempts to present the original image instead. This option may help alleviate that in lieu of a more proper game patch."));
++		dialog()->registerWidgetHelp(m_pgs.pgsSharpBackbuffer, tr("Sharp backbuffer hacks (experimental)"), tr("Unchecked"),
++			tr("Some games perform a blit to the backbuffer. "
++				"This can significantly reduce image quality, since games tend to either scale the image, or convert the image to 16-bit colors. "
++				"This hack attempts to present the original image instead. This option may help alleviate that in lieu of a more proper game patch."));
 +
-+		dialog->registerWidgetHelp(m_ui.pgsBlendDemotion, tr("Blend demotion speed-hack (experimental)"), tr("Unchecked"),
-+		                           tr("When super-sampling, some effect passes may become extremely expensive due to ridiculous overdraw. "
-+									  "Most of these passes don't really need super-sampling to achieve its effect. "
-+									  "Enabling this option tries to detect common cases and demotes those passes to single sampled. "
-+									  "This may dramatically improve performance for certain effects at cost of some image quality, especially around geometry edges. "
-+									  "Should not be used along high-res scanout or super-sampled textures since pixellation will be introduced."));
++		dialog()->registerWidgetHelp(m_pgs.pgsBlendDemotion, tr("Blend demotion speed-hack (experimental)"), tr("Unchecked"),
++			tr("When super-sampling, some effect passes may become extremely expensive due to ridiculous overdraw. "
++				"Most of these passes don't really need super-sampling to achieve its effect. "
++				"Enabling this option tries to detect common cases and demotes those passes to single sampled. "
++				"This may dramatically improve performance for certain effects at cost of some image quality, especially around geometry edges. "
++				"Should not be used along high-res scanout or super-sampled textures since pixellation will be introduced."));
 +
-+		dialog->registerWidgetHelp(m_ui.pgsSuperSampleTextures, tr("Super-sample Textures (experimental)"), tr("Unchecked"),
-+		                           tr("Ensures that frame buffer effects are sampled with all super-samples intact. "
-+		                              "Costs some GPU performance and VRAM, but may significantly improve image quality, especially when enabling high-res scanout. "
-+									  "This option is highly experimental and may show many rendering artifacts."));
++		dialog()->registerWidgetHelp(m_pgs.pgsSuperSampleTextures, tr("Super-sample Textures (experimental)"), tr("Unchecked"),
++			tr("Ensures that frame buffer effects are sampled with all super-samples intact. "
++				"Costs significant GPU performance and VRAM, but may significantly improve image quality, especially when enabling high-res scanout. "
++				"This option is highly experimental and may show many rendering artifacts."));
 +
-+		dialog->registerWidgetHelp(m_ui.pgsHighResScanout, tr("High-res Scanout (experimental)"), tr("Unchecked"),
-+		                           tr("When using SSAA, attempts to scan-out a higher resolution result based on stored super-samples. "
-+		                              "Requires at least 4x SSAA (ordered) to work. Can benefit from 16x SSAA, at a steep GPU processing cost. "
-+									  "Highly game dependent if it works well. Common issues include pixellated output, or lack of sharpness. "
-+									  "When playing field rendered games, may eliminate most de-interlacing artifacts. "
-+									  "May need super-sampled texture option to be enabled for good results."));
++		dialog()->registerWidgetHelp(m_pgs.pgsHighResScanout, tr("High-res Scanout (experimental)"), tr("Unchecked"),
++			tr("When using SSAA, attempts to scan-out a higher resolution result based on stored super-samples. "
++				"Requires at least 4x SSAA (ordered) to work. Can benefit from 16x SSAA, at a steep GPU processing cost. "
++				"Highly game dependent if it works well. Common issues include pixellated output, or lack of sharpness. "
++				"When playing field rendered games, may eliminate most de-interlacing artifacts. "
++				"May need super-sampled texture option to be enabled for good results."));
 +
-+		dialog->registerWidgetHelp(m_ui.pgsDisableMipmaps, tr("Disable mip-mapping"), tr("Unchecked"),
-+		                           tr("Disables mip-mapping. May give a sharper image in games using mip-mapping intended for native resolution. "
-+		                              "May also break games which rely on mipmaps being used in esoteric ways."));
++		dialog()->registerWidgetHelp(m_pgs.pgsDisableMipmaps, tr("Disable mip-mapping"), tr("Unchecked"),
++			tr("Disables mip-mapping. May give a sharper image in games using mip-mapping intended for native resolution. "
++				"May also break games which rely on mipmaps being used in esoteric ways."));
 +
-+		dialog->registerWidgetHelp(m_ui.pgsDisableReadbackSync, tr("Disable readback sync"), tr("Unchecked"),
-+		                           tr("Disables sync for readbacks. Eliminates stalls, but will probably break things. Used for perf debug."));
++		dialog()->registerWidgetHelp(m_pgs.pgsDisableReadbackSync, tr("Disable readback sync"), tr("Unchecked"),
++			tr("Disables sync for readbacks. Eliminates stalls, but will probably break things. Used for perf debug."));
  	}
  
  	// Hardware Fixes tab
-@@ -1119,6 +1170,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+@@ -1111,6 +1163,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
  	const bool is_hardware = (type == GSRendererType::DX11 || type == GSRendererType::DX12 || type == GSRendererType::OGL ||
  							  type == GSRendererType::VK || type == GSRendererType::Metal);
  	const bool is_software = (type == GSRendererType::SW);
 +	const bool is_pgs = (type == GSRendererType::ParallelGS);
  	const bool is_auto = (type == GSRendererType::Auto);
  	const bool is_vk = (type == GSRendererType::VK);
- 	const bool is_disable_barriers = (type == GSRendererType::DX11 || type == GSRendererType::DX12 || type == GSRendererType::Metal || type == GSRendererType::SW);
-@@ -1133,22 +1185,32 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
- 	m_ui.tabs->setTabEnabled(2, is_software);
- 	m_ui.tabs->setTabVisible(2, is_software);
+ 	const bool is_disable_barriers = (type == GSRendererType::Metal || type == GSRendererType::SW);
+@@ -1121,6 +1174,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+ 	{
+ 		setTabVisible(m_hardware_rendering_tab, true);
+ 		setTabVisible(m_software_rendering_tab, false, m_hardware_rendering_tab);
++		setTabVisible(m_pgs_rendering_tab, false, m_hardware_rendering_tab);
  
--	// hardware fixes
--	m_ui.tabs->setTabEnabled(3, hw_fixes);
--	m_ui.tabs->setTabVisible(3, hw_fixes);
-+	// pgs rendering
-+	m_ui.tabs->setTabEnabled(3, is_pgs);
-+	m_ui.tabs->setTabVisible(3, is_pgs);
- 
--	// upscaling fixes
-+	// hardware fixes
- 	m_ui.tabs->setTabEnabled(4, hw_fixes);
- 	m_ui.tabs->setTabVisible(4, hw_fixes);
- 
-+	// upscaling fixes
-+	m_ui.tabs->setTabEnabled(5, hw_fixes);
-+	m_ui.tabs->setTabVisible(5, hw_fixes);
+ 		prev_tab = m_hardware_rendering_tab;
+ 	}
+@@ -1128,6 +1182,15 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+ 	{
+ 		setTabVisible(m_software_rendering_tab, true);
+ 		setTabVisible(m_hardware_rendering_tab, false, m_software_rendering_tab);
++		setTabVisible(m_pgs_rendering_tab, false, m_software_rendering_tab);
 +
- 	// texture replacement
--	m_ui.tabs->setTabEnabled(5, is_hardware);
--	m_ui.tabs->setTabVisible(5, is_hardware);
-+	m_ui.tabs->setTabEnabled(6, is_hardware);
-+	m_ui.tabs->setTabVisible(6, is_hardware);
-+
-+	// Post-processing
-+	m_ui.tabs->setTabEnabled(7, !is_pgs);
-+	m_ui.tabs->setTabVisible(7, !is_pgs);
- 
- 	// move back to the renderer if we're on one of the now-hidden tabs
--	if (is_software && (prev_tab == 1 || (prev_tab >= 2 && prev_tab <= 5)))
-+	if (is_software && (prev_tab == 1 || (prev_tab >= 2 && prev_tab <= 6)))
- 		m_ui.tabs->setCurrentIndex(2);
--	else if (is_hardware && prev_tab == 2)
++		prev_tab = m_software_rendering_tab;
++	}
 +	else if (is_pgs)
-+		m_ui.tabs->setCurrentIndex(3);
-+	else if (is_hardware && (prev_tab == 2 || prev_tab == 3))
- 		m_ui.tabs->setCurrentIndex(1);
++	{
++		setTabVisible(m_pgs_rendering_tab, true);
++		setTabVisible(m_hardware_rendering_tab, false, m_pgs_rendering_tab);
++		setTabVisible(m_software_rendering_tab, false, m_pgs_rendering_tab);
  
- 	if (m_ui.useBlitSwapChain)
-diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.ui b/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
-index b6f421e90f..73ba763e23 100644
---- a/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
-+++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.ui
-@@ -652,6 +652,106 @@
-        </item>
-       </layout>
-      </widget>
-+     <widget class="QWidget" name="pgsRenderingTab">
-+      <attribute name="title"><string>Rendering</string></attribute>
-+      <layout class="QFormLayout" name="formLayout_11">
-+       <item row="0" column="0">
-+        <widget class="QLabel" name="pgsSuperSamplingLabel">
-+         <property name="text">
-+          <string>Super Sampling:</string>
-+         </property>
-+        </widget>
-+       </item>
-+       <item row="0" column="1">
-+        <widget class="QComboBox" name="pgsSuperSampling">
-+         <property name="enabled">
-+          <bool>true</bool>
-+         </property>
-+         <property name="sizePolicy">
-+          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
-+           <horstretch>0</horstretch>
-+           <verstretch>0</verstretch>
-+          </sizepolicy>
-+         </property>
-+         <property name="layoutDirection">
-+          <enum>Qt::LayoutDirection::LeftToRight</enum>
-+         </property>
-+         <item>
-+          <property name="text">
-+           <string>1x (native)</string>
-+          </property>
-+         </item>
-+         <item>
-+          <property name="text">
-+           <string>2x SSAA (checkerboard)</string>
-+          </property>
-+         </item>
-+         <item>
-+          <property name="text">
-+           <string>4x SSAA (sparse grid)</string>
-+          </property>
-+         </item>
-+         <item>
-+          <property name="text">
-+           <string>4x SSAA (ordered grid, high-res output capable)</string>
-+          </property>
-+         </item>
-+         <item>
-+          <property name="text">
-+           <string>8x SSAA (checkerboard, high-res output capable)</string>
-+          </property>
-+         </item>
-+         <item>
-+          <property name="text">
-+           <string>16x SSAA (sparse grid, high-res output capable)</string>
-+          </property>
-+         </item>
-+        </widget>
-+       </item>
-+       <item row="1" column="0">
-+          <widget class="QCheckBox" name="pgsHighResScanout">
-+           <property name="text">
-+            <string>High-resolution scanout</string>
-+           </property>
-+          </widget>
-+       </item>
-+       <item row="1" column="1">
-+          <widget class="QCheckBox" name="pgsSuperSampleTextures">
-+           <property name="text">
-+            <string>Super-sample textures</string>
-+           </property>
-+          </widget>
-+       </item>
-+       <item row="2" column="0">
-+          <widget class="QCheckBox" name="pgsDisableMipmaps">
-+           <property name="text">
-+            <string>Disable mip-mapping</string>
-+           </property>
-+          </widget>
-+       </item>
-+       <item row="2" column="1">
-+          <widget class="QCheckBox" name="pgsDisableReadbackSync">
-+           <property name="text">
-+            <string>Disable readback sync</string>
-+           </property>
-+          </widget>
-+       </item>
-+       <item row="3" column="0">
-+          <widget class="QCheckBox" name="pgsSharpBackbuffer">
-+           <property name="text">
-+            <string>Sharp backbuffer hack</string>
-+           </property>
-+          </widget>
-+       </item>
-+       <item row="3" column="1">
-+          <widget class="QCheckBox" name="pgsBlendDemotion">
-+           <property name="text">
-+            <string>Blend demotion hack</string>
-+           </property>
-+          </widget>
-+       </item>
-+      </layout>
-+     </widget>
-      <widget class="QWidget" name="hardwareFixesTab">
-       <attribute name="title">
-        <string>Hardware Fixes</string>
+ 		prev_tab = m_software_rendering_tab;
+ 	}
+@@ -1135,6 +1198,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+ 	{
+ 		setTabVisible(m_hardware_rendering_tab, false, m_display_tab);
+ 		setTabVisible(m_software_rendering_tab, false, m_display_tab);
++		setTabVisible(m_pgs_rendering_tab, false, m_display_tab);
+ 
+ 		prev_tab = m_display_tab;
+ 	}
+diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.h b/pcsx2-qt/Settings/GraphicsSettingsWidget.h
+index bc3d5f2ec0..4fa6b1a4e1 100644
+--- a/pcsx2-qt/Settings/GraphicsSettingsWidget.h
++++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.h
+@@ -14,6 +14,7 @@
+ #include "ui_GraphicsPostProcessingSettingsTab.h"
+ #include "ui_GraphicsSettingsHeader.h"
+ #include "ui_GraphicsSoftwareRenderingSettingsTab.h"
++#include "ui_GraphicsPGSRenderingSettingsTab.h"
+ #include "ui_GraphicsTextureReplacementSettingsTab.h"
+ #include "ui_GraphicsUpscalingFixesSettingsTab.h"
+ 
+@@ -66,6 +67,7 @@ private:
+ 	Ui::GraphicsDisplaySettingsTab m_display;
+ 	Ui::GraphicsHardwareRenderingSettingsTab m_hw;
+ 	Ui::GraphicsSoftwareRenderingSettingsTab m_sw;
++	Ui::GraphicsPGSRenderingSettingsTab m_pgs;
+ 	Ui::GraphicsHardwareFixesSettingsTab m_fixes;
+ 	Ui::GraphicsUpscalingFixesSettingsTab m_upscaling;
+ 	Ui::GraphicsTextureReplacementSettingsTab m_texture;
+@@ -77,6 +79,7 @@ private:
+ 	QWidget* m_display_tab = nullptr;
+ 	QWidget* m_hardware_rendering_tab = nullptr;
+ 	QWidget* m_software_rendering_tab = nullptr;
++	QWidget* m_pgs_rendering_tab = nullptr;
+ 	QWidget* m_hardware_fixes_tab = nullptr;
+ 	QWidget* m_upscaling_fixes_tab = nullptr;
+ 	QWidget* m_texture_replacement_tab = nullptr;
 diff --git a/pcsx2-qt/pcsx2-qt.vcxproj b/pcsx2-qt/pcsx2-qt.vcxproj
-index b2344f8be0..1c452b0a6b 100644
+index 48beecbe7c..f8d1410171 100644
 --- a/pcsx2-qt/pcsx2-qt.vcxproj
 +++ b/pcsx2-qt/pcsx2-qt.vcxproj
 @@ -60,6 +60,7 @@
@@ -992,10 +1038,10 @@ index b2344f8be0..1c452b0a6b 100644
      <Link>
        <AdditionalDependencies>$(QtEntryPointLib);%(AdditionalDependencies)</AdditionalDependencies>
 diff --git a/pcsx2/CMakeLists.txt b/pcsx2/CMakeLists.txt
-index 111c20e08f..6129d32403 100644
+index c66a27eeec..73c96f2e30 100644
 --- a/pcsx2/CMakeLists.txt
 +++ b/pcsx2/CMakeLists.txt
-@@ -642,6 +642,7 @@ if(USE_VULKAN)
+@@ -643,6 +643,7 @@ if(USE_VULKAN)
  		GS/Renderers/Vulkan/VKEntryPoints.h
  		GS/Renderers/Vulkan/VKEntryPoints.inl
  		GS/Renderers/Vulkan/VKLoader.h
@@ -1003,7 +1049,7 @@ index 111c20e08f..6129d32403 100644
  		GS/Renderers/Vulkan/VKShaderCache.h
  		GS/Renderers/Vulkan/VKStreamBuffer.h
  		GS/Renderers/Vulkan/VKSwapChain.h
-@@ -650,6 +651,23 @@ if(USE_VULKAN)
+@@ -651,6 +652,23 @@ if(USE_VULKAN)
  	target_include_directories(PCSX2_FLAGS INTERFACE ${SHADERC_INCLUDE_DIR})
  endif()
  
@@ -1028,7 +1074,7 @@ index 111c20e08f..6129d32403 100644
  	GS/Renderers/Metal/cas.metal
  	GS/Renderers/Metal/convert.metal
 diff --git a/pcsx2/Config.h b/pcsx2/Config.h
-index 84fee350ed..6234f6477d 100644
+index 98b532c4a1..17361140bb 100644
 --- a/pcsx2/Config.h
 +++ b/pcsx2/Config.h
 @@ -278,6 +278,7 @@ enum class GSRendererType : s8
@@ -1039,7 +1085,7 @@ index 84fee350ed..6234f6477d 100644
  };
  
  enum class GSVSyncMode : u8
-@@ -847,6 +848,13 @@ struct Pcsx2Config
+@@ -849,6 +850,13 @@ struct Pcsx2Config
  		u8 ShadeBoost_Saturation = DEFAULT_SHADEBOOST_SATURATION;
  		u8 ShadeBoost_Gamma = DEFAULT_SHADEBOOST_GAMMA;
  		u8 PNGCompressionLevel = 1;
@@ -1054,7 +1100,7 @@ index 84fee350ed..6234f6477d 100644
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
 diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
-index cfc19d90c2..1e633d4fd3 100644
+index e6e40400c2..e1ef9f716d 100644
 --- a/pcsx2/GS/GS.cpp
 +++ b/pcsx2/GS/GS.cpp
 @@ -1,5 +1,10 @@
@@ -1738,10 +1784,10 @@ index 81b97650e3..93c01f526d 100644
  {
  	/// Called when the GS is creating a render device.
 diff --git a/pcsx2/GS/GSState.cpp b/pcsx2/GS/GSState.cpp
-index 6c500c2ab0..50e9eb12ac 100644
+index 9f087048e6..3def88808a 100644
 --- a/pcsx2/GS/GSState.cpp
 +++ b/pcsx2/GS/GSState.cpp
-@@ -27,7 +27,7 @@ static __fi bool IsAutoFlushEnabled()
+@@ -28,7 +28,7 @@ static __fi bool IsAutoFlushEnabled()
  	return GSIsHardwareRenderer() ? (GSConfig.UserHacks_AutoFlush != GSHWAutoFlushLevel::Disabled) : GSConfig.AutoFlushSW;
  }
  
@@ -1751,7 +1797,7 @@ index 6c500c2ab0..50e9eb12ac 100644
  	int size = 0;
  
 diff --git a/pcsx2/GS/GSState.h b/pcsx2/GS/GSState.h
-index e9e6e3ffdf..bee68a77f2 100644
+index 4e7333d718..4bc2b040b4 100644
 --- a/pcsx2/GS/GSState.h
 +++ b/pcsx2/GS/GSState.h
 @@ -21,7 +21,7 @@ public:
@@ -1764,10 +1810,10 @@ index e9e6e3ffdf..bee68a77f2 100644
  private:
  	// RESTRICT prevents multiple loads of the same part of the register when accessing its bitfields (the compiler is happy to know that memory writes in-between will not go there)
 diff --git a/pcsx2/GS/GSUtil.cpp b/pcsx2/GS/GSUtil.cpp
-index 17a00f4143..2171c5dcc0 100644
+index 17603d50a5..7670c5b17a 100644
 --- a/pcsx2/GS/GSUtil.cpp
 +++ b/pcsx2/GS/GSUtil.cpp
-@@ -163,7 +163,9 @@ GSRendererType GSUtil::GetPreferredRenderer()
+@@ -245,7 +245,9 @@ GSRendererType GSUtil::GetPreferredRenderer()
  	static GSRendererType preferred_renderer = GSRendererType::Auto;
  	if (preferred_renderer == GSRendererType::Auto)
  	{
@@ -1779,10 +1825,10 @@ index 17a00f4143..2171c5dcc0 100644
  		preferred_renderer = GSRendererType::Metal;
  #elif defined(_WIN32) && defined(_M_ARM64)
 diff --git a/pcsx2/GS/Renderers/Common/GSRenderer.cpp b/pcsx2/GS/Renderers/Common/GSRenderer.cpp
-index 55bcf38889..958686a4d2 100644
+index 35abfb1835..4bcb807d24 100644
 --- a/pcsx2/GS/Renderers/Common/GSRenderer.cpp
 +++ b/pcsx2/GS/Renderers/Common/GSRenderer.cpp
-@@ -278,7 +278,7 @@ float GSRenderer::GetModXYOffset()
+@@ -289,7 +289,7 @@ float GSRenderer::GetModXYOffset()
  	return 0.0f;
  }
  
@@ -2866,7 +2912,7 @@ index 0000000000..0a4eb35588
 +	uint32_t dump_frames = 0;
 +};
 diff --git a/pcsx2/ImGui/ImGuiFullscreen.cpp b/pcsx2/ImGui/ImGuiFullscreen.cpp
-index fe73c6ed05..2be0018aef 100644
+index 3b062bf5d6..5712038324 100644
 --- a/pcsx2/ImGui/ImGuiFullscreen.cpp
 +++ b/pcsx2/ImGui/ImGuiFullscreen.cpp
 @@ -798,6 +798,8 @@ ImGuiFullscreen::FocusResetType ImGuiFullscreen::GetQueuedFocusResetType()
@@ -2879,7 +2925,7 @@ index fe73c6ed05..2be0018aef 100644
  	g.ActiveIdSource = (g.ActiveIdSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
  	g.NavInputSource = (g.NavInputSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
 diff --git a/pcsx2/Pcsx2Config.cpp b/pcsx2/Pcsx2Config.cpp
-index f10c22ba8e..a96556d05a 100644
+index c435923f87..a012bd0f8c 100644
 --- a/pcsx2/Pcsx2Config.cpp
 +++ b/pcsx2/Pcsx2Config.cpp
 @@ -696,6 +696,7 @@ const char* Pcsx2Config::GSOptions::GetRendererName(GSRendererType type)
@@ -2890,7 +2936,7 @@ index f10c22ba8e..a96556d05a 100644
  		default:                    return "";
  			// clang-format on
  	}
-@@ -878,7 +879,14 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
+@@ -880,7 +881,14 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
  		OpEqu(Adapter) &&
  
  		OpEqu(HWDumpDirectory) &&
@@ -2906,7 +2952,7 @@ index f10c22ba8e..a96556d05a 100644
  }
  
  bool Pcsx2Config::GSOptions::operator!=(const GSOptions& right) const
-@@ -961,6 +969,13 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
+@@ -964,6 +972,13 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
  	SettingsWrapBitBool(HWSpinCPUForReadbacks);
  	SettingsWrapBitBoolEx(GPUPaletteConversion, "paltex");
  	SettingsWrapBitBoolEx(AutoFlushSW, "autoflush_sw");
@@ -2921,7 +2967,7 @@ index f10c22ba8e..a96556d05a 100644
  	SettingsWrapBitBoolEx(Mipmap, "mipmap");
  	SettingsWrapBitBoolEx(ManualUserHacks, "UserHacks");
 diff --git a/pcsx2/pcsx2.vcxproj b/pcsx2/pcsx2.vcxproj
-index 8875c8465e..e52dc1bf81 100644
+index 1875a886df..ba1701735b 100644
 --- a/pcsx2/pcsx2.vcxproj
 +++ b/pcsx2/pcsx2.vcxproj
 @@ -54,6 +54,15 @@
@@ -2949,7 +2995,7 @@ index 8875c8465e..e52dc1bf81 100644
        <PreprocessorDefinitions Condition="'$(Platform)'!='ARM64'">ENABLE_RAINTEGRATION;ENABLE_OPENGL;ENABLE_VULKAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
        <PreprocessorDefinitions Condition="'$(Platform)'=='x64'">XBYAK_NO_EXCEPTION;ZYCORE_STATIC_BUILD;ZYDIS_STATIC_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
        <PreprocessorDefinitions Condition="'$(Platform)'=='ARM64'">VIXL_INCLUDE_TARGET_AARCH64;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-@@ -261,6 +270,48 @@
+@@ -262,6 +271,48 @@
      <ClCompile Include="Gif_Logger.cpp" />
      <ClCompile Include="Gif_Unit.cpp" />
      <ClCompile Include="GSDumpReplayer.cpp" />
