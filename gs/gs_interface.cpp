@@ -3931,9 +3931,23 @@ void GSInterface::a_d_HWREG_multi(const uint64_t *payload, size_t count)
 }
 
 // For debugging?
-void GSInterface::a_d_SIGNAL(uint64_t) {}
-void GSInterface::a_d_FINISH(uint64_t) {}
-void GSInterface::a_d_LABEL(uint64_t) {}
+void GSInterface::a_d_SIGNAL(uint64_t payload)
+{
+	if (signal_interface && signal_interface->on_signal(payload))
+		flush();
+}
+
+void GSInterface::a_d_FINISH(uint64_t payload)
+{
+	if (signal_interface && signal_interface->on_finish(payload))
+		flush();
+}
+
+void GSInterface::a_d_LABEL(uint64_t payload)
+{
+	if (signal_interface && signal_interface->on_label(payload))
+		flush();
+}
 
 void GSInterface::reglist_nop(uint64_t) {}
 void GSInterface::packed_nop(const void *) {}
@@ -4651,5 +4665,10 @@ FlushStats GSInterface::consume_flush_stats()
 double GSInterface::get_accumulated_timestamps(TimestampType type) const
 {
 	return renderer.get_accumulated_timestamps(type);
+}
+
+void GSInterface::set_signal_interface(SignalInterface *iface)
+{
+	signal_interface = iface;
 }
 }

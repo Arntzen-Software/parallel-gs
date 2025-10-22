@@ -232,6 +232,18 @@ struct Hacks
 	bool allow_blend_demote = false;
 };
 
+class SignalInterface
+{
+public:
+	virtual ~SignalInterface() = default;
+
+	// If true is returned, an implicit flush() is performed before returning.
+	// There is no extra CPU <-> GPU synchronization beyond that.
+	virtual bool on_signal(uint64_t payload) = 0;
+	virtual bool on_finish(uint64_t payload) = 0;
+	virtual bool on_label(uint64_t payload) = 0;
+};
+
 class GSInterface final
 {
 public:
@@ -242,6 +254,9 @@ public:
 	void set_super_sampling_rate(SuperSampling super_sampling, bool ordered_grid, bool super_sampled_textures);
 	void set_debug_mode(const DebugMode &mode);
 	void set_hacks(const Hacks &hacks);
+
+	// Optional interface if application wants to listen for these IRQ related events.
+	void set_signal_interface(SignalInterface *iface);
 
 	// GIF payload format.
 	void gif_transfer(uint32_t path, const void *data, size_t size);
@@ -607,5 +622,7 @@ private:
 	void register_backbuffer_promotion_fbp(uint32_t fbp);
 	PromotedBackbuffer *find_promoted_backbuffer(uint32_t fbp);
 	void invalidate_promoted_backbuffer(uint32_t fbp);
+
+	SignalInterface *signal_interface = nullptr;
 };
 }
