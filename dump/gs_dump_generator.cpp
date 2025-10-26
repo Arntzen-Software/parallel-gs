@@ -41,7 +41,7 @@ void GSDumpGenerator::write_register_state(const GSInterface &iface)
 {
 	auto &regs = iface.get_register_state();
 
-	write_u32(STATE_VERSION);
+	write_u32(STATE_VERSION_MIN);
 	write_reg(regs.prim);
 	write_reg(regs.prmodecont);
 	write_reg(regs.texclut);
