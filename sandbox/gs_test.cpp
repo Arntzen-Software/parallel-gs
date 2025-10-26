@@ -27,14 +27,14 @@ static void write_clear_quad(GSDumpGenerator &iface, int x0, int y0, int x1, int
 	vertices[1].xyz.X = x1 << PGS_SUBPIXEL_BITS;
 	vertices[1].xyz.Y = y1 << PGS_SUBPIXEL_BITS;
 
-	vertices[0].rgba.R = 0x10;
-	vertices[0].rgba.G = 0x10;
-	vertices[0].rgba.B = 0x10;
-	vertices[0].rgba.A = 0x80;
-	vertices[1].rgba.R = 0x10;
-	vertices[1].rgba.G = 0x10;
-	vertices[1].rgba.B = 0x10;
-	vertices[1].rgba.A = 0x80;
+	vertices[0].rgba.R = 0x00;
+	vertices[0].rgba.G = 0x00;
+	vertices[0].rgba.B = 0xff;
+	vertices[0].rgba.A = 0x00;
+	vertices[1].rgba.R = 0x00;
+	vertices[1].rgba.G = 0x00;
+	vertices[1].rgba.B = 0xff;
+	vertices[1].rgba.A = 0x00;
 
 	PRIMBits prim = {};
 	prim.PRIM = 6; // Sprite
@@ -66,9 +66,43 @@ static void write_line_primitive(GSDumpGenerator &iface, float x0, float y0, flo
 
 	PRIMBits prim = {};
 	prim.PRIM = int(PRIMType::LineList);
+	prim.AA1 = 1;
 
 	static const GIFAddr addr[] = { GIFAddr::RGBAQ, GIFAddr::XYZ2 };
 	iface.write_packed(prim, addr, 2, 2, vertices);
+}
+
+static void write_tri_primitive(
+		GSDumpGenerator &iface,
+		float x0, float y0, float x1, float y1, float x2, float y2)
+{
+	struct Vertex
+	{
+		PackedRGBAQBits rgba;
+		PackedXYZBits xyz;
+	} vertices[3] = {};
+
+	for (auto &v : vertices)
+	{
+		v.rgba.R = 0xff;
+		v.rgba.G = 0xff;
+		v.rgba.B = 0xff;
+		v.rgba.A = 0x80;
+	}
+
+	vertices[0].xyz.X = int(x0 * float(1 << PGS_SUBPIXEL_BITS));
+	vertices[0].xyz.Y = int(y0 * float(1 << PGS_SUBPIXEL_BITS));
+	vertices[1].xyz.X = int(x1 * float(1 << PGS_SUBPIXEL_BITS));
+	vertices[1].xyz.Y = int(y1 * float(1 << PGS_SUBPIXEL_BITS));
+	vertices[2].xyz.X = int(x2 * float(1 << PGS_SUBPIXEL_BITS));
+	vertices[2].xyz.Y = int(y2 * float(1 << PGS_SUBPIXEL_BITS));
+
+	PRIMBits prim = {};
+	prim.PRIM = int(PRIMType::TriangleList);
+	prim.AA1 = 1;
+
+	static const GIFAddr addr[] = { GIFAddr::RGBAQ, GIFAddr::XYZ2 };
+	iface.write_packed(prim, addr, 2, 3, vertices);
 }
 
 static void write_sprite_primitive(GSDumpGenerator &iface, int x0, int y0, int x1, int y1)
@@ -101,6 +135,10 @@ static void write_sprite_primitive(GSDumpGenerator &iface, int x0, int y0, int x
 
 static void setup_frame_buffer(GSDumpGenerator &iface)
 {
+	PRMODECONTBits ac = {};
+	ac.AC = 1;
+	iface.write_register(RegisterAddr::PRMODECONT, ac);
+
 	TESTBits test = {};
 	test.ZTE = 0;
 	iface.write_register(RegisterAddr::TEST_1, test);
@@ -179,9 +217,10 @@ static void run_test(GSDumpGenerator &iface)
 	alpha.D = BLEND_RGB_ZERO;
 	iface.write_register(RegisterAddr::ALPHA_1, alpha);
 
-	write_clear_quad(iface, 0, 0, 8, 8);
-	write_sprite_primitive(iface, 0, 0, 16, 16);
-	write_line_primitive(iface, 5.0f, 3.0f - 1.0f / 16.0f, 2.0f, 3.0f - 1.0f / 16.0f);
+	write_clear_quad(iface, 0, 0, 32, 32);
+	//write_sprite_primitive(iface, 0, 0, 16, 16);
+	//write_line_primitive(iface, 4.2f, 2.0f, 5.4f, 10.0f);
+	write_tri_primitive(iface, 4.0f, 4.625f, 4.0f, 4.875f, 19.875f, 4.625f);
 }
 
 int main()
@@ -243,8 +282,8 @@ int main()
 		priv.display1.DY = 50;
 		priv.display1.MAGH = 3;
 		priv.display1.MAGV = 0;
-		priv.display1.DW = 16 * 4 - 1;
-		priv.display1.DH = 16 - 1;
+		priv.display1.DW = 32 * 4 - 1;
+		priv.display1.DH = 32 - 1;
 
 		dump.write_vsync(0, iface);
 		dump.write_vsync(1, iface);

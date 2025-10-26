@@ -1915,7 +1915,10 @@ void GSInterface::drawing_kick_update_state(FBFeedbackMode feedback_mode, const 
 	if (!color_write_needs_previous_pixels)
 		p.state |= 1u << STATE_BIT_OPAQUE;
 
-	if (prim.desc.AA1)
+	// Points and Sprites don't get AA1.
+	// I assume blending still happens (since AA1 implies blending),
+	// but we won't compute any fancy coverage.
+	if (prim.desc.enables_aa1())
 	{
 		p.state |= 1u << STATE_BIT_MULTISAMPLE;
 		render_pass.has_aa1 = true;
@@ -2460,8 +2463,11 @@ void GSInterface::drawing_kick_append()
 		pos[0] = vertex_queue.pos[vertex_queue.count - 1];
 		attr[0] = vertex_queue.attr[vertex_queue.count - 1];
 
-		pos[0].pos.x -= 1 << (PGS_SUBPIXEL_BITS - 1);
-		pos[0].pos.y -= 1 << (PGS_SUBPIXEL_BITS - 1);
+		// According to TJnotJT: half pixel points round up.
+		// Make use of top-left rules here to contruct a primitive
+		// which has bottom-right wins rules.
+		pos[0].pos.x -= (1 << (PGS_SUBPIXEL_BITS - 1)) - 1;
+		pos[0].pos.y -= (1 << (PGS_SUBPIXEL_BITS - 1)) - 1;
 
 		pos[1] = pos[0];
 		pos[1].pos.x += 1 << PGS_SUBPIXEL_BITS;
@@ -2501,13 +2507,17 @@ void GSInterface::drawing_kick_append()
 
 	hi_pos -= 1;
 	// Tighten the bounding box according to top-left raster rules.
-	if (!render_pass.field_aware_rendering && (quad || !registers.prim.desc.AA1))
+	if (!render_pass.field_aware_rendering)
 		lo_pos += (1 << int(PGS_SUBPIXEL_BITS - sampling_rate_y_log2)) - 1;
 
 	lo_pos >>= int(PGS_SUBPIXEL_BITS);
 	hi_pos >>= int(PGS_SUBPIXEL_BITS);
 
-	if (is_line)
+	// We implement lines as a parallelogram which expand X or Y by +/- 0.5
+	// pixel or 1.0 pixel depending on AA1 mode.
+	// Triangle AA1 is very similar to line AA since it's modelled as line AA on edges,
+	// creating some kind of "feathered" rasterization.
+	if (is_line || registers.prim.desc.enables_aa1())
 	{
 		lo_pos -= ivec2(1);
 		hi_pos += ivec2(1);
@@ -3502,7 +3512,11 @@ void GSInterface::a_d_PRIM(uint64_t payload)
 			state_tracker.dirty_flags &= ~STATE_DIRTY_TEX_BIT;
 	}
 	else
+	{
+		if (registers.prim.desc.PRIM != prim.desc.PRIM && prim.desc.AA1)
+			state_tracker.dirty_flags |= STATE_DIRTY_PRIM_TEMPLATE_BIT;
 		registers.prim.desc.PRIM = prim.desc.PRIM;
+	}
 
 	if (prim_delta)
 	{

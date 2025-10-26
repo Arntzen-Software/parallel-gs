@@ -238,6 +238,9 @@ bool triangle_is_parallelogram_candidate(const VertexPosition *pos, const Vertex
                                          const ivec2 &lo, const ivec2 &hi, const PRIMBits &prim,
                                          ivec3 &out_parallelogram_order)
 {
+	if (prim.enables_aa1())
+		return false;
+
 	// Expect flat Q
 	if (prim.FST == 0 && prim.TME)
 		if (attr[0].q != attr[1].q || attr[1].q != attr[2].q)

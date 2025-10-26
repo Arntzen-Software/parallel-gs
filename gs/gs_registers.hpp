@@ -249,6 +249,18 @@ struct PRMODECONTBits
 	enum { AC_DEFAULT = 1 };
 };
 
+enum class PRIMType : uint32_t
+{
+	Point = 0,
+	LineList = 1,
+	LineStrip = 2,
+	TriangleList = 3,
+	TriangleStrip = 4,
+	TriangleFan = 5,
+	Sprite = 6,
+	Invalid = 7
+};
+
 struct PRIMBits
 {
 	FIELD32(PRIM, 3);
@@ -262,6 +274,9 @@ struct PRIMBits
 	FIELD32(FIX, 1);
 	PAD32(21);
 	PAD32(32);
+
+	inline bool prim_type_can_aa1() const { return PRIMType(PRIM) != PRIMType::Sprite && PRIMType(PRIM) != PRIMType::Point; };
+	inline bool enables_aa1() const { return AA1 && prim_type_can_aa1(); }
 };
 
 struct ALPHABits
@@ -534,18 +549,6 @@ enum class GIFAddr : uint32_t
 	XYZ3 = 0xd,
 	A_D = 0xe,
 	NOP = 0xf
-};
-
-enum class PRIMType : uint32_t
-{
-	Point = 0,
-	LineList = 1,
-	LineStrip = 2,
-	TriangleList = 3,
-	TriangleStrip = 4,
-	TriangleFan = 5,
-	Sprite = 6,
-	Invalid = 7
 };
 
 // For A+D addressing.

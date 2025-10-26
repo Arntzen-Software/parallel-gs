@@ -60,8 +60,8 @@ bool tie_break_rule(ivec2 edge)
 
 int shift_int64_subpixels(ivec2 c)
 {
-    int msb = c.y << (32 - PGS_SUBPIXEL_RASTER_BITS);
-    int lsb = int(uint(c.x) >> PGS_SUBPIXEL_RASTER_BITS);
+    int msb = c.y << (32 - PGS_SUBPIXEL_QUANTIZE_BITS);
+    int lsb = int(uint(c.x) >> PGS_SUBPIXEL_QUANTIZE_BITS);
     return msb | lsb;
 }
 
@@ -215,25 +215,50 @@ void main_inner(uint index)
         ivec2 ab = b - a;
         ivec2 abs_d = abs(ab);
 
-        if (abs_d.x > abs_d.y)
+		// On 45-degree slope, the convention is generally X-major.
+        if (abs_d.x >= abs_d.y)
         {
             // Horiz major. Ensure area is positive so we don't have to deal with reordering.
             // Make sure the width is exactly 1 pixel, and tie-break rules ensure we only get one pixel
             // hit. This emulates Bresenham rather well.
             int y_delta = -sign(ab.x) << (PGS_SUBPIXEL_BITS - 1);
-            c.x = a.x;
+			if (multisample)
+				y_delta *= 2;
             c.y = a.y + y_delta;
             a.y -= y_delta;
             b.y -= y_delta;
+
+			// According to TJnotJT: half pixel points round up.
+			// For wide-line, we need to ensure that pixels that land
+			// exactly on center get full coverage.
+			// TODO: Apparently, the anti-aliased part that gets 0 coverage
+			// is still supposed to render, but we don't implement that right now.
+			// Needs more testing.
+			if (!multisample)
+			{
+				a.x += 1;
+				b.x += 1;
+			}
+
+            c.x = a.x;
         }
         else
         {
             // Vert major. Ensure area is positive so we don't have to deal with reordering.
             int x_delta = sign(ab.y) << (PGS_SUBPIXEL_BITS - 1);
+			if (multisample)
+				x_delta *= 2;
             c.x = a.x + x_delta;
-            c.y = a.y;
             a.x -= x_delta;
             b.x -= x_delta;
+
+			// According to TJnotJT: half pixel points round up.
+			if (!multisample)
+			{
+				a.y += 1;
+				b.y += 1;
+			}
+            c.y = a.y;
         }
     }
 
@@ -297,9 +322,9 @@ void main_inner(uint index)
     constant_b = sub64(constant_b, ivec2(error_b, 0));
     constant_c = sub64(constant_c, ivec2(error_c, 0));
 
-    error_a += constant_a.x & (PGS_SUBPIXELS_RASTER - 1);
-    error_b += constant_b.x & (PGS_SUBPIXELS_RASTER - 1);
-    error_c += constant_c.x & (PGS_SUBPIXELS_RASTER - 1);
+    error_a += constant_a.x & (PGS_SUBPIXELS_RASTER_QUANTIZE - 1);
+    error_b += constant_b.x & (PGS_SUBPIXELS_RASTER_QUANTIZE - 1);
+    error_c += constant_c.x & (PGS_SUBPIXELS_RASTER_QUANTIZE - 1);
 
     int error_flip_b = 0;
     int error_flip_c = 0;
@@ -308,14 +333,14 @@ void main_inner(uint index)
         int tie_break_offset = 1 - int(tie_break_b) - int(tie_break_c);
         error_flip_b = tie_break_offset + error_b + error_a;
         error_flip_c = tie_break_offset + error_c + error_a;
-        error_flip_b += PGS_SUBPIXELS_RASTER; // Ensure positive result. Compensate in raster.
-        error_flip_c += PGS_SUBPIXELS_RASTER; // Ensure positive result. Compensate in raster.
-        error_flip_b >>= PGS_SUBPIXEL_RASTER_BITS;
-        error_flip_c >>= PGS_SUBPIXEL_RASTER_BITS;
+        error_flip_b += PGS_SUBPIXELS_RASTER_QUANTIZE; // Ensure positive result. Compensate in raster.
+        error_flip_c += PGS_SUBPIXELS_RASTER_QUANTIZE; // Ensure positive result. Compensate in raster.
+        error_flip_b >>= PGS_SUBPIXEL_QUANTIZE_BITS;
+        error_flip_c >>= PGS_SUBPIXEL_QUANTIZE_BITS;
     }
 
     float inv_area = rcp_fixed(area);
-    precise float inv_area_scaled = inv_area * float(PGS_SUBPIXELS_RASTER);
+    precise float inv_area_scaled = inv_area * float(PGS_SUBPIXELS_RASTER_QUANTIZE);
     precise float error_i = float(error_b) * inv_area;
     precise float error_j = float(error_c) * inv_area;
 
@@ -533,7 +558,7 @@ void main_inner(uint index)
     // precision is needed.
     primitive_setup.data[index].z = uvec4(za, floatBitsToUint(float(zb - za)), floatBitsToUint(float(zc - za)), 0);
 
-    ivec4 packed_bb = pack_bounding_box(a, b, c, d, multisample, SAMPLING_RATE_Y_LOG2);
+    ivec4 packed_bb = pack_bounding_box(a, b, c, d, multisample, line, SAMPLING_RATE_Y_LOG2);
 
     packed_bb = clip_bounding_box(packed_bb, ivec4(primitive_attr.data[index].bb));
     primitive_setup.data[index].bb = packed_bb;

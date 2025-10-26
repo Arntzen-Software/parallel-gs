@@ -823,7 +823,7 @@ ShadeResultEarly shade_early(uint primitive_index)
 		raster_fb_pixel = tile.fb_pixel;
 
 	res.request.coverage = evaluate_coverage(prim, raster_fb_pixel, i, j,
-			res.request.multisample, SAMPLING_RATE_DIM_LOG2);
+			res.request.multisample, state_is_line(prim_state), SAMPLING_RATE_DIM_LOG2);
 
 	if (HAS_SCANMSK)
 	{
@@ -848,7 +848,7 @@ ShadeResultEarly shade_early(uint primitive_index)
 	// AA1 without full-coverage cannot write depth.
 	// TODO: It's still very murky what "full coverage" even means ...
 	if (Z_SENSITIVE)
-		if (res.request.multisample && res.request.coverage < 4)
+		if (res.request.multisample && res.request.coverage < 0x80)
 			res.request.z_write = false;
 
 	uvec3 zs = prim.z.xyz;
@@ -1496,7 +1496,7 @@ void shade_resolve(uint primitive_index, uint state_index, uint tex)
 
 		if (HAS_AA1)
 		{
-			int coverage_alpha = 0x20 * pending_shade_request.coverage;
+			int coverage_alpha = pending_shade_request.coverage;
 			bool use_coverage = (combined_color.a == 128.0 || !alpha_blending) && pending_shade_request.multisample;
 			if (use_coverage)
 				combined_color.a = float(coverage_alpha);
@@ -1655,9 +1655,16 @@ bool primitive_intersects_tile(uint index)
 #endif
 
 	PrimitiveSetup setup = primitive_setup.data[index];
-
 	ivec4 bb = clip_bounding_box(setup.bb, ivec4(tile.tile_lo, tile.tile_hi));
-	return triangle_setup_intersects_tile(setup.a, setup.b, setup.c, bb);
+
+	bool multisampled_tri = HAS_AA1;
+	if (multisampled_tri)
+	{
+		uint state = primitive_attr.data[index].state;
+		multisampled_tri = state_is_multisample(state) && !state_is_line(state);
+	}
+
+	return triangle_setup_intersects_tile(setup.a, setup.b, setup.c, bb, multisampled_tri);
 }
 
 void main()

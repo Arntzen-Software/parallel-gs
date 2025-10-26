@@ -33,6 +33,11 @@ bool state_is_multisample(uint state)
 	return bitfieldExtract(state, STATE_BIT_MULTISAMPLE, 1) != 0;
 }
 
+bool state_is_line(uint state)
+{
+	return bitfieldExtract(state, STATE_BIT_LINE, 1) != 0;
+}
+
 bool state_is_perspective(uint state)
 {
 	return bitfieldExtract(state, STATE_BIT_PERSPECTIVE, 1) != 0;

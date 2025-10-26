@@ -24,6 +24,7 @@ layout(local_size_x_id = 0) in;
 #include "data_buffers.h"
 #include "intersect.h"
 #include "swizzle_utils.h"
+#include "utils.h"
 
 layout(push_constant) uniform Registers
 {
@@ -77,7 +78,10 @@ bool bin_primitive(ivec2 lo, ivec2 hi, uint primitive_index)
     ivec3 c = primitive_setup.data[primitive_index].c;
     ivec4 bb = ivec4(primitive_setup.data[primitive_index].bb);
     bb = clip_bounding_box(bb, ivec4(lo, hi));
-    return triangle_setup_intersects_tile(a, b, c, bb);
+
+    uint state = primitive_attr.data[primitive_index].state;
+    bool multisampled_tri = state_is_multisample(state) && !state_is_line(state);
+    return triangle_setup_intersects_tile(a, b, c, bb, multisampled_tri);
 }
 
 void update_heuristics(
