@@ -184,7 +184,8 @@ int evaluate_coverage(PrimitiveSetup setup, ivec2 coord, out float i, out float 
 		// This should allow anti-aliased lines even when doing upscaling.
 		// The barycentric j is 0 and 1 at edge, and 0.5 at line center.
 		// For upscaling, it's possible to use some non-triangular kernel too, but that's probably overkill.
-		coverage_count = int(max(0.0, 128.0 - 256.0 * abs(0.5 - j)));
+		if (pixel_center_coverage)
+			coverage_count = int(max(0.0, 128.0 - 256.0 * abs(0.5 - j)));
 	}
 	else if (pixel_center_coverage)
 	{
