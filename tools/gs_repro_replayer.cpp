@@ -183,7 +183,7 @@ static bool run_gs_dump(OSFilesystem &fs, Device &device, const std::string &pat
 	BufferHandle readback;
 	{
 		auto cmd = device.request_command_buffer();
-		cmd->image_barrier(*result.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		cmd->image_barrier(*result.image, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
 						   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 						   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
 						   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -309,7 +309,9 @@ static int main_inner(const std::string &path, bool update)
 	Context ctx;
 	Device dev;
 	if (!ctx.init_instance_and_device(nullptr, 0, nullptr, 0,
-	                                  CONTEXT_CREATION_ENABLE_PUSH_DESCRIPTOR_BIT | CONTEXT_CREATION_ENABLE_DESCRIPTOR_BUFFER_BIT))
+	                                  CONTEXT_CREATION_ENABLE_PUSH_DESCRIPTOR_BIT |
+	                                  CONTEXT_CREATION_ENABLE_DESCRIPTOR_HEAP_BIT |
+									  CONTEXT_CREATION_ENABLE_DESCRIPTOR_BUFFER_BIT))
 		return EXIT_FAILURE;
 	dev.set_context(ctx);
 

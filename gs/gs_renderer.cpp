@@ -1298,7 +1298,7 @@ Vulkan::ImageHandle GSRenderer::copy_cached_texture(const Vulkan::Image &img, co
 	device->set_name(*copy_img, "Sharp Backbuffer");
 
 	cmd.begin_region("Sharp Backbuffer Copy");
-	cmd.image_barrier(img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+	cmd.image_barrier(img, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 	                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
 	                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_READ_BIT);
 	cmd.image_barrier(*copy_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1308,10 +1308,10 @@ Vulkan::ImageHandle GSRenderer::copy_cached_texture(const Vulkan::Image &img, co
 	cmd.copy_image(*copy_img, img, {}, { rect.offset.x, rect.offset.y, 0 }, { rect.extent.width, rect.extent.height, 1 },
 	               { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, info.layers }, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, info.layers });
 
-	cmd.image_barrier(img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	cmd.image_barrier(img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
 	                  VK_PIPELINE_STAGE_2_COPY_BIT, 0,
 	                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-	cmd.image_barrier(*copy_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	cmd.image_barrier(*copy_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
 	                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
 	                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 	                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
@@ -1380,7 +1380,7 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 	pre_image_barriers.push_back(barrier);
 
 	barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
 	barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 	barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
 	barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -4102,7 +4102,7 @@ void GSRenderer::sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::I
                                      const SamplingRect &rect, uint32_t super_samples,
                                      const Vulkan::Image *promoted)
 {
-	cmd.image_barrier(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+	cmd.image_barrier(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 	                  0, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
 	Vulkan::RenderPassInfo rp_info;
@@ -4721,7 +4721,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 		if (result.image)
 		{
-			cmd.image_barrier(*result.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			cmd.image_barrier(*result.image, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 			                  info.dst_layout,
 			                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
@@ -4752,21 +4752,21 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 	if (circuit1)
 	{
-		cmd.image_barrier(*circuit1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		cmd.image_barrier(*circuit1, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+		                  VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
 		                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 		                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	}
 
 	if (circuit2)
 	{
-		cmd.image_barrier(*circuit2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		cmd.image_barrier(*circuit2, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+		                  VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
 		                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 		                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	}
 
-	cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+	cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 	                  0, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 	                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT);
 
@@ -4888,8 +4888,8 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	if (priv.extwrite.WRITE)
 		dst_stage |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 
-	cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-	                  need_intermediate_pass ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : info.dst_layout,
+	cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+	                  need_intermediate_pass ? VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL : info.dst_layout,
 	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 					  dst_stage, need_intermediate_pass ? VkAccessFlags2(VK_ACCESS_2_SHADER_SAMPLED_READ_BIT) : info.dst_access);
 
@@ -4979,9 +4979,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		if (!is_interlaced && !force_deinterlace &&
 		    (info.dst_stage != VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ||
 		     info.dst_access != VK_ACCESS_2_SHADER_SAMPLED_READ_BIT ||
-		     info.dst_layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+		     info.dst_layout != VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL))
 		{
-			cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, info.dst_layout,
+			cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL, info.dst_layout,
 			                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
 			                  info.dst_stage, info.dst_access);
 		}
@@ -5034,7 +5034,7 @@ Vulkan::ImageHandle GSRenderer::fastmad_deinterlace(Vulkan::CommandBuffer &cmd, 
 	auto deinterlaced = device->create_image(image_info);
 	device->set_name(*deinterlaced, "Deinterlaced");
 
-	cmd.image_barrier(*deinterlaced, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+	cmd.image_barrier(*deinterlaced, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 	                  0, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
 	cmd.begin_region("deinterlace");
@@ -5061,7 +5061,7 @@ Vulkan::ImageHandle GSRenderer::fastmad_deinterlace(Vulkan::CommandBuffer &cmd, 
 	cmd.draw(3);
 	cmd.end_render_pass();
 
-	cmd.image_barrier(*deinterlaced, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vsync.dst_layout,
+	cmd.image_barrier(*deinterlaced, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, vsync.dst_layout,
 	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 	                  vsync.dst_stage, vsync.dst_access);
 

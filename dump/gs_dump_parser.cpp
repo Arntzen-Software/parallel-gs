@@ -165,7 +165,7 @@ bool GSDumpParser::iterate_until_vsync(bool high_res_scanout)
 		{
 			VSyncInfo vsync = {};
 			vsync.phase = read_u8();
-			vsync.dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			vsync.dst_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
 			vsync.dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 			vsync.dst_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
 			vsync.high_resolution_scanout = high_res_scanout;

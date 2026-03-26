@@ -212,7 +212,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 	void render_fsr(CommandBuffer &cmd, const ImageView &view)
 	{
 		cmd.image_barrier(*fsr_render_target,
-		                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 		                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
 		                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
@@ -258,7 +258,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		cmd.end_render_pass();
 
 		cmd.image_barrier(*fsr_render_target,
-		                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		                  VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
 		                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 		                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	}
