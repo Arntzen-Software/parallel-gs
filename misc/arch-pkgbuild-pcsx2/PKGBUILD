@@ -5,7 +5,7 @@
 # Contributor: Themaister <post@themaister.net>
 
 pkgname=pcsx2-parallel-gs-git
-pkgver=2.7.216.r1.ge210f6f9c5
+pkgver=2.7.216.r1.g89813af2c5
 pkgrel=1
 pkgdesc='A Sony PlayStation 2 emulator with experimental paraLLEl-GS support'
 arch=(x86_64)
@@ -32,7 +32,8 @@ depends=(
     soundtouch
     wayland
     xcb-util-cursor
-    kddockwidgets-qt6
+    kddockwidgets
+    rapidyaml
 )
 makedepends=(
     7zip
@@ -74,8 +75,8 @@ prepare()
 
     echo "Patching PCSX2 with paraLLEl-GS support ..."
     cd pcsx2
-	git config user.name "local"
-	git config user.email "local@local"
+    git config user.name "local"
+    git config user.email "local@local"
     git am "${srcdir}/0001-Early-integration-of-parallel-GS.patch"
 
     echo "Linking in parallel-gs."
