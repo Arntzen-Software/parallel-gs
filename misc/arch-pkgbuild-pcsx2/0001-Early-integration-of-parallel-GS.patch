@@ -1,7 +1,7 @@
 From 09d484d088b2051d8278e0d3d97528077eb1576a Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sun, 23 Jun 2024 14:54:43 +0200
-Subject: [PATCH] Early integration of parallel-GS.
+Subject: [PATCH 1/2] Early integration of parallel-GS.
 
 ---
  .gitignore                                    |   2 +
@@ -2399,6 +2399,36 @@ index 4490cad0cf..2bec7837bf 100644
      <ClCompile Include="GS\Renderers\DX11\D3D.cpp" />
      <ClCompile Include="GS\Renderers\DX12\GSDevice12.cpp" />
      <ClCompile Include="GS\Renderers\DX12\GSTexture12.cpp" />
+-- 
+2.53.0
+
+
+From 2c605b1adb1d814a5c8b21ed8f7d269a15a91469 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Fl=C3=A1vio=20Sousa?= <fn_maia@outlook.com>
+Date: Fri, 20 Feb 2026 20:59:02 -0300
+Subject: [PATCH 2/2] Fix crash when loading parallel-gs
+
+---
+ pcsx2/GS/GS.cpp | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
+index 492dd6761..ea715c2ed 100644
+--- a/pcsx2/GS/GS.cpp
++++ b/pcsx2/GS/GS.cpp
+@@ -1031,7 +1031,11 @@ void GSgetTitleStats(std::string& info)
+ 	static constexpr const char* deinterlace_modes[] = {
+ 		"Automatic", "None", "Weave tff", "Weave bff", "Bob tff", "Bob bff", "Blend tff", "Blend bff", "Adaptive tff", "Adaptive bff"};
+ 
+-	const char* api_name = GSDevice::RenderAPIToString(g_gs_device->GetRenderAPI());
++	const char* api_name =
++#ifdef HAVE_PARALLEL_GS
++			!g_gs_device ? "paraLLEl-GS" :
++#endif
++			GSDevice::RenderAPIToString(g_gs_device->GetRenderAPI());
+ 	const char* hw_sw_name = (GSCurrentRenderer == GSRendererType::Null) ? " Null" : (GSIsHardwareRenderer() ? " HW" : " SW");
+ 	const char* deinterlace_mode = deinterlace_modes[static_cast<int>(GSConfig.InterlaceMode)];
+ 
 -- 
 2.53.0
 
