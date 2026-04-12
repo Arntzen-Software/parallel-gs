@@ -510,10 +510,14 @@ void main_inner(uint index)
 
     ivec2 d = parallelogram ? (b + c - a) : c;
 
+    int di_rounding = 0;
+    int dj_rounding = 0;
+
     // Highly speculative, but appears to be needed.
     // When DDA attempts to reconstruct the top-left sprite corner, it seems like we may need to consider rounding
     // errors. If we suspect rounding errors are at play, bias the interpolation at epsilon offset to
     // fake it towards the real input vertex.
+
     if (sprite)
     {
         // D is the first vertex in the sprite. B and C are "fake" parallelogram vertices.
@@ -523,9 +527,6 @@ void main_inner(uint index)
         // Only adjust if NPOT, since POT scaling we expect lossless varying interpolation.
         bool right_major_adjust = x_dist > 0 && (x_dist & (x_dist - 1)) != 0;
         bool bottom_major_adjust = y_dist > 0 && (y_dist & (y_dist - 1)) != 0;
-
-        int di_rounding = 0;
-        int dj_rounding = 0;
 
         if (right_major_adjust)
         {
@@ -538,14 +539,67 @@ void main_inner(uint index)
             di_rounding += plane_b.y;
             dj_rounding += plane_c.y;
         }
-
-        // 1/64th of a pixel offset in interpolation. Arbitrary choice that is enough to fix issues
-        // since the ubershader applies a tiny epsilon on UVs.
-        // We don't risk sampling out of bounds on the bottom-right part of the sprite
-        // since sampling at the bottom-right edge does not have coverage. Convenient.
-        error_i += float(di_rounding) * (0.125 * inv_area_scaled);
-        error_j += float(dj_rounding) * (0.125 * inv_area_scaled);
     }
+    else if (parallelogram && !perspective)
+    {
+        // Some credit goes to https://github.com/PCSX2/pcsx2/pull/14078 and TJnotJT on highlighting the problem.
+        // Some games may do ridiculous interpolation which in exact FP will round to exact nearest sampling boundary,
+        // but if DDA interpolation function rounds down very slightly, then we will snap to previous texel.
+        // For linear, any visual delta is at worst one subtexel off, don't bother trying to fix that up.
+        bool nearest = (primitive_attr.data[index].tex & TEX_SAMPLER_MAG_LINEAR_BIT) == 0;
+
+        // Triangles would have to compute inverse area, not separate X/Y step functions.
+        bool npot_area = (area & (area - 1)) != 0;
+
+        if (nearest && npot_area)
+        {
+            ivec2 uv_delta0 = ivec2(attr0.uv) - a;
+            ivec2 uv_delta1 = ivec2(attr1.uv) - b;
+            ivec2 uv_delta2 = ivec2(attr2.uv) - c;
+
+            // UV and position must track each other 1:1.
+            bool uv_delta_equal = all(equal(uv_delta0.xyxy, ivec4(uv_delta1, uv_delta2)));
+
+            if (uv_delta_equal)
+            {
+                bvec2 exact_texel_corner_sampling = equal(ivec2(uv_delta0 & (PGS_SUBPIXELS - 1)), ivec2(0));
+
+                // If top-left is aligned exactly at sampling position, we will not observe interpolation glitch.
+                bvec2 top_left_is_misaligned = notEqual(min(a, d) & (PGS_SUBPIXELS - 1), ivec2(0));
+
+                // Compute (wrongly scaled) UV gradients. We only care about sign of these.
+                // Compute e.g.: (dUV/dx) = (dUV/di) * (di/dx)
+                float dudx = distqf.x * float(plane_b.x) + djstqf.x * float(plane_c.x);
+                float dvdx = distqf.y * float(plane_b.x) + djstqf.y * float(plane_c.x);
+                float dudy = distqf.x * float(plane_b.y) + djstqf.x * float(plane_c.y);
+                float dvdy = distqf.y * float(plane_b.y) + djstqf.y * float(plane_c.y);
+
+                bool adjust_x_interpolation = top_left_is_misaligned.x &&
+                    ((dudx > 0.0 && dvdx == 0.0) || (dvdx > 0.0 && dudx == 0.0));
+                bool adjust_y_interpolation = top_left_is_misaligned.y &&
+                    ((dudy > 0.0 && dvdy == 0.0) || (dvdy > 0.0 && dudy == 0.0));
+
+                if (adjust_x_interpolation)
+                {
+                    di_rounding -= plane_b.x;
+                    dj_rounding -= plane_c.x;
+                }
+
+                if (adjust_y_interpolation)
+                {
+                    di_rounding -= plane_b.y;
+                    dj_rounding -= plane_c.y;
+                }
+            }
+        }
+    }
+
+    // 1/64th of a pixel offset in interpolation. Arbitrary choice that is enough to fix issues
+    // since the ubershader applies a tiny epsilon on UVs.
+    // We don't risk sampling out of bounds on the bottom-right part of the sprite
+    // since sampling at the bottom-right edge does not have coverage. Convenient.
+    error_i += float(di_rounding) * (0.125 * inv_area_scaled);
+    error_j += float(dj_rounding) * (0.125 * inv_area_scaled);
 
     primitive_setup.data[index].a = plane_a;
     primitive_setup.data[index].inv_area = inv_area_scaled;
