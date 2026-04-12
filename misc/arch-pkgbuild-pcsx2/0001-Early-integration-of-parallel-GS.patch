@@ -1,4 +1,4 @@
-From 09d484d088b2051d8278e0d3d97528077eb1576a Mon Sep 17 00:00:00 2001
+From da193f85a3aff13e209cb0354fb1a4a8b2073462 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sun, 23 Jun 2024 14:54:43 +0200
 Subject: [PATCH] Early integration of parallel-GS.
@@ -14,7 +14,7 @@ Subject: [PATCH] Early integration of parallel-GS.
  pcsx2-qt/pcsx2-qt.vcxproj                     |   1 +
  pcsx2/CMakeLists.txt                          |  18 +
  pcsx2/Config.h                                |   8 +
- pcsx2/GS/GS.cpp                               | 399 ++++++--
+ pcsx2/GS/GS.cpp                               | 407 +++++++--
  pcsx2/GS/GS.h                                 |   3 +
  pcsx2/GS/GSState.cpp                          |   2 +-
  pcsx2/GS/GSState.h                            |   2 +-
@@ -28,7 +28,7 @@ Subject: [PATCH] Early integration of parallel-GS.
  pcsx2/ImGui/ImGuiFullscreen.cpp               |   2 +
  pcsx2/Pcsx2Config.cpp                         |  17 +-
  pcsx2/pcsx2.vcxproj                           |  53 +-
- 24 files changed, 1640 insertions(+), 89 deletions(-)
+ 24 files changed, 1647 insertions(+), 90 deletions(-)
  create mode 100644 pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui
  create mode 100644 pcsx2/GS/Renderers/Vulkan/VKLoaderPlatformDefines.h
  create mode 100644 pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
@@ -64,7 +64,7 @@ index b0c394591c..8b5beeabb8 100644
  # Include specific module
  include(BuildParameters)
 diff --git a/pcsx2-gsrunner/Main.cpp b/pcsx2-gsrunner/Main.cpp
-index fe06bfe0cd..fdeeb0db32 100644
+index e7a377f239..7507c027be 100644
 --- a/pcsx2-gsrunner/Main.cpp
 +++ b/pcsx2-gsrunner/Main.cpp
 @@ -666,6 +666,10 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
@@ -79,7 +79,7 @@ index fe06bfe0cd..fdeeb0db32 100644
  				else if (StringUtil::Strcasecmp(rname, "gl") == 0)
  					type = GSRendererType::OGL;
 diff --git a/pcsx2-qt/MainWindow.cpp b/pcsx2-qt/MainWindow.cpp
-index 19131e5f84..ab646a042e 100644
+index 353a246c12..16e1a36a20 100644
 --- a/pcsx2-qt/MainWindow.cpp
 +++ b/pcsx2-qt/MainWindow.cpp
 @@ -472,6 +472,9 @@ void MainWindow::createRendererSwitchMenu()
@@ -392,10 +392,10 @@ index 1c75ce783e..ca274ccb83 100644
      <Link>
        <AdditionalDependencies>$(QtEntryPointLib);%(AdditionalDependencies)</AdditionalDependencies>
 diff --git a/pcsx2/CMakeLists.txt b/pcsx2/CMakeLists.txt
-index 3c9a8f6240..5bfe70c8b0 100644
+index 972a2a5b37..f9a3201da1 100644
 --- a/pcsx2/CMakeLists.txt
 +++ b/pcsx2/CMakeLists.txt
-@@ -643,6 +643,7 @@ if(USE_VULKAN)
+@@ -644,6 +644,7 @@ if(USE_VULKAN)
  		GS/Renderers/Vulkan/VKEntryPoints.h
  		GS/Renderers/Vulkan/VKEntryPoints.inl
  		GS/Renderers/Vulkan/VKLoader.h
@@ -403,7 +403,7 @@ index 3c9a8f6240..5bfe70c8b0 100644
  		GS/Renderers/Vulkan/VKShaderCache.h
  		GS/Renderers/Vulkan/VKStreamBuffer.h
  		GS/Renderers/Vulkan/VKSwapChain.h
-@@ -651,6 +652,23 @@ if(USE_VULKAN)
+@@ -652,6 +653,23 @@ if(USE_VULKAN)
  	target_include_directories(PCSX2_FLAGS INTERFACE ${SHADERC_INCLUDE_DIR})
  endif()
  
@@ -428,7 +428,7 @@ index 3c9a8f6240..5bfe70c8b0 100644
  	GS/Renderers/Metal/cas.metal
  	GS/Renderers/Metal/convert.metal
 diff --git a/pcsx2/Config.h b/pcsx2/Config.h
-index 5e1f8bad00..ad3c0d1d96 100644
+index b7a84a8472..68feb89ef1 100644
 --- a/pcsx2/Config.h
 +++ b/pcsx2/Config.h
 @@ -278,6 +278,7 @@ enum class GSRendererType : s8
@@ -439,7 +439,7 @@ index 5e1f8bad00..ad3c0d1d96 100644
  };
  
  enum class GSVSyncMode : u8
-@@ -893,6 +894,13 @@ struct Pcsx2Config
+@@ -895,6 +896,13 @@ struct Pcsx2Config
  		u8 ShadeBoost_Saturation = DEFAULT_SHADEBOOST_SATURATION;
  		u8 ShadeBoost_Gamma = DEFAULT_SHADEBOOST_GAMMA;
  		u8 PNGCompressionLevel = 1;
@@ -454,7 +454,7 @@ index 5e1f8bad00..ad3c0d1d96 100644
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
 diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
-index 52c19b9eca..492dd67614 100644
+index 52c19b9eca..c89a68302c 100644
 --- a/pcsx2/GS/GS.cpp
 +++ b/pcsx2/GS/GS.cpp
 @@ -1,5 +1,10 @@
@@ -1092,7 +1092,22 @@ index 52c19b9eca..492dd67614 100644
  	GSRenderer* gs = g_gs_renderer.get();
  	if (!gs)
  	{
-@@ -777,8 +1044,11 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
+@@ -764,7 +1031,13 @@ void GSgetTitleStats(std::string& info)
+ 	static constexpr const char* deinterlace_modes[] = {
+ 		"Automatic", "None", "Weave tff", "Weave bff", "Bob tff", "Bob bff", "Blend tff", "Blend bff", "Adaptive tff", "Adaptive bff"};
+ 
+-	const char* api_name = GSDevice::RenderAPIToString(g_gs_device->GetRenderAPI());
++	const char* api_name =
++#ifdef HAVE_PARALLEL_GS
++		g_pgs_renderer ? "paraLLEl-GS" :
++
++#endif
++		GSDevice::RenderAPIToString(g_gs_device->GetRenderAPI());
++
+ 	const char* hw_sw_name = (GSCurrentRenderer == GSRendererType::Null) ? " Null" : (GSIsHardwareRenderer() ? " HW" : " SW");
+ 	const char* deinterlace_mode = deinterlace_modes[static_cast<int>(GSConfig.InterlaceMode)];
+ 
+@@ -777,8 +1050,11 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
  {
  	Pcsx2Config::GSOptions old_config(std::move(GSConfig));
  	GSConfig = new_config;
@@ -1106,7 +1121,7 @@ index 52c19b9eca..492dd67614 100644
  
  	// Handle OSD scale changes by pushing a window resize through.
  	if (new_config.OsdScale != old_config.OsdScale)
-@@ -795,6 +1065,9 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
+@@ -795,6 +1071,9 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
  		return;
  	}
  
@@ -1138,7 +1153,7 @@ index 892f406a7a..4b70ad0034 100644
  {
  	/// Called when the GS is creating a render device.
 diff --git a/pcsx2/GS/GSState.cpp b/pcsx2/GS/GSState.cpp
-index 0e2d424420..2ae595e4a0 100644
+index 1a4241d980..0e0e6f15e3 100644
 --- a/pcsx2/GS/GSState.cpp
 +++ b/pcsx2/GS/GSState.cpp
 @@ -28,7 +28,7 @@ static __fi bool IsAutoFlushEnabled()
@@ -1151,7 +1166,7 @@ index 0e2d424420..2ae595e4a0 100644
  	int size = 0;
  
 diff --git a/pcsx2/GS/GSState.h b/pcsx2/GS/GSState.h
-index d65313ced4..24b7c61f63 100644
+index 377f3aa3fb..5b04910b3b 100644
 --- a/pcsx2/GS/GSState.h
 +++ b/pcsx2/GS/GSState.h
 @@ -22,7 +22,7 @@ public:
@@ -1179,7 +1194,7 @@ index 85be5b0836..2c3c0d1d9d 100644
  		preferred_renderer = GSRendererType::Metal;
  #elif defined(_WIN32) && defined(ARCH_ARM64)
 diff --git a/pcsx2/GS/Renderers/Common/GSRenderer.cpp b/pcsx2/GS/Renderers/Common/GSRenderer.cpp
-index 0eefbbdb2e..2e65ecb521 100644
+index 5993ccfe45..401dafc705 100644
 --- a/pcsx2/GS/Renderers/Common/GSRenderer.cpp
 +++ b/pcsx2/GS/Renderers/Common/GSRenderer.cpp
 @@ -288,7 +288,7 @@ float GSRenderer::GetModXYOffset()
@@ -2280,7 +2295,7 @@ index 4650ac50ad..4006a4660e 100644
  	g.ActiveIdSource = (g.ActiveIdSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
  	g.NavInputSource = (g.NavInputSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
 diff --git a/pcsx2/Pcsx2Config.cpp b/pcsx2/Pcsx2Config.cpp
-index d3e61f7e12..07fdad1c10 100644
+index 325771142f..7360c3a1db 100644
 --- a/pcsx2/Pcsx2Config.cpp
 +++ b/pcsx2/Pcsx2Config.cpp
 @@ -696,6 +696,7 @@ const char* Pcsx2Config::GSOptions::GetRendererName(GSRendererType type)
@@ -2291,7 +2306,7 @@ index d3e61f7e12..07fdad1c10 100644
  		default:                    return "";
  			// clang-format on
  	}
-@@ -888,7 +889,14 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
+@@ -889,7 +890,14 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
  		OpEqu(Adapter) &&
  
  		OpEqu(HWDumpDirectory) &&
@@ -2307,7 +2322,7 @@ index d3e61f7e12..07fdad1c10 100644
  }
  
  bool Pcsx2Config::GSOptions::operator!=(const GSOptions& right) const
-@@ -975,6 +983,13 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
+@@ -978,6 +986,13 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
  	SettingsWrapBitBool(HWSpinCPUForReadbacks);
  	SettingsWrapBitBoolEx(GPUPaletteConversion, "paltex");
  	SettingsWrapBitBoolEx(AutoFlushSW, "autoflush_sw");
@@ -2322,10 +2337,10 @@ index d3e61f7e12..07fdad1c10 100644
  	SettingsWrapBitBoolEx(Mipmap, "mipmap");
  	SettingsWrapBitBoolEx(ManualUserHacks, "UserHacks");
 diff --git a/pcsx2/pcsx2.vcxproj b/pcsx2/pcsx2.vcxproj
-index 4490cad0cf..2bec7837bf 100644
+index 246280513a..ae8930d5b7 100644
 --- a/pcsx2/pcsx2.vcxproj
 +++ b/pcsx2/pcsx2.vcxproj
-@@ -55,6 +55,15 @@
+@@ -54,6 +54,15 @@
        <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\d3d12memalloc\include</AdditionalIncludeDirectories>
        <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\lzma\include</AdditionalIncludeDirectories>
        <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\freesurround\include</AdditionalIncludeDirectories>
@@ -2341,7 +2356,7 @@ index 4490cad0cf..2bec7837bf 100644
        <AdditionalIncludeDirectories Condition="'$(Platform)'=='x64'">%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\xbyak</AdditionalIncludeDirectories>
        <AdditionalIncludeDirectories Condition="'$(Platform)'=='x64'">%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\zydis\include;$(SolutionDir)3rdparty\zydis\dependencies\zycore\include</AdditionalIncludeDirectories>
        <AdditionalIncludeDirectories Condition="'$(Platform)'=='ARM64'">%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\vixl\include</AdditionalIncludeDirectories>
-@@ -63,7 +72,7 @@
+@@ -62,7 +71,7 @@
        <PrecompiledHeader>Use</PrecompiledHeader>
        <PrecompiledHeaderFile>PrecompiledHeader.h</PrecompiledHeaderFile>
        <ForcedIncludeFiles>PrecompiledHeader.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
@@ -2350,7 +2365,7 @@ index 4490cad0cf..2bec7837bf 100644
        <PreprocessorDefinitions Condition="'$(Platform)'!='ARM64'">ENABLE_RAINTEGRATION;ENABLE_OPENGL;ENABLE_VULKAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
        <PreprocessorDefinitions Condition="'$(Platform)'=='x64'">XBYAK_NO_EXCEPTION;ZYCORE_STATIC_BUILD;ZYDIS_STATIC_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
        <PreprocessorDefinitions Condition="'$(Platform)'=='ARM64'">VIXL_INCLUDE_TARGET_AARCH64;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-@@ -264,6 +273,48 @@
+@@ -263,6 +272,48 @@
      <ClCompile Include="Gif_Logger.cpp" />
      <ClCompile Include="Gif_Unit.cpp" />
      <ClCompile Include="GSDumpReplayer.cpp" />
