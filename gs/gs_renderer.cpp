@@ -2618,7 +2618,7 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	if (rp.has_scanmsk)
 		variant_flags |= VARIANT_FLAG_HAS_SCANMSK_BIT;
 
-	if (single_primitive_step)
+	if (first_primitive_index_z_sensitive != UINT32_MAX)
 		variant_flags |= VARIANT_FLAG_HAS_PRIMITIVE_RANGE_BIT;
 
 	if (rp.feedback_mode != RenderPass::Feedback::None)
