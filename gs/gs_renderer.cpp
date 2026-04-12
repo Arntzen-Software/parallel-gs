@@ -4493,7 +4493,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	bool skip_shift_x = false;
 	bool skip_shift_y = false;
 
-	if (EN1 && EN2 && anti_blur && alternative_sampling)
+	if (EN1 && EN2 && anti_blur)
 	{
 		if (priv.dispfb1.FBP == priv.dispfb2.FBP &&
 		    priv.dispfb1.PSM == priv.dispfb2.PSM &&
@@ -4503,7 +4503,20 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		    priv.display1.MAGV == priv.display2.MAGV)
 		{
 			// Games tend to either offset DY by 1, or DBY by one. Detect various cases and disable.
-			if (priv.display1.DY == priv.display2.DY)
+			if (MMOD == PMODEBits::MMOD_ALPHA_ALP &&
+				priv.display1.DY == priv.display2.DY &&
+				priv.dispfb1.DBY == priv.dispfb2.DBY &&
+				priv.dispfb1.DBX == priv.dispfb2.DBX &&
+				priv.display1.DX != priv.display2.DX &&
+				std::abs(int(priv.display1.DX) - int(priv.display2.DX)) < 2 * (priv.display1.MAGH + 1))
+			{
+				// Odd-ball case where game is blurring in X direction for no good reason.
+				EN2 = false;
+				ALP = 0xff;
+				MMOD = PMODEBits::MMOD_ALPHA_ALP;
+				insert_label(cmd, "Anti-blur, force layer 0");
+			}
+			else if (alternative_sampling && priv.display1.DY == priv.display2.DY)
 			{
 				if (priv.dispfb1.DBY + 1 == priv.dispfb2.DBY)
 				{
@@ -4519,7 +4532,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 					insert_label(cmd, "Anti-blur, force layer 1");
 				}
 			}
-			else if (priv.dispfb1.DBY == priv.dispfb2.DBY)
+			else if (alternative_sampling && priv.dispfb1.DBY == priv.dispfb2.DBY)
 			{
 				if (priv.display1.DY + 1 == priv.display2.DY)
 				{
