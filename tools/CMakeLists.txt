@@ -7,7 +7,7 @@ add_granite_offline_tool(parallel-gs-replayer gs_dump_replayer.cpp)
 target_link_libraries(parallel-gs-replayer PRIVATE parallel-gs parallel-gs-dump)
 
 add_granite_application(parallel-gs-stream gs_stream_replayer.cpp)
-target_link_libraries(parallel-gs-stream PRIVATE parallel-gs parallel-gs-dump)
+target_link_libraries(parallel-gs-stream PRIVATE parallel-gs parallel-gs-dump analog-video)
 
 add_granite_offline_tool(parallel-gs-repro gs_repro_replayer.cpp)
 target_link_libraries(parallel-gs-repro PRIVATE parallel-gs parallel-gs-dump granite-stb granite-rapidjson)
@@ -15,6 +15,8 @@ target_link_libraries(parallel-gs-repro PRIVATE parallel-gs parallel-gs-dump gra
 granite_install_executable(parallel-gs-replayer)
 granite_install_executable(parallel-gs-stream)
 granite_install_executable(parallel-gs-repro)
+
+target_compile_definitions(parallel-gs-stream PRIVATE PRIVATE ASSET_DIRECTORY=\"${CMAKE_CURRENT_SOURCE_DIR}/assets\")
 
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/assets DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../Granite/assets DESTINATION ${CMAKE_INSTALL_BINDIR}/builtin)

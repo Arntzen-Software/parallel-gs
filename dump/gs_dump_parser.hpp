@@ -41,7 +41,7 @@ class GSDumpParser
 public:
 	bool open(const char *path, uint32_t vram_size, GSInterface *iface);
 	bool open_raw(const char *path, uint32_t vram_size, GSInterface *iface);
-	bool iterate_until_vsync(bool high_res_scanout = false);
+	bool iterate_until_vsync(bool high_res_scanout = false, bool conservative_crtc = false);
 	ScanoutResult consume_vsync_result();
 	bool restart();
 

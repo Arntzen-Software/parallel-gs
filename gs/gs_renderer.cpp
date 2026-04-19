@@ -4188,9 +4188,9 @@ GSRenderer::SamplingRect GSRenderer::compute_circuit_rect(const PrivRegisterStat
 	{
 		// No idea if this makes sense. Seems to create same effect as using DY 0/1 in EN1 and EN2.
 		// In FFMD mode, just sample the field as-is.
-		rect.phase_offset = alternative_sampling ? (display.DY & 1) : 0;
+		// If DY aligns with the interlacing face, we start sampling it right away.
+		rect.phase_offset = alternative_sampling ? ((display.DY ^ phase) & 1) : 0;
 		rect.phase_stride = alternative_sampling ? 2 : 1;
-		rect.phase_offset += phase;
 	}
 	else
 	{
@@ -4203,7 +4203,7 @@ GSRenderer::SamplingRect GSRenderer::compute_circuit_rect(const PrivRegisterStat
 	{
 		// Half-height render. Either we read every other line, or every line, but half height (FFMD).
 		// Avoid sampling beyond what the game expects us to sample.
-		rect.valid_extent.height = (rect.image_extent.height - phase - rect.phase_offset + 1) >> 1;
+		rect.valid_extent.height = (rect.image_extent.height - rect.phase_offset + 1) >> 1;
 		rect.image_extent.height = (rect.image_extent.height + 1) >> 1;
 	}
 	else
@@ -4582,8 +4582,13 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			device->set_name(*circuit1, "Circuit1");
 		}
 
-		int off_x = int(priv.display1.DX) / int(clock_divider) - scan_offset_x;
-		int off_y = ((int(priv.display1.DY) + int(alternative_sampling && !is_interlaced)) >> int(is_interlaced)) - scan_offset_y;
+		// TODO: Need subpixel clock shenanigans here I think ...
+		// Seen some cases where de-flicker filters shift horizontal axis by subpixels.
+		int off_x = int(priv.display1.DX + clock_divider / 2) / int(clock_divider) - scan_offset_x;
+
+		int off_y = int(priv.display1.DY + rect.phase_offset) >> int(is_interlaced);
+		off_y -= scan_offset_y;
+
 		uint32_t width = (priv.display1.DW + 1) / clock_divider;
 		uint32_t height = (priv.display1.DH + 1 + int(is_interlaced)) >> int(is_interlaced);
 
@@ -4635,8 +4640,12 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			device->set_name(*circuit2, "Circuit2");
 		}
 
-		int off_x = int(priv.display2.DX) / int(clock_divider) - scan_offset_x;
-		int off_y = ((int(priv.display2.DY) + int(alternative_sampling && !is_interlaced)) >> int(is_interlaced)) - scan_offset_y;
+		// Need subpixel clock shenanigans here I think ...
+		int off_x = int(priv.display2.DX + clock_divider / 2) / int(clock_divider) - scan_offset_x;
+
+		int off_y = int(priv.display2.DY + rect.phase_offset) >> int(is_interlaced);
+		off_y -= scan_offset_y;
+
 		uint32_t width = (priv.display2.DW + 1) / clock_divider;
 		uint32_t height = (priv.display2.DH + 1 + int(is_interlaced)) >> int(is_interlaced);
 
@@ -5000,7 +5009,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		}
 	}
 
-	if (!high_resolution_scanout && (is_interlaced || force_deinterlace))
+	bool should_deinterlace = !high_resolution_scanout && (is_interlaced || force_deinterlace);
+
+	if (!info.skip_deinterlace && should_deinterlace)
 	{
 		for (int i = 3; i >= 1; i--)
 			vsync_last_fields[i] = std::move(vsync_last_fields[i - 1]);
@@ -5032,6 +5043,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	}
 
 	result.image = std::move(merged);
+	result.interlaced = should_deinterlace;
+	result.interlace_phase = info.phase;
+
 	flush_submit(0);
 	return result;
 }

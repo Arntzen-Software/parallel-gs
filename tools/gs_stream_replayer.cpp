@@ -12,8 +12,13 @@
 #include "flat_renderer.hpp"
 #include "ui_manager.hpp"
 #include "shaders/slangmosh.hpp"
+#include "analog_video.hpp"
 #include "hash.hpp"
 #include <string.h>
+
+#include "muglm/matrix_helper.hpp"
+#include "transforms.hpp"
+#include "math.hpp"
 
 using namespace Granite;
 using namespace Vulkan;
@@ -59,6 +64,8 @@ static void FsrRcasCon(float *con, float sharpness)
 	con[3] = 0.0f;
 }
 
+static constexpr float SDRScale = 600.0f;
+
 namespace ParallelGS
 {
 struct StreamApplication : Granite::Application, Granite::EventHandler
@@ -69,7 +76,12 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		EVENT_MANAGER_REGISTER_LATCH(StreamApplication, on_device_created, on_device_destroyed, DeviceCreatedEvent);
 		EVENT_MANAGER_REGISTER_LATCH(StreamApplication, on_swapchain_created, on_swapchain_destroyed, SwapchainParameterEvent);
 		EVENT_MANAGER_REGISTER(StreamApplication, on_key_pressed, KeyboardEvent);
-		get_wsi().set_backbuffer_format(BackbufferFormat::sRGB);
+		get_wsi().set_backbuffer_format(BackbufferFormat::UNORM);
+
+		auto meta = get_wsi().get_hdr_metadata();
+		meta.maxContentLightLevel = SDRScale;
+		// The rest can be left undefined.
+		get_wsi().set_hdr_metadata(meta);
 	}
 
 	std::unique_ptr<GSInterface> iface;
@@ -90,6 +102,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 	bool has_renderdoc_capture = false;
 	uint32_t capture_count = 0;
 	DebugMode::DrawDebugMode draw_mode = DebugMode::DrawDebugMode::None;
+	bool hdr = false;
 
 	enum { NumCaptureFrames = 4 };
 
@@ -138,6 +151,11 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			iface->set_super_sampling_rate(SuperSampling::X16, true, false);
 		else if (e.get_key() == Key::M)
 			get_wsi().set_present_mode(get_wsi().get_present_mode() == PresentMode::SyncToVBlank ? PresentMode::UnlockedMaybeTear : PresentMode::SyncToVBlank);
+		else if (e.get_key() == Key::H)
+		{
+			hdr = !hdr;
+			get_wsi().set_backbuffer_format(hdr ? BackbufferFormat::HDR10 : BackbufferFormat::UNORM);
+		}
 
 		return true;
 	}
@@ -159,6 +177,9 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 	{
 		fsr_render_target.reset();
 	}
+
+	AnalogVideoFilter filter;
+	CRTFilter crt_filter;
 
 	void on_device_created(const DeviceCreatedEvent &e)
 	{
@@ -195,6 +216,14 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		Shaders<> suite(e.get_device(), layout, 0);
 		upscale_program = e.get_device().request_program(suite.upscale_vert, suite.upscale_frag);
 		sharpen_program = e.get_device().request_program(suite.sharpen_vert, suite.sharpen_frag);
+
+		AnalogVideoFilter::Options dev_opts = {};
+		dev_opts.cable = AnalogVideoFilter::Cable::Composite;
+		dev_opts.system = AnalogVideoFilter::System::PAL;
+		if (!filter.init(e.get_device(), dev_opts))
+			request_shutdown();
+		if (!crt_filter.init(e.get_device()))
+			request_shutdown();
 	}
 
 	void on_device_destroyed(const DeviceCreatedEvent &)
@@ -290,23 +319,129 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		cmd.draw(3);
 	}
 
-#if 0
-	Util::Hash last_hash = 0;
-
-	void read_page_memory()
+	void test_filter()
 	{
-		auto *mapped = static_cast<const uint32_t *>(iface->map_vram_read(0x300000, PGS_PAGE_ALIGNMENT_BYTES));
-		Util::Hasher h;
-		for (uint32_t i = 0; i < PGS_PAGE_ALIGNMENT_BYTES / sizeof(uint32_t); i++)
-			h.u32(mapped[i] & 0x0f000000);
+		auto &wsi = get_wsi();
+		auto &device = wsi.get_device();
 
-		if (h.get() != last_hash)
+		bool rdoc = Device::init_renderdoc_capture();
+		if (rdoc)
+			device.begin_renderdoc_capture();
+
+		auto cmd = device.request_command_buffer();
+
+		constexpr int Width = 720;
+		constexpr int Height = 600;
+		std::vector<u8vec4> pixels(Width * Height);
+
+		auto info = ImageCreateInfo::immutable_2d_image(Width, Height, VK_FORMAT_R8G8B8A8_UNORM);
+		ImageInitialData initial = { pixels.data(), 0, 0 };
+
+		float last_line_horiz_freq = -1.0f;
+
+		for (int y = 0; y < Height; y++)
 		{
-			LOGI("Hash changed at V #%u: %016llx\n", vsync_index, static_cast<unsigned long long>(h.get()));
-			last_hash = h.get();
+			int vertical_bar = y - 100;
+			float pct_of_nyquist = float(vertical_bar) / 400.0f; // Nyquist at 6.75 MHz.
+			float horiz_freq = pct_of_nyquist * 6.75f;
+			bool delimit_line = muglm::floor(horiz_freq) != muglm::floor(last_line_horiz_freq);
+			last_line_horiz_freq = horiz_freq;
+
+			for (int x = 0; x < Width; x++)
+			{
+				int pix = y * Width + x;
+
+				u8vec4 value;
+
+				if (y < 100 || (y < 500 && delimit_line))
+				{
+					static const u8vec4 color_bars[9] = {
+						u8vec4(191, 191, 191, 0),
+						u8vec4(191, 191, 0, 0),
+						u8vec4(0, 191, 191, 0),
+						u8vec4(0, 191, 0, 0),
+						u8vec4(191, 0, 191, 0),
+						u8vec4(191, 0, 0, 0),
+						u8vec4(0, 0, 191, 0),
+						u8vec4(0, 0, 0, 0),
+						u8vec4(191, 191, 191, 0),
+					};
+					value = color_bars[x / 80];
+				}
+				else if (y < 500)
+				{
+					float s = muglm::sin(muglm::pi<float>() * pct_of_nyquist * float(x));
+
+					if (x % 100 < 90)
+						value = u8vec4(uint8_t(255.0f * (0.5f + 0.5f * s) + 0.5f));
+					else
+						value = u8vec4(0);
+				}
+				else
+				{
+					int horiz_bar = x / 50;
+					pct_of_nyquist = float(horiz_bar) / 14.0f; // Nyquist at 6.75 MHz.
+					float s = muglm::sin(muglm::pi<float>() * pct_of_nyquist * float(x));
+
+					if (x % 50 < 5)
+						value = u8vec4(128);
+					else
+						value = u8vec4(uint8_t(255.0f * (0.5f + 0.5f * s) + 0.5f));
+				}
+
+				pixels[pix] = value;
+			}
+		}
+
+		auto test_image = device.create_image(info, &initial);
+
+		static const struct
+		{
+			const char *tag;
+			AnalogVideoFilter::Cable cable;
+			AnalogVideoFilter::System system;
+			bool comb;
+			bool skip_notch;
+		} tests[] = {
+			{ "PAL composite", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::PAL },
+			{ "PAL svideo", AnalogVideoFilter::Cable::SVideo, AnalogVideoFilter::System::PAL },
+			{ "NTSC composite", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::NTSC },
+			{ "NTSC svideo", AnalogVideoFilter::Cable::SVideo, AnalogVideoFilter::System::NTSC },
+			{ "NTSC composite + comb", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::NTSC, true },
+			{ "PAL composite + comb", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::PAL, true },
+			{ "NTSC composite + comb + skip notch", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::NTSC, true, true },
+			{ "PAL composite + comb + skip notch", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::PAL, true, true },
+			{ "Component", AnalogVideoFilter::Cable::Component, AnalogVideoFilter::System::PAL },
+		};
+
+		for (auto &test : tests)
+		{
+			cmd->begin_region(test.tag);
+			AnalogVideoFilter test_filter;
+			AnalogVideoFilter::Options dev_opts = {};
+			dev_opts.cable = test.cable;
+			dev_opts.system = test.system;
+			test_filter.init(device, dev_opts);
+			AnalogVideoFilter::FilterOptions opts = {};
+			opts.input_sampling_rate_mhz = 13.5f;
+			opts.line_comb = test.comb;
+			opts.skip_notch = test.skip_notch;
+			test_filter.run_filter(*cmd, test_image->get_view(), opts);
+			cmd->end_region();
+		}
+
+		Fence fence;
+		device.submit(cmd, &fence);
+
+		if (rdoc)
+		{
+			device.end_renderdoc_capture();
+			request_shutdown();
 		}
 	}
-#endif
+
+	uint32_t frame_multiplier = 1;
+	uint32_t frame_multiplier_phase = 1;
 
 	void render_frame(double, double)
 	{
@@ -317,6 +452,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		}
 		auto &wsi = get_wsi();
 		auto &device = wsi.get_device();
+
+		test_filter();
 
 		if (capture_count == NumCaptureFrames && has_renderdoc_capture)
 		{
@@ -330,9 +467,9 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		bool empty_vsync = false;
 
-		if (mode != IterationMode::Pause && !is_eof)
+		if (frame_multiplier_phase >= frame_multiplier && mode != IterationMode::Pause && !is_eof)
 		{
-			if (parser.iterate_until_vsync())
+			if (parser.iterate_until_vsync(false, true))
 			{
 				vsync = parser.consume_vsync_result();
 				auto flush_stats = iface->consume_flush_stats();
@@ -350,22 +487,116 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 					empty_vsync = true;
 
 				vsync_index++;
+				frame_multiplier_phase = 0;
 			}
 			else
 				is_eof = true;
 		}
 
+		if (mode == IterationMode::Pause)
+			frame_multiplier_phase = 0;
+
+#if 1
+		wsi.set_enable_timing_feedback(true);
+
+		RefreshRateInfo refresh_info;
+		if (wsi.get_refresh_rate_info(refresh_info) && refresh_info.refresh_duration)
+		{
+			float fps = vsync.mode_height == 240 || vsync.mode_height == 480 ? 59.94f : 50.0f;
+
+			// If monitor is over 100 Hz it's probably VRR.
+			bool force_vrr = false;
+
+			uint64_t target_period_ns = 1000000000ull / fps;
+
+			if (refresh_info.mode != RefreshMode::VRR)
+			{
+				uint64_t interval = refresh_info.refresh_duration;
+
+				// Try to align with monitor refresh rate if we're close enough.
+				// If we cannot snap to a specific cycle we have to assume free-flowing relative timing.
+				uint64_t alignment = target_period_ns % interval;
+				if (alignment + interval / 256 >= interval || alignment <= interval / 256)
+				{
+					frame_multiplier = (target_period_ns + interval / 2) / interval;
+					target_period_ns = interval;
+				}
+				else
+				{
+					// If we know we have VRR we can go to town with high refresh rate framegen.
+					frame_multiplier = target_period_ns / refresh_info.refresh_duration;
+					// Every individual frame should be paced at a fraction of intended refresh.
+					target_period_ns = target_period_ns / frame_multiplier;
+					force_vrr = true;
+				}
+			}
+			else
+			{
+				// If we know we have VRR we can go to town with high refresh rate framegen.
+				frame_multiplier = target_period_ns / refresh_info.refresh_duration;
+
+				// Every individual frame should be paced at a fraction of intended refresh.
+				target_period_ns = target_period_ns / frame_multiplier;
+			}
+
+			if (frame_multiplier > 1)
+			{
+				wsi.set_frame_duplication_aware(true, 10);
+				wsi.set_present_wait_latency(2);
+			}
+
+			wsi.set_target_presentation_time(0, target_period_ns, force_vrr);
+		}
+#endif
+
 		//read_page_memory();
 
 		auto cmd = device.request_command_buffer();
+		//if (vsync.image)
+		//	render_fsr(*cmd, vsync.image->get_view());
+
+		CRTFilter::FilterOptions crt_opts = {};
+		crt_opts.hdr10 = get_wsi().get_backbuffer_color_space() == VK_COLOR_SPACE_HDR10_ST2084_EXT;
+		crt_opts.phase = vsync.interlace_phase;
+		crt_opts.phosphor_primaries = filter.get_options().system == AnalogVideoFilter::System::PAL
+										  ? CRTFilter::Primaries::BT601_625
+										  : CRTFilter::Primaries::BT601_525;
+		crt_opts.progressive = !vsync.interlaced;
+		crt_opts.feedback = 0.5f;
+		crt_opts.input_strength = frame_multiplier_phase == 0 ? 1.0f : 0.0f;
+		crt_opts.hdr10_target_max_cll = SDRScale;
+		crt_opts.hdr10_target_paper_white = 0.75f * SDRScale;
+
+		crt_opts.input_rect = { 0.1f, 0.05f, 0.8f, 0.9f };
+
+		if (frame_multiplier_phase)
+			wsi.set_next_present_is_duplicated();
+
 		if (vsync.image)
-			render_fsr(*cmd, vsync.image->get_view());
+		{
+			AnalogVideoFilter::FilterOptions opts = {};
+			opts.phase = vsync.interlace_phase;
+			opts.input_sampling_rate_mhz = 13.5f * float(vsync.image->get_width()) / 640.0f;
+			opts.line_comb = true;
+			opts.skip_notch = false;
+			filter.run_filter(*cmd, vsync.image->get_view(), opts);
+
+			crt_filter.run_filter_prepass(*cmd, filter.get_output(), crt_opts,
+			                              device.get_swapchain_view().get_view_width(),
+			                              device.get_swapchain_view().get_view_height());
+		}
 
 		cmd->begin_render_pass(device.get_swapchain_render_pass(SwapchainRenderPass::Depth));
 
 		if (vsync.image)
-			render_rcas(*cmd, fsr_render_target->get_view());
+		{
+			//render_rcas(*cmd, fsr_render_target->get_view());
+			crt_filter.run_filter_encode(*cmd, crt_opts);
+		}
 
+		frame_multiplier_phase++;
+
+#if 1
 		flat_renderer.begin();
 
 		vec2 ui_offset = vec2(cmd->get_viewport().width - 105.0f, 5.0f);
@@ -387,10 +618,16 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		else if (mode == IterationMode::Pause)
 			render_text("Paused", ui_offset + vec2(0.0f, 60.0f), vec2(100.0f, 30.0f));
 
+		auto color_space = get_wsi().get_backbuffer_color_space();
+		if (color_space == VK_COLOR_SPACE_HDR10_ST2084_EXT)
+			render_text("HDR", ui_offset + vec2(0.0f, 90.0f), vec2(100.0f, 30.0f));
+		else
+			render_text("SDR", ui_offset + vec2(0.0f, 90.0f), vec2(100.0f, 30.0f));
+
 		const vec2 SIZE = vec2(100.0f, 30.0f);
 		const vec2 LARGE_SIZE = vec2(150.0f, 30.0f);
 
-		ui_offset = vec2(cmd->get_viewport().width - 105.0f, 100.0f);
+		ui_offset = vec2(cmd->get_viewport().width - 105.0f, 130.0f);
 		render_text("RP %u", ui_offset, SIZE, stats.num_render_passes);
 		ui_offset.y += 30.0f;
 		render_text("CLUT %u", ui_offset, SIZE, stats.num_palette_updates);
@@ -420,6 +657,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		            timestamp_stats[int(TimestampType::Shading)]);
 
 		flat_renderer.flush(*cmd, vec3(0.0f), vec3(cmd->get_viewport().width, cmd->get_viewport().height, 1.0f));
+#endif
+
 		cmd->end_render_pass();
 		device.submit(cmd);
 

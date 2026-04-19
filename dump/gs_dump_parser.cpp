@@ -134,7 +134,7 @@ void GSDumpParser::read_register_state()
 	}
 }
 
-bool GSDumpParser::iterate_until_vsync(bool high_res_scanout)
+bool GSDumpParser::iterate_until_vsync(bool high_res_scanout, bool conservative_crtc)
 {
 	if (!file)
 		return false;
@@ -168,13 +168,24 @@ bool GSDumpParser::iterate_until_vsync(bool high_res_scanout)
 			vsync.dst_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
 			vsync.dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 			vsync.dst_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-			vsync.high_resolution_scanout = high_res_scanout;
-			vsync.force_progressive = true;
-			vsync.anti_blur = true;
-			vsync.overscan = false;
+			vsync.adapt_to_internal_horizontal_resolution = true;
+
+			if (conservative_crtc)
+			{
+				vsync.skip_deinterlace = true;
+				vsync.crtc_offsets = true;
+				vsync.overscan = true;
+			}
+			else
+			{
+				vsync.high_resolution_scanout = high_res_scanout;
+				vsync.force_progressive = true;
+				vsync.anti_blur = true;
+			}
+
 			iface->flush();
 			vsync_result = iface->vsync(vsync);
-			if (has_transfer)
+			if (has_transfer || conservative_crtc)
 				return true;
 			break;
 		}

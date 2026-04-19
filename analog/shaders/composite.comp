@@ -1,0 +1,448 @@
+#version 450
+
+// SPDX-FileCopyrightText: 2026 Arntzen Software AS
+// SPDX-FileContributor: Hans-Kristian Arntzen
+// SPDX-License-Identifier: LGPL-3.0+
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) uniform texture2D Inputs2D;
+layout(set = 0, binding = 1) uniform texture1DArray Inputs1D;
+layout(set = 0, binding = 2) writeonly uniform image1DArray Outputs1D;
+layout(set = 0, binding = 3) writeonly uniform image2D Outputs2D;
+layout(set = 0, binding = 4) uniform texture1DArray InputChromaEstimate;
+
+#include "filters.h"
+
+const float PI = 3.14159265359;
+
+const int PASS_DOWNSAMPLE = 0;
+const int PASS_ENCODE = 1;
+const int PASS_DECODE = 2;
+const int PASS_BANDPASS = 3;
+const int PASS_SEPARATION = 4;
+
+const int CABLE_COMPOSITE = 0;
+const int CABLE_SVIDEO = 1;
+const int CABLE_COMPONENT = 2;
+
+layout(constant_id = 0) const int PassIndex = 0;
+layout(constant_id = 1) const bool PAL = false;
+layout(constant_id = 2) const int CABLE = 0;
+layout(constant_id = 3) const bool COMB = false;
+layout(constant_id = 4) const bool SKIP_NOTCH = false;
+
+const bool SVIDEO = CABLE == CABLE_SVIDEO;
+const bool YPBPR = CABLE == CABLE_COMPONENT;
+
+const int PaddingTaps = 32;
+const uint SharedInputSize = gl_WorkGroupSize.x + PaddingTaps;
+
+shared uint shared_loaded0[SharedInputSize];
+shared uint shared_loaded1[SharedInputSize];
+
+layout(push_constant) uniform Registers
+{
+    int input_offset;
+    int output_offset;
+    float subcarrier_phases_per_pixel;
+    float subcarrier_phases_per_line;
+    float subcarrier_phase_offset;
+    float input_horiz_scale;
+    int line_phase;
+    int height;
+} registers;
+
+vec3 decode_yuv(vec3 yuv)
+{
+    if (PAL || YPBPR)
+    {
+		const mat3 yuv_to_rgb = mat3(vec3(1.0, 1.0, 1.0), vec3(0.0, -0.39465, 2.0321), vec3(1.1398, -0.58059, 0.0));
+        return yuv_to_rgb * yuv;
+    }
+    else
+    {
+        const mat3 yiq_to_rgb = mat3(vec3(1.0, 1.0, 1.0), vec3(0.9469, -0.2748, -1.1), vec3(0.6236, -0.6357, 1.7));
+        return yiq_to_rgb * yuv;
+    }
+}
+
+vec3 encode_yuv(vec3 rgb)
+{
+    if (PAL || YPBPR) // Doesn't really matter which formulation we use here for YPbPr since there is no modulation, but should be BT.601.
+    {
+        const mat3 rgb_to_yuv = mat3(vec3(0.299, -0.14713, 0.615), vec3(0.587, -0.28886, -0.51499), vec3(0.114, 0.436, -0.10001));
+        vec3 result = rgb_to_yuv * rgb;
+        return result;
+    }
+    else
+    {
+        // Technically NTSC uses YUV too. YIQ is rotated from YUV when modulating.
+        // It matters when I and Q use different bandwidth, but based on what I have read,
+        // composite video encoders don't bother with that, that was mostly a broadcast thing.
+        const mat3 rgb_to_yiq = mat3(vec3(0.3, 0.599, 0.213), vec3(0.59, -0.2773, -0.5251), vec3(0.11, -0.3217, 0.3121));
+        return rgb_to_yiq * rgb;
+    }
+}
+
+// Configures how composite signal maps to voltage.
+// Not very interesting for us, but allows us to validate that we're compliant with standard color bar patterns,
+// since they are defined in terms of IRE.
+
+float encode_ire(float v)
+{
+#if 0
+    if (PAL)
+        v *= 100.0;
+    else
+        v = 7.5 + (100.0 - 7.5) * v; // NTSC-J is supposed to use 0 IRE for black level.
+#endif
+
+    return v;
+}
+
+float decode_ire(float v)
+{
+#if 0
+    if (PAL)
+        v /= 100.0;
+    else
+        v = (v - 7.5) / (100.0 - 7.5); // NTSC-J is supposed to use 0 IRE for black level.
+#endif
+
+    return v;
+}
+
+float get_qam_phase(int coord, int line_offset)
+{
+    return float(coord) * registers.subcarrier_phases_per_pixel +
+        float(int(gl_WorkGroupID.y) + line_offset) * registers.subcarrier_phases_per_line +
+        registers.subcarrier_phase_offset;
+}
+
+float compute_qam_phase(int coord, int line_offset)
+{
+    return 2.0 * PI * fract(get_qam_phase(coord, line_offset));
+}
+
+int scale_horiz_coord(int x)
+{
+    return int(floor((float(x) + 0.5) * registers.input_horiz_scale));
+}
+
+void chroma_separation_pal()
+{
+    const float horiz_filter[5] = float[](-0.2602, -0.2398, 1.0, -0.2398, -0.2602);
+    const float vert_filter[3] = float[](-0.5, 1, -0.5);
+
+    int coord = int(gl_GlobalInvocationID.x);
+    float estimate = 0.0;
+
+    // A bit more complicated.
+
+    [[unroll]]
+    for (int y = -1; y <= 1; y++)
+    {
+        float line = 0.0;
+
+        if (y <= 0 || (int(gl_WorkGroupID.y) + 1 < registers.height))
+        {
+            [[unroll]]
+            for (int x = -2; x <= 2; x++)
+            {
+                float pix = decode_ire(texelFetch(Inputs1D, ivec2(coord + x, int(gl_WorkGroupID.y) + y), 0).x);
+                line += horiz_filter[x + 2] * pix;
+            }
+
+            estimate += vert_filter[y + 1] * line;
+        }
+    }
+
+    imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), vec4(encode_ire(estimate)));
+}
+
+void chroma_separation_ntsc()
+{
+    int coord = int(gl_GlobalInvocationID.x);
+    float line0 = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x);
+    float line1 = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y + 0), 0).x);
+
+    float line2 = 0.0;
+    if (int(gl_WorkGroupID.y) + 1 < registers.height)
+        line2 = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y + 1), 0).x);
+
+    float estimate = 0.5 * (line1 - 0.5 * (line2 + line0));
+    imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), vec4(encode_ire(estimate)));
+}
+
+uint pack10_rgb(vec3 rgb)
+{
+    uvec3 scaled = uvec3(rgb * 1023.0 + 0.5);
+    return scaled.x | (scaled.y << 10) | (scaled.z << 20);
+}
+
+vec3 unpack10_rgb(uint v)
+{
+    return vec3((uvec3(v) >> uvec3(0, 10, 20)) & 0x3ffu) / 1023.0;
+}
+
+void load_inputs()
+{
+    uint global_base_coord = gl_WorkGroupID.x * gl_WorkGroupSize.x;
+
+    if (PassIndex == PASS_DOWNSAMPLE)
+    {
+        // Sample and decimate.
+        for (uint i = gl_LocalInvocationIndex; i < SharedInputSize; i += gl_WorkGroupSize.x)
+        {
+            int coord_even = scale_horiz_coord(2 * int(global_base_coord + i) + 0 + registers.input_offset);
+            int coord_odd = scale_horiz_coord(2 * int(global_base_coord + i) + 1 + registers.input_offset);
+            vec3 even = texelFetch(Inputs2D, ivec2(coord_even, gl_WorkGroupID.y), 0).rgb;
+            vec3 odd = texelFetch(Inputs2D, ivec2(coord_odd, gl_WorkGroupID.y), 0).rgb;
+            shared_loaded0[i] = pack10_rgb(even);
+            shared_loaded1[i] = pack10_rgb(odd);
+        }
+    }
+    else if (PassIndex == PASS_ENCODE)
+    {
+        for (uint i = gl_LocalInvocationIndex; i < SharedInputSize; i += gl_WorkGroupSize.x)
+        {
+            int coord = int(global_base_coord + i) + registers.input_offset;
+            vec3 v = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).rgb;
+            v = encode_yuv(v);
+            shared_loaded0[i] = floatBitsToUint(v.x);
+            shared_loaded1[i] = packHalf2x16(v.yz);
+        }
+    }
+    else if (PassIndex == PASS_BANDPASS)
+    {
+        for (uint i = gl_LocalInvocationIndex; i < SharedInputSize; i += gl_WorkGroupSize.x)
+        {
+            int coord = int(global_base_coord + i) + registers.input_offset;
+            float v = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x;
+            shared_loaded0[i] = floatBitsToUint(v);
+        }
+    }
+    else if (PassIndex == PASS_DECODE)
+    {
+        for (uint i = gl_LocalInvocationIndex; i < SharedInputSize; i += gl_WorkGroupSize.x)
+        {
+            int coord = int(global_base_coord + i) + registers.input_offset;
+            float phase = compute_qam_phase(coord, 0);
+
+            vec3 yuv;
+
+            float c = cos(phase);
+            float s = sin(phase);
+
+            if (PAL)
+            {
+                // V flips polarity every line. V is modulated by cos carrier.
+                if (((int(gl_WorkGroupID.y) + registers.line_phase) & 1u) != 0u)
+                    c = -c;
+            }
+
+            if (SVIDEO)
+            {
+                // For convenience the render target is encoded as (Y + C, C)
+                // to be able to read both when debugging and validate separation error.
+                vec2 svideo = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).xy;
+                svideo.x = decode_ire(svideo.x);
+                svideo.y = decode_ire(svideo.y);
+
+                if (PAL)
+                    yuv = vec3(svideo.x - svideo.y, s * svideo.y, c * svideo.y);
+                else
+                    yuv = vec3(svideo.x - svideo.y, c * svideo.y, s * svideo.y);
+            }
+            else if (COMB)
+            {
+                float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
+                float chroma_est = decode_ire(texelFetch(InputChromaEstimate, ivec2(coord, gl_WorkGroupID.y), 0).x);
+
+                if (PAL)
+                    yuv = vec3(composite - chroma_est, s * chroma_est, c * chroma_est);
+                else
+                    yuv = vec3(composite - chroma_est, c * chroma_est, s * chroma_est);
+            }
+            else
+            {
+                float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
+                if (PAL)
+                    yuv = vec3(composite, s * composite, c * composite);
+                else
+                    yuv = vec3(composite, c * composite, s * composite);
+            }
+
+            shared_loaded0[i] = floatBitsToUint(yuv.x);
+            shared_loaded1[i] = packHalf2x16(yuv.yz);
+        }
+    }
+
+    barrier();
+}
+
+// Downsample 56 MHz to 27 MHz.
+void filter_pass_downsample(float kernel[16])
+{
+    uint local_index = gl_LocalInvocationIndex;
+    vec3 filtered = vec3(0.0);
+
+    // 15-tap FIR.
+    [[unroll]]
+    for (int i = 0; i < 8; i++)
+    {
+        vec3 even = unpack10_rgb(shared_loaded0[local_index + i]);
+        vec3 odd = unpack10_rgb(shared_loaded1[local_index + i]);
+        // Convolution happens in opposite order so array order is kinda flipped.
+        // However, our kernels are symmetric, so it's whatever.
+        filtered += kernel[2 * i + 1] * even;
+        filtered += kernel[2 * i + 0] * odd;
+    }
+
+    imageStore(Outputs1D, ivec2(int(gl_GlobalInvocationID.x) + registers.output_offset, gl_WorkGroupID.y), vec4(filtered, 0.0));
+}
+
+void filter_pass_bandpass(float kernel[31])
+{
+    uint local_index = gl_LocalInvocationIndex;
+    float filtered = 0.0;
+
+    // 31-tap FIR.
+    [[unroll]]
+    for (int i = 0; i < 31; i++)
+    {
+        float composite = uintBitsToFloat(shared_loaded0[local_index + i]);
+        filtered += kernel[i] * composite;
+    }
+
+    imageStore(Outputs1D, ivec2(int(gl_GlobalInvocationID.x) + registers.output_offset, gl_WorkGroupID.y), vec4(filtered));
+}
+
+// In 27 MHz domain. Easier this way.
+void filter_pass_encode(float luma_kernel[31], float chroma_kernel[31])
+{
+    uint local_index = gl_LocalInvocationIndex;
+    vec3 filtered = vec3(0.0);
+
+    // 31-tap FIR.
+    [[unroll]]
+    for (int i = 0; i < 31; i++)
+    {
+        vec3 yuv = vec3(uintBitsToFloat(shared_loaded0[local_index + i]), unpackHalf2x16(shared_loaded1[local_index + i]));
+        filtered.x += luma_kernel[i] * yuv.x;
+        filtered.yz += chroma_kernel[i] * yuv.yz;
+    }
+
+    int coord = int(gl_GlobalInvocationID.x + registers.output_offset);
+
+    if (YPBPR)
+    {
+        imageStore(Outputs2D, ivec2(coord, gl_WorkGroupID.y), vec4(decode_yuv(filtered), 0.0));
+    }
+    else
+    {
+        float phase = compute_qam_phase(coord, 0);
+
+        float c = cos(phase);
+        float s = sin(phase);
+
+        // V flips polarity every line. V is modulated by cos carrier.
+        if (PAL && ((gl_WorkGroupID.y + registers.line_phase) & 1u) != 0u)
+            c = -c;
+
+        float qam;
+
+        if (PAL)
+            qam = s * filtered.y + c * filtered.z;
+        else
+            qam = c * filtered.y + s * filtered.z;
+
+        // Generate composite signal and its constituents (for e.g. S-Video).
+        vec2 composite;
+        composite.x = encode_ire(filtered.x + qam);
+        composite.y = encode_ire(qam);
+
+        imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), composite.xyxy);
+    }
+}
+
+void filter_pass_decode(float luma_kernel[31], float chroma_kernel[31])
+{
+    uint local_index = gl_LocalInvocationIndex;
+    vec3 filtered = vec3(0.0);
+
+    [[unroll]]
+    for (int i = 0; i < 31; i++)
+    {
+        vec3 yuv = vec3(uintBitsToFloat(shared_loaded0[local_index + i]), unpackHalf2x16(shared_loaded1[local_index + i]));
+        filtered.x += luma_kernel[i] * yuv.x;
+        filtered.yz += (2.0 * chroma_kernel[i]) * yuv.yz;
+    }
+
+    filtered = decode_yuv(filtered);
+    int coord = int(gl_GlobalInvocationID.x + registers.output_offset);
+    imageStore(Outputs2D, ivec2(coord, gl_WorkGroupID.y), vec4(filtered, 0.0));
+}
+
+void main()
+{
+    if (PassIndex == PASS_SEPARATION)
+    {
+        if (PAL)
+            chroma_separation_pal();
+        else
+            chroma_separation_ntsc();
+    }
+    else
+    {
+        load_inputs();
+
+        if (YPBPR)
+        {
+            if (PassIndex == PASS_DOWNSAMPLE)
+                filter_pass_downsample(DownsamplingKernelYPbPr);
+            else
+                filter_pass_encode(LumaEncodeYPbPr, ChromaEncodeYPbPr);
+
+            // No modulation or demodulation or that junk.
+        }
+        else if (PAL)
+        {
+            if (PassIndex == PASS_DOWNSAMPLE)
+                filter_pass_downsample(DownsamplingKernelPAL);
+            else if (PassIndex == PASS_ENCODE)
+                filter_pass_encode(LumaEncodePAL, ChromaEncodePAL);
+            else if (PassIndex == PASS_DECODE)
+            {
+                // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
+                if (SVIDEO || SKIP_NOTCH)
+                    filter_pass_decode(LumaEncodePAL, ChromaDecodePAL);
+                else
+                    filter_pass_decode(LumaDecodePAL, ChromaDecodePAL);
+            }
+            else if (PassIndex == PASS_BANDPASS)
+                filter_pass_bandpass(ChromaBandpassPAL);
+        }
+        else
+        {
+            if (PassIndex == PASS_DOWNSAMPLE)
+                filter_pass_downsample(DownsamplingKernelNTSC);
+            else if (PassIndex == PASS_ENCODE)
+                filter_pass_encode(LumaEncodeNTSC, ChromaEncodeNTSC);
+            else if (PassIndex == PASS_DECODE)
+            {
+                // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
+                if (SVIDEO || SKIP_NOTCH)
+                    filter_pass_decode(LumaEncodeNTSC, ChromaDecodeNTSC);
+                else
+                    filter_pass_decode(LumaDecodeNTSC, ChromaDecodeNTSC);
+            }
+            else if (PassIndex == PASS_BANDPASS)
+                filter_pass_bandpass(ChromaBandpassNTSC);
+        }
+    }
+}
