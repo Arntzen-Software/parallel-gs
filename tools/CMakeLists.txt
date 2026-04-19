@@ -16,5 +16,7 @@ granite_install_executable(parallel-gs-replayer)
 granite_install_executable(parallel-gs-stream)
 granite_install_executable(parallel-gs-repro)
 
+target_compile_definitions(parallel-gs-stream PRIVATE PRIVATE ASSET_DIRECTORY=\"${CMAKE_CURRENT_SOURCE_DIR}/assets\")
+
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/assets DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../Granite/assets DESTINATION ${CMAKE_INSTALL_BINDIR}/builtin)

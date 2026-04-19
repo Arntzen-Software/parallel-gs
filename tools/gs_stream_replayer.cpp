@@ -15,6 +15,10 @@
 #include "hash.hpp"
 #include <string.h>
 
+#include "muglm/matrix_helper.hpp"
+#include "transforms.hpp"
+#include "math.hpp"
+
 using namespace Granite;
 using namespace Vulkan;
 
@@ -59,6 +63,22 @@ static void FsrRcasCon(float *con, float sharpness)
 	con[3] = 0.0f;
 }
 
+static const Primaries bt709 = {
+	{ 0.640f, 0.330f },
+	{ 0.300f, 0.600f },
+	{ 0.150f, 0.060f },
+	{ 0.3127f, 0.3290f },
+};
+
+static const Primaries bt2020 = {
+	{ 0.708f, 0.292f },
+	{ 0.170f, 0.797f },
+	{ 0.131f, 0.046f },
+	{ 0.3127f, 0.3290f },
+};
+
+static constexpr float SDRScale = 800.0f;
+
 namespace ParallelGS
 {
 struct StreamApplication : Granite::Application, Granite::EventHandler
@@ -69,7 +89,12 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		EVENT_MANAGER_REGISTER_LATCH(StreamApplication, on_device_created, on_device_destroyed, DeviceCreatedEvent);
 		EVENT_MANAGER_REGISTER_LATCH(StreamApplication, on_swapchain_created, on_swapchain_destroyed, SwapchainParameterEvent);
 		EVENT_MANAGER_REGISTER(StreamApplication, on_key_pressed, KeyboardEvent);
-		get_wsi().set_backbuffer_format(BackbufferFormat::sRGB);
+		get_wsi().set_backbuffer_format(BackbufferFormat::UNORM);
+
+		auto meta = get_wsi().get_hdr_metadata();
+		meta.maxContentLightLevel = SDRScale;
+		// The rest can be left undefined.
+		get_wsi().set_hdr_metadata(meta);
 	}
 
 	std::unique_ptr<GSInterface> iface;
@@ -90,6 +115,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 	bool has_renderdoc_capture = false;
 	uint32_t capture_count = 0;
 	DebugMode::DrawDebugMode draw_mode = DebugMode::DrawDebugMode::None;
+	bool hdr = false;
 
 	enum { NumCaptureFrames = 4 };
 
@@ -138,6 +164,11 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			iface->set_super_sampling_rate(SuperSampling::X16, true, false);
 		else if (e.get_key() == Key::M)
 			get_wsi().set_present_mode(get_wsi().get_present_mode() == PresentMode::SyncToVBlank ? PresentMode::UnlockedMaybeTear : PresentMode::SyncToVBlank);
+		else if (e.get_key() == Key::H)
+		{
+			hdr = !hdr;
+			get_wsi().set_backbuffer_format(hdr ? BackbufferFormat::HDR10 : BackbufferFormat::UNORM);
+		}
 
 		return true;
 	}
@@ -263,6 +294,48 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	}
 
+	void render_dummy(CommandBuffer &cmd, const ImageView &view)
+	{
+		cmd.set_opaque_sprite_state();
+		cmd.set_depth_test(false, false);
+		cmd.set_program("assets://blit.vert", "assets://blit.frag");
+		cmd.set_specialization_constant_mask(1);
+		cmd.set_specialization_constant(0, get_wsi().get_backbuffer_color_space() == VK_COLOR_SPACE_HDR10_ST2084_EXT);
+		cmd.set_srgb_texture(0, 0, view);
+
+		mat3 output_transform = inverse(compute_xyz_matrix(bt2020));
+		mat3 input_transform = compute_xyz_matrix(bt709);
+		mat3 conv = output_transform * input_transform;
+		float sdr_scale = SDRScale;
+
+		auto *primary_transform = cmd.allocate_typed_constant_data<vec4>(0, 1, 3);
+		primary_transform[0] = vec4(sdr_scale * conv[0], 0.0f);
+		primary_transform[1] = vec4(sdr_scale * conv[1], 0.0f);
+		primary_transform[2] = vec4(sdr_scale * conv[2], 0.0f);
+
+		struct
+		{
+			vec4 input_sizes;
+			vec4 output_sizes;
+		} push = {};
+
+		push.input_sizes = vec4(
+			float(view.get_view_width()),
+			float(view.get_view_height()),
+			1.0f / float(view.get_view_width()),
+			1.0f / float(view.get_view_height()));
+
+		push.output_sizes = vec4(
+			cmd.get_viewport().width,
+			cmd.get_viewport().height,
+			1.0f / cmd.get_viewport().width,
+			1.0f / cmd.get_viewport().height);
+
+		cmd.push_constants(&push, 0, sizeof(push));
+
+		cmd.draw(3);
+	}
+
 	void render_rcas(CommandBuffer &cmd, const ImageView &view)
 	{
 		struct Constants
@@ -358,14 +431,18 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		//read_page_memory();
 
 		auto cmd = device.request_command_buffer();
-		if (vsync.image)
-			render_fsr(*cmd, vsync.image->get_view());
+		//if (vsync.image)
+		//	render_fsr(*cmd, vsync.image->get_view());
 
 		cmd->begin_render_pass(device.get_swapchain_render_pass(SwapchainRenderPass::Depth));
 
 		if (vsync.image)
-			render_rcas(*cmd, fsr_render_target->get_view());
+		{
+			//render_rcas(*cmd, fsr_render_target->get_view());
+			render_dummy(*cmd, vsync.image->get_view());
+		}
 
+#if 0
 		flat_renderer.begin();
 
 		vec2 ui_offset = vec2(cmd->get_viewport().width - 105.0f, 5.0f);
@@ -387,10 +464,16 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		else if (mode == IterationMode::Pause)
 			render_text("Paused", ui_offset + vec2(0.0f, 60.0f), vec2(100.0f, 30.0f));
 
+		auto color_space = get_wsi().get_backbuffer_color_space();
+		if (color_space == VK_COLOR_SPACE_HDR10_ST2084_EXT)
+			render_text("HDR", ui_offset + vec2(0.0f, 90.0f), vec2(100.0f, 30.0f));
+		else
+			render_text("SDR", ui_offset + vec2(0.0f, 90.0f), vec2(100.0f, 30.0f));
+
 		const vec2 SIZE = vec2(100.0f, 30.0f);
 		const vec2 LARGE_SIZE = vec2(150.0f, 30.0f);
 
-		ui_offset = vec2(cmd->get_viewport().width - 105.0f, 100.0f);
+		ui_offset = vec2(cmd->get_viewport().width - 105.0f, 130.0f);
 		render_text("RP %u", ui_offset, SIZE, stats.num_render_passes);
 		ui_offset.y += 30.0f;
 		render_text("CLUT %u", ui_offset, SIZE, stats.num_palette_updates);
@@ -420,6 +503,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		            timestamp_stats[int(TimestampType::Shading)]);
 
 		flat_renderer.flush(*cmd, vec3(0.0f), vec3(cmd->get_viewport().width, cmd->get_viewport().height, 1.0f));
+#endif
+
 		cmd->end_render_pass();
 		device.submit(cmd);
 
