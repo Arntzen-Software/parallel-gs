@@ -65,10 +65,28 @@ vec3 encode_pq(vec3 nits)
     return n;
 }
 
+vec3 grille(vec3 color, vec2 pos)
+{
+    vec3 mask = vec3(0.25);
+    pos.x += (pos.y - 0.01) * 3.0;
+    pos.x = fract(pos.x / 6.0);
+
+    if (pos.x < 0.333)
+        mask.r = 1.5;
+    else if (pos.x < 0.666)
+        mask.g = 1.5;
+    else
+        mask.b = 1.5;
+
+    return color * mask;
+}
+
 void main()
 {
     vec2 input_coord = vUV * input_size;
-    FragColor = sample_scan(input_coord * 0.25);
+    FragColor = sample_scan(input_coord);
+
+    FragColor = grille(FragColor, vUV * output_size);
 
     if (HDR10)
         FragColor = encode_pq(primary_transform * FragColor);

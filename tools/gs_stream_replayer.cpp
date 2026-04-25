@@ -381,6 +381,70 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 	}
 #endif
 
+	void test_filter()
+	{
+		auto &wsi = get_wsi();
+		auto &device = wsi.get_device();
+
+		bool rdoc = Device::init_renderdoc_capture();
+		if (rdoc)
+			device.begin_renderdoc_capture();
+
+		auto cmd = device.request_command_buffer();
+
+		const float test_input[] = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+		BufferCreateInfo bufinfo = {};
+		bufinfo.usage = VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
+		bufinfo.domain = BufferDomain::Device;
+		bufinfo.size = sizeof(test_input);
+		auto inputs = device.create_buffer(bufinfo, test_input);
+		bufinfo.usage = VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
+		bufinfo.domain = BufferDomain::CachedHost;
+		bufinfo.size = 64 * sizeof(float);
+		bufinfo.misc = BUFFER_MISC_ZERO_INITIALIZE_BIT;
+		auto outputs = device.create_buffer(bufinfo);
+
+		BufferViewCreateInfo view_info = {};
+		view_info.buffer = inputs.get();
+		view_info.format = VK_FORMAT_R32_SFLOAT;
+		view_info.offset = 0;
+		view_info.range = VK_WHOLE_SIZE;
+		auto input_view = device.create_buffer_view(view_info);
+		view_info.buffer = outputs.get();
+		auto output_view = device.create_buffer_view(view_info);
+
+		struct
+		{
+			int32_t input_offset;
+			int32_t output_offset;
+			float subcarrier_phases_per_pixel;
+			float eotf_gamma;
+		} push = {};
+		push.input_offset = -14;
+		cmd->push_constants(&push, 0, sizeof(push));
+
+		cmd->set_program("assets://composite.comp");
+		cmd->set_specialization_constant_mask(0x1);
+		cmd->set_specialization_constant(0, 0);
+		cmd->set_buffer_view(0, 0, *input_view);
+		cmd->set_storage_buffer_view(0, 1, *output_view);
+		cmd->dispatch(1, 1, 1);
+		cmd->barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		             VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+
+		Fence fence;
+		device.submit(cmd, &fence);
+		fence->wait();
+
+		auto *ptr = static_cast<const float *>(device.map_host_buffer(*outputs, MEMORY_ACCESS_READ_BIT));
+		for (int i = 0; i < 64; i++)
+			LOGI("Value %u = %f\n", i, ptr[i]);
+
+		if (rdoc)
+			device.end_renderdoc_capture();
+		exit(0);
+	}
+
 	void render_frame(double, double)
 	{
 		if (!iface)
@@ -430,6 +494,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		//read_page_memory();
 
+		test_filter();
+
 		auto cmd = device.request_command_buffer();
 		//if (vsync.image)
 		//	render_fsr(*cmd, vsync.image->get_view());
@@ -442,7 +508,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			render_dummy(*cmd, vsync.image->get_view());
 		}
 
-#if 0
+#if 1
 		flat_renderer.begin();
 
 		vec2 ui_offset = vec2(cmd->get_viewport().width - 105.0f, 5.0f);
