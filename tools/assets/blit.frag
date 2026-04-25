@@ -3,7 +3,7 @@
 
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec3 FragColor;
-layout(set = 0, binding = 0) uniform texture2D uSampler;
+layout(set = 0, binding = 0) uniform sampler2D uSampler;
 
 layout(push_constant) uniform Registers
 {
@@ -21,33 +21,29 @@ const float VertFactor = 4.0;
 
 layout(constant_id = 0) const bool HDR10 = false;
 
-void accumulate(vec3 sampled, inout vec3 color, inout float w, int x, int y, vec2 phase)
+void accumulate(vec3 sampled, inout vec3 color, int y, float phase)
 {
-    phase.x -= float(x);
-    phase.y -= float(y);
-    float horiz_weight = exp2(abs(phase.x) * -HorizFactor);
-    float vert_weight = exp2(abs(phase.y) * -VertFactor);
-    color += sampled * horiz_weight * vert_weight;
-    w += horiz_weight;
+    phase -= float(y);
+    float vert_weight = exp2(abs(phase) * -VertFactor);
+    color += sampled * vert_weight;
 }
 
 vec3 sample_scan(vec2 coord)
 {
-    vec2 floor_coord = floor(coord);
-    vec2 phase = (coord - floor_coord) - 0.5;
-    ivec2 icoord = ivec2(floor_coord);
+    float input_coord_y = coord.y * input_size.y;
+    float floor_coord_y = floor(input_coord_y);
+    float phase = (input_coord_y - floor_coord_y) - 0.5;
+    coord.y = (floor_coord_y + 0.5) * inv_input_size.y;
 
-    vec3 color = vec3(0.0);
-    float w = 0.0;
     vec3 sampled;
+    vec3 color = vec3(0.0);
 
-#define STEP(x, y) sampled = texelFetchOffset(uSampler, icoord, 0, ivec2(x, y)).rgb; accumulate(sampled, color, w, x, y, phase)
-#define STEP_HORIZ(y) STEP(-3, y); STEP(-2, y); STEP(-1, y); STEP(0, y); STEP(+1, y); STEP(+2, y); STEP(+3, y)
-    STEP_HORIZ(-1);
-    STEP_HORIZ(+0);
-    STEP_HORIZ(+1);
+#define STEP(y) sampled = pow(textureLodOffset(uSampler, coord, 0, ivec2(0, y)).rgb, vec3(2.4)); accumulate(sampled, color, y, phase)
+    STEP(-1);
+    STEP(+0);
+    STEP(+1);
 
-    return color / w;
+    return color;
 }
 
 vec3 encode_pq(vec3 nits)
@@ -67,7 +63,7 @@ vec3 encode_pq(vec3 nits)
 
 vec3 grille(vec3 color, vec2 pos)
 {
-    vec3 mask = vec3(0.25);
+    vec3 mask = vec3(0.5);
     pos.x += (pos.y - 0.01) * 3.0;
     pos.x = fract(pos.x / 6.0);
 
@@ -83,8 +79,8 @@ vec3 grille(vec3 color, vec2 pos)
 
 void main()
 {
-    vec2 input_coord = vUV * input_size;
-    FragColor = sample_scan(input_coord);
+    FragColor = sample_scan(vUV);
+    //FragColor = textureLod(uSampler, vUV, 0.0).rgb;
 
     FragColor = grille(FragColor, vUV * output_size);
 

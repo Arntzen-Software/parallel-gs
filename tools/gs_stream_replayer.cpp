@@ -63,20 +63,6 @@ static void FsrRcasCon(float *con, float sharpness)
 	con[3] = 0.0f;
 }
 
-static const Primaries bt709 = {
-	{ 0.640f, 0.330f },
-	{ 0.300f, 0.600f },
-	{ 0.150f, 0.060f },
-	{ 0.3127f, 0.3290f },
-};
-
-static const Primaries bt2020 = {
-	{ 0.708f, 0.292f },
-	{ 0.170f, 0.797f },
-	{ 0.131f, 0.046f },
-	{ 0.3127f, 0.3290f },
-};
-
 static constexpr float SDRScale = 800.0f;
 
 class AnalogVideoFilter
@@ -101,8 +87,7 @@ public:
 		// Normal 640/512 width output from parallel-gs is assumed to be standard BT.601 13.5 MHz.
 		// For best results, should be 13.5 MHz times some power of two.
 		float input_sampling_rate_mhz = 13.5f;
-
-		float eotf_gamma = 2.4f; // BT.1886 default. Traditional NTSC is more 2.2 and traditional PAL is more 2.8.
+		float subcarrier_phase_offset = 0.0f;
 		uint32_t phase = 0;
 	};
 
@@ -174,6 +159,10 @@ bool AnalogVideoFilter::init(Vulkan::Device &device_, const Options &options_)
 void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &input,
                                    const FilterOptions &filter_options)
 {
+	// Out of spec.
+	if (input.get_view_height() > 625)
+		return;
+
 	if (!decode_target || decode_target->get_height() != input.get_view_height())
 	{
 		ImageCreateInfo image_info = {};
@@ -182,7 +171,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		image_info.domain = ImageDomain::Physical;
 		image_info.width = BaseOutputResolution * 2;
 		image_info.height = input.get_view_height();
-		image_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+		image_info.format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
 		image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 		decode_target = device->create_image(image_info);
 		device->set_name(*decode_target, "decode-target");
@@ -195,7 +184,6 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		float subcarrier_phases_per_pixel; // For ENCODE pass.
 		float subcarrier_phases_per_line; // For ENCODE pass.
 		float subcarrier_phase_offset;
-		float eotf_gamma; // For DECODE pass.
 		float input_horiz_scale; // For DOWNSAMPLE pass.
 	} push = {};
 
@@ -207,7 +195,6 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	// PS2 CRTC subpixel clock is 4x BT.601 it seems.
 	push.input_offset = -16;
 	push.input_horiz_scale = filter_options.input_sampling_rate_mhz / (13.5f * 4.0f);
-	push.eotf_gamma = filter_options.eotf_gamma;
 	push.subcarrier_phases_per_pixel =
 			(options.system == System::NTSC ? (315.0f / 88.0f) : 4.43361875f) /
 			(13.5f * 2.0f);
@@ -223,6 +210,8 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	{
 		// TODO: PAL. It's more complicated.
 	}
+
+	push.subcarrier_phase_offset += filter_options.subcarrier_phase_offset;
 
 	// The exact specifics shouldn't matter too much, just need some way to nudge the carrier phase.
 	auto odd_lines = options.system == System::NTSC ? 263 : 262;
@@ -277,7 +266,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	cmd.set_specialization_constant(0, PassDecode);
 	cmd.set_storage_texture(0, 2, dummy_1d_array->get_view());
 	groups_x = (get_output().get_view_width() + 255) / 256;
-	push.input_offset = -64; // Shifts the output so that we end up being centered in a standard BT.601 720 pixel container.
+	push.input_offset = -80; // Shifts the output so that we end up being centered in a standard BT.601 720 pixel container.
 	cmd.push_constants(&push, 0, sizeof(push));
 	cmd.dispatch(groups_x, input.get_view_height(), 1);
 
@@ -567,11 +556,11 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		cmd.set_program("assets://blit.vert", "assets://blit.frag");
 		cmd.set_specialization_constant_mask(1);
 		cmd.set_specialization_constant(0, get_wsi().get_backbuffer_color_space() == VK_COLOR_SPACE_HDR10_ST2084_EXT);
-		cmd.set_texture(0, 0, view);
+		cmd.set_texture(0, 0, view, StockSampler::LinearClamp);
 
-		mat3 output_transform = inverse(compute_xyz_matrix(bt2020));
-		mat3 input_transform = compute_xyz_matrix(bt709);
-		mat3 conv = output_transform * input_transform;
+		mat3 conv = AnalogVideoFilter::generate_primary_conversion(
+			AnalogVideoFilter::get_primaries(AnalogVideoFilter::Primaries::BT2020),
+			AnalogVideoFilter::get_primaries(AnalogVideoFilter::Primaries::BT601_525));
 		float sdr_scale = SDRScale;
 
 		auto *primary_transform = cmd.allocate_typed_constant_data<vec4>(0, 1, 3);
@@ -772,6 +761,9 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			if (!filter.init(cmd->get_device(), {}))
 				return;
 			AnalogVideoFilter::FilterOptions opts = {};
+			static uint32_t phase;
+			opts.phase = phase++;
+			opts.subcarrier_phase_offset = (opts.phase & 1) ? 0.5f : 0.0f;
 			filter.run_filter(*cmd, vsync.image->get_view(), opts);
 		}
 
