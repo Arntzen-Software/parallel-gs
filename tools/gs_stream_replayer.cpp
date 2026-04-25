@@ -79,6 +79,272 @@ static const Primaries bt2020 = {
 
 static constexpr float SDRScale = 800.0f;
 
+class AnalogVideoFilter
+{
+public:
+	// Changes carrier frequency and modulation strategy.
+	enum class System { NTSC, PAL };
+	enum class Cable { Composite, SVideo };
+
+	struct Options
+	{
+		System system = System::NTSC;
+		Cable cable = Cable::Composite;
+	};
+
+	bool init(Vulkan::Device &device, const Options &options);
+
+	struct FilterOptions
+	{
+		// Standard BT.601.
+		// Should not be changed unless the input image is scaled horizontally.
+		// Normal 640/512 width output from parallel-gs is assumed to be standard BT.601 13.5 MHz.
+		// For best results, should be 13.5 MHz times some power of two.
+		float input_sampling_rate_mhz = 13.5f;
+
+		float eotf_gamma = 2.4f; // BT.1886 default. Traditional NTSC is more 2.2 and traditional PAL is more 2.8.
+		uint32_t phase = 0;
+	};
+
+	void run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &input, const FilterOptions &options);
+
+	// Y resolution is the same as input resolution.
+	// X resolution is standard 720 horizontal active pixels, but doubled to bandlimited 1440 pixels.
+	// Output is in linear light with the appropriate primaries for the system in question.
+	const Vulkan::ImageView &get_output() const;
+
+	enum class Primaries
+	{
+		NTSC_Legacy, // Legacy saturated primaries from 1953
+		BT601_525, // SMPTE C, "modern" NTSC as defined by SMPTE
+		BT601_625, // PAL
+		BT709, // sRGB displays
+		BT2020, // HDR10
+	};
+	static const Granite::Primaries &get_primaries(Primaries primaries);
+	static mat3 generate_primary_conversion(const Granite::Primaries &output, const Granite::Primaries &input);
+
+private:
+	Vulkan::Device *device = nullptr;
+	Options options = {};
+	Vulkan::ImageHandle downsample_target;
+	Vulkan::ImageHandle encode_target;
+	Vulkan::ImageHandle dummy_1d_array;
+	Vulkan::ImageHandle decode_target;
+	uint64_t total_line_counter = 0;
+};
+
+static constexpr uint32_t BaseOutputResolution = 720;
+
+bool AnalogVideoFilter::init(Vulkan::Device &device_, const Options &options_)
+{
+	device = &device_;
+	options = options_;
+
+	ImageCreateInfo image_info = {};
+	// 1D array makes more sense from cache PoV since we process scanlines, not 2D images.
+	image_info.type = VK_IMAGE_TYPE_1D;
+	image_info.domain = ImageDomain::Physical;
+	image_info.width = BaseOutputResolution * 2 + 64; // Some extra room for convolution trails.
+	image_info.height = 1;
+	image_info.layers = 625;
+	image_info.format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+	image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+	downsample_target = device->create_image(image_info);
+	device->set_name(*downsample_target, "downsample-target");
+
+	image_info.format = options.cable == Cable::Composite ? VK_FORMAT_R16_SFLOAT : VK_FORMAT_R16G16B16A16_SFLOAT;
+	encode_target = device->create_image(image_info);
+	device->set_name(*encode_target, "encode-target");
+
+	image_info.width = 1;
+	image_info.layers = 1;
+	image_info.misc = Vulkan::IMAGE_MISC_FORCE_ARRAY_BIT;
+	image_info.initial_layout = VK_IMAGE_LAYOUT_GENERAL;
+	image_info.layout = ImageLayout::General;
+	image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+	dummy_1d_array = device->create_image(image_info);
+	device->set_name(*dummy_1d_array, "dummy-1d-array");
+
+	// Encode output on-demand.
+	return true;
+}
+
+void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &input,
+                                   const FilterOptions &filter_options)
+{
+	if (!decode_target || decode_target->get_height() != input.get_view_height())
+	{
+		ImageCreateInfo image_info = {};
+		// 1D array makes more sense from cache PoV since we process scanlines, not 2D images.
+		image_info.type = VK_IMAGE_TYPE_2D;
+		image_info.domain = ImageDomain::Physical;
+		image_info.width = BaseOutputResolution * 2;
+		image_info.height = input.get_view_height();
+		image_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+		image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		decode_target = device->create_image(image_info);
+		device->set_name(*decode_target, "decode-target");
+	}
+
+	struct
+	{
+		int32_t input_offset;
+		int32_t output_offset;
+		float subcarrier_phases_per_pixel; // For ENCODE pass.
+		float subcarrier_phases_per_line; // For ENCODE pass.
+		float subcarrier_phase_offset;
+		float eotf_gamma; // For DECODE pass.
+		float input_horiz_scale; // For DOWNSAMPLE pass.
+	} push = {};
+
+	cmd.set_program("assets://composite.comp");
+	cmd.set_specialization_constant_mask(0x3);
+	// Controls the filters. PAL has a bit more bandwidth.
+	cmd.set_specialization_constant(1, options.system == System::PAL);
+
+	// PS2 CRTC subpixel clock is 4x BT.601 it seems.
+	push.input_offset = -16;
+	push.input_horiz_scale = filter_options.input_sampling_rate_mhz / (13.5f * 4.0f);
+	push.eotf_gamma = filter_options.eotf_gamma;
+	push.subcarrier_phases_per_pixel =
+			(options.system == System::NTSC ? (315.0f / 88.0f) : 4.43361875f) /
+			(13.5f * 2.0f);
+
+	// Flip carrier phase every frame. Unsure if this is how it is supposed to work.
+	// NTSC scanlines flip phase every scanline.
+	if (options.system == System::NTSC)
+	{
+		push.subcarrier_phase_offset = (total_line_counter & 1) ? 0.5f : 0.0f;
+		push.subcarrier_phases_per_line = 227.5f;
+	}
+	else
+	{
+		// TODO: PAL. It's more complicated.
+	}
+
+	// The exact specifics shouldn't matter too much, just need some way to nudge the carrier phase.
+	auto odd_lines = options.system == System::NTSC ? 263 : 262;
+	auto even_lines = options.system == System::NTSC ? 313 : 312;
+	total_line_counter += (filter_options.phase & 1) ? odd_lines : even_lines;
+
+	cmd.set_unorm_texture(0, 0, input);
+	cmd.set_texture(0, 1, dummy_1d_array->get_view());
+	cmd.set_storage_texture(0, 2, downsample_target->get_view());
+	cmd.set_storage_texture(0, 3, get_output());
+
+	cmd.begin_barrier_batch();
+	cmd.image_barrier(*downsample_target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+	                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
+	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+	cmd.image_barrier(*encode_target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+	                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
+	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+	cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+	                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
+	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+	cmd.end_barrier_batch();
+
+	enum
+	{
+		PassDownsample = 0,
+		PassEncode,
+		PassDecode
+	};
+
+	cmd.push_constants(&push, 0, sizeof(push));
+
+	// Run downsampling filter to 2x BT.601 rate. It's a comfortable and convenient sampling rate to do DSP on.
+	uint32_t groups_x = (downsample_target->get_width() + 255) / 256;
+	cmd.set_specialization_constant(0, PassDownsample);
+	cmd.dispatch(groups_x, input.get_view_height(), 1);
+	cmd.image_barrier(*downsample_target, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+	cmd.set_storage_texture(0, 2, encode_target->get_view());
+	cmd.set_specialization_constant(0, PassEncode);
+	groups_x = (encode_target->get_width() + 255) / 256;
+	cmd.set_texture(0, 1, downsample_target->get_view());
+	cmd.dispatch(groups_x, input.get_view_height(), 1);
+
+	cmd.image_barrier(*encode_target, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+				  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+				  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+	cmd.set_texture(0, 1, encode_target->get_view());
+	cmd.set_specialization_constant(0, PassDecode);
+	cmd.set_storage_texture(0, 2, dummy_1d_array->get_view());
+	groups_x = (get_output().get_view_width() + 255) / 256;
+	push.input_offset = -64; // Shifts the output so that we end up being centered in a standard BT.601 720 pixel container.
+	cmd.push_constants(&push, 0, sizeof(push));
+	cmd.dispatch(groups_x, input.get_view_height(), 1);
+
+	cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+	                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+}
+
+const Vulkan::ImageView &AnalogVideoFilter::get_output() const
+{
+	return decode_target->get_view();
+}
+
+mat3 AnalogVideoFilter::generate_primary_conversion(const Granite::Primaries &output, const Granite::Primaries &input)
+{
+	return inverse(compute_xyz_matrix(output)) * compute_xyz_matrix(input);
+}
+
+const Granite::Primaries &AnalogVideoFilter::get_primaries(Primaries primaries)
+{
+	static const Granite::Primaries bt709 = {
+		{ 0.640f, 0.330f },
+		{ 0.300f, 0.600f },
+		{ 0.150f, 0.060f },
+		{ 0.3127f, 0.3290f },
+	};
+
+	static const Granite::Primaries bt2020 = {
+		{ 0.708f, 0.292f },
+		{ 0.170f, 0.797f },
+		{ 0.131f, 0.046f },
+		{ 0.3127f, 0.3290f },
+	};
+
+	static const Granite::Primaries bt601_525 = {
+		{ 0.63f, 0.34f },
+		{ 0.31f, 0.595f },
+		{ 0.155f, 0.07f },
+		{ 0.3127f, 0.3290f },
+	};
+
+	static const Granite::Primaries bt601_625 = {
+		{ 0.64f, 0.33f },
+		{ 0.29f, 0.60f },
+		{ 0.15f, 0.06f },
+		{ 0.3127f, 0.3290f },
+	};
+
+	static const Granite::Primaries ntsc_legacy = {
+		{ 0.67f, 0.33f },
+		{ 0.21f, 0.71f },
+		{ 0.14f, 0.08f },
+		{ 0.31f, 0.316f },
+	};
+
+	switch (primaries)
+	{
+	default:
+	case Primaries::BT709: return bt709;
+	case Primaries::BT2020: return bt2020;
+	case Primaries::BT601_525: return bt601_525;
+	case Primaries::BT601_625: return bt601_625;
+	case Primaries::NTSC_Legacy: return ntsc_legacy;
+	}
+}
+
 namespace ParallelGS
 {
 struct StreamApplication : Granite::Application, Granite::EventHandler
@@ -301,7 +567,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		cmd.set_program("assets://blit.vert", "assets://blit.frag");
 		cmd.set_specialization_constant_mask(1);
 		cmd.set_specialization_constant(0, get_wsi().get_backbuffer_color_space() == VK_COLOR_SPACE_HDR10_ST2084_EXT);
-		cmd.set_srgb_texture(0, 0, view);
+		cmd.set_texture(0, 0, view);
 
 		mat3 output_transform = inverse(compute_xyz_matrix(bt2020));
 		mat3 input_transform = compute_xyz_matrix(bt709);
@@ -417,8 +683,10 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		{
 			int32_t input_offset;
 			int32_t output_offset;
-			float subcarrier_phases_per_pixel;
-			float eotf_gamma;
+			float subcarrier_phases_per_pixel; // For ENCODE pass.
+			float eotf_gamma; // For DECODE pass.
+			float input_horiz_scale; // For DOWNSAMPLE pass.
+			float carrier_phase_offset;
 		} push = {};
 		push.input_offset = -14;
 		cmd->push_constants(&push, 0, sizeof(push));
@@ -494,18 +762,25 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		//read_page_memory();
 
-		test_filter();
-
 		auto cmd = device.request_command_buffer();
 		//if (vsync.image)
 		//	render_fsr(*cmd, vsync.image->get_view());
+
+		AnalogVideoFilter filter;
+		if (vsync.image)
+		{
+			if (!filter.init(cmd->get_device(), {}))
+				return;
+			AnalogVideoFilter::FilterOptions opts = {};
+			filter.run_filter(*cmd, vsync.image->get_view(), opts);
+		}
 
 		cmd->begin_render_pass(device.get_swapchain_render_pass(SwapchainRenderPass::Depth));
 
 		if (vsync.image)
 		{
 			//render_rcas(*cmd, fsr_render_target->get_view());
-			render_dummy(*cmd, vsync.image->get_view());
+			render_dummy(*cmd, filter.get_output());
 		}
 
 #if 1

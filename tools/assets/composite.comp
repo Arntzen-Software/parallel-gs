@@ -1,26 +1,28 @@
 #version 450
 #extension GL_EXT_control_flow_attributes : require
-#pragma optimize off
+#extension GL_EXT_samplerless_texture_functions : require
 
 layout(local_size_x = 256) in;
 
-layout(set = 0, binding = 0) uniform samplerBuffer Inputs;
-layout(set = 0, binding = 1) writeonly uniform imageBuffer Outputs;
+layout(set = 0, binding = 0) uniform texture2D Inputs2D;
+layout(set = 0, binding = 1) uniform texture1DArray Inputs1D;
+layout(set = 0, binding = 2) writeonly uniform image1DArray Outputs1D;
+layout(set = 0, binding = 3) writeonly uniform image2D Outputs2D;
 
-// To take 56 MHz down to 27 MHz
+// To take 56 MHz down to 27 MHz.
 const float DownsamplingKernel56_27[16] = float[](
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.125, 0.0, 0.25, 0.5, 1.0);
+    0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
 
 // 27 MHz. Passband about 4.2 MHz, stop band ~7 MHz.
-const float LumaEncode[31] = float[](
+const float LumaEncodeNTSC[31] = float[](
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0);
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
 
 // 27 MHz. Passband about 1.2 MHz, stop band about 2.2 MHz.
-const float ChromaEncode[31] = float[](
+const float ChromaEncodeNTSC[31] = float[](
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -32,16 +34,16 @@ const float ChromaEncode[31] = float[](
 // On top, we have a notch at carrier freq.
 const float LumaDecodeNTSC[31] = float[](
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0);
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
 
 // 27 MHz. Passband about 1.2 MHz, stop band about 2.2 MHz.
 // On top, notch at carrier (luma DC gets modulated there) and double carrier (carrier gets mirrored here).
 const float ChromaDecodeNTSC[31] = float[](
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
 
 const float PI = 3.14159265359;
@@ -51,6 +53,7 @@ const int PASS_ENCODE = 1;
 const int PASS_DECODE = 2;
 
 layout(constant_id = 0) const int PassIndex = 0;
+layout(constant_id = 1) const bool PAL = false;
 
 const int PaddingTaps = 32;
 const uint SharedInputSize = gl_WorkGroupSize.x + PaddingTaps;
@@ -62,7 +65,10 @@ layout(push_constant) uniform Registers
     int input_offset;
     int output_offset;
     float subcarrier_phases_per_pixel;
+    float subcarrier_phases_per_line;
+    float subcarrier_phase_offset;
     float eotf_gamma;
+    float input_horiz_scale;
 } registers;
 
 // Give some filtering headroom.
@@ -100,19 +106,28 @@ vec3 unpack10(uint v)
 
 vec3 encode_yuv(vec3 rgb)
 {
-    // TODO
-    return rgb;
+    const mat3 rgb_to_yiq = mat3(vec3(0.299, 0.5959, 0.2115), vec3(0.587, -0.2746, -0.5227), vec3(0.114, -0.3213, 0.3112));
+    return rgb_to_yiq * rgb;
 }
 
 vec3 decode_yuv(vec3 yuv)
 {
-    // TODO
-    return yuv;
+    const mat3 yiq_to_rgb = mat3(vec3(1.0, 1.0, 1.0), vec3(0.956, -0.272, -1.106), vec3(0.619, -0.647, 1.703));
+    return yiq_to_rgb * yuv;
 }
 
 float compute_qam_phase(int coord)
 {
-    return 2.0 * PI * fract(float(coord) * registers.subcarrier_phases_per_pixel);
+    float phase = 2.0 * PI * fract(
+        float(coord) * registers.subcarrier_phases_per_pixel +
+        float(gl_WorkGroupID.y) * registers.subcarrier_phases_per_line +
+        registers.subcarrier_phase_offset);
+    return phase;
+}
+
+int scale_horiz_coord(int x)
+{
+    return int(floor((float(x) + 0.5) * registers.input_horiz_scale));
 }
 
 void load_inputs()
@@ -124,8 +139,10 @@ void load_inputs()
         // Sample and decimate.
         for (uint i = gl_LocalInvocationIndex; i < SharedInputSize; i += gl_WorkGroupSize.x)
         {
-            vec3 even = texelFetch(Inputs, 2 * int(global_base_coord + i) + 0 + registers.input_offset).rgb;
-            vec3 odd = texelFetch(Inputs, 2 * int(global_base_coord + i) + 1 + registers.input_offset).rgb;
+            int coord_even = scale_horiz_coord(2 * int(global_base_coord + i) + 0 + registers.input_offset);
+            int coord_odd = scale_horiz_coord(2 * int(global_base_coord + i) + 1 + registers.input_offset);
+            vec3 even = texelFetch(Inputs2D, ivec2(coord_even, gl_WorkGroupID.y), 0).rgb;
+            vec3 odd = texelFetch(Inputs2D, ivec2(coord_odd, gl_WorkGroupID.y), 0).rgb;
             even = encode_yuv(even);
             odd = encode_yuv(odd);
             shared_loaded_inputs[i] = pack10(even);
@@ -137,7 +154,8 @@ void load_inputs()
         // Normal sampling or upsampling.
         for (uint i = gl_LocalInvocationIndex; i < SharedInputSize; i += gl_WorkGroupSize.x)
         {
-            vec3 v = texelFetch(Inputs, int(global_base_coord + i) + registers.input_offset).rgb;
+            int coord = int(global_base_coord + i) + registers.input_offset;
+            vec3 v = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).rgb;
             v = encode_yuv(v);
             shared_loaded_inputs[i] = pack10(v);
         }
@@ -148,7 +166,7 @@ void load_inputs()
         {
             int coord = int(global_base_coord + i) + registers.input_offset;
             float phase = compute_qam_phase(coord);
-            float composite = texelFetch(Inputs, coord).x;
+            float composite = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x;
             vec3 yuv = vec3(composite, cos(phase) * composite, sin(phase) * composite);
             shared_loaded_inputs[i] = pack10(yuv);
         }
@@ -158,7 +176,7 @@ void load_inputs()
 }
 
 // Downsample 56 MHz to 27 MHz.
-void filter_pass_downsample()
+void filter_pass_downsample(float kernel[16])
 {
     uint local_index = gl_LocalInvocationIndex;
     vec3 filtered = vec3(0.0);
@@ -171,17 +189,17 @@ void filter_pass_downsample()
         vec3 odd = unpack10(shared_loaded_inputs_odd[local_index + i]);
         // Convolution happens in opposite order so array order is kinda flipped.
         // However, our kernels are symmetric, so it's whatever.
-        filtered += DownsamplingKernel56_27[2 * i + 1] * even;
-        filtered += DownsamplingKernel56_27[2 * i + 0] * odd;
+        filtered += kernel[2 * i + 1] * even;
+        filtered += kernel[2 * i + 0] * odd;
     }
 
     filtered = decode_yuv(filtered);
 
-    imageStore(Outputs, int(gl_GlobalInvocationID.x) + registers.output_offset, vec4(filtered, 0.0));
+    imageStore(Outputs1D, ivec2(int(gl_GlobalInvocationID.x) + registers.output_offset, gl_WorkGroupID.y), vec4(filtered, 0.0));
 }
 
 // In 27 MHz domain. Easier this way.
-void filter_pass_encode()
+void filter_pass_encode(float luma_kernel[31], float chroma_kernel[31])
 {
     uint local_index = gl_LocalInvocationIndex;
     vec3 filtered = vec3(0.0);
@@ -191,8 +209,8 @@ void filter_pass_encode()
     for (int i = 0; i < 31; i++)
     {
         vec3 yuv = unpack10(shared_loaded_inputs[local_index + i]);
-        filtered.x += LumaEncode[i] * yuv.x;
-        filtered.yz += ChromaEncode[i] * yuv.yz;
+        filtered.x += luma_kernel[i] * yuv.x;
+        filtered.yz += chroma_kernel[i] * yuv.yz;
     }
 
     int coord = int(gl_GlobalInvocationID.x + registers.output_offset);
@@ -204,10 +222,10 @@ void filter_pass_encode()
     composite.x = filtered.x + qam;
     composite.yzw = filtered;
 
-    imageStore(Outputs, coord, composite);
+    imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), composite);
 }
 
-void filter_pass_decode()
+void filter_pass_decode(float luma_kernel[31], float chroma_kernel[31])
 {
     uint local_index = gl_LocalInvocationIndex;
     vec3 filtered = vec3(0.0);
@@ -217,8 +235,8 @@ void filter_pass_decode()
     for (int i = 0; i < 31; i++)
     {
         vec3 yuv = unpack10(shared_loaded_inputs[local_index + i]);
-        filtered.x += LumaDecodeNTSC[i] * yuv.x;
-        filtered.yz += ChromaDecodeNTSC[i] * yuv.yz;
+        filtered.x += luma_kernel[i] * yuv.x;
+        filtered.yz += chroma_kernel[i] * yuv.yz;
     }
 
     filtered = decode_yuv(filtered);
@@ -228,17 +246,24 @@ void filter_pass_decode()
         filtered = pow(filtered, vec3(registers.eotf_gamma));
 
     int coord = int(gl_GlobalInvocationID.x + registers.output_offset);
-    imageStore(Outputs, coord, vec4(filtered, 0.0));
+    imageStore(Outputs2D, ivec2(coord, gl_WorkGroupID.y), vec4(filtered, 0.0));
 }
 
 void main()
 {
     load_inputs();
 
-    if (PassIndex == PASS_DOWNSAMPLE)
-        filter_pass_downsample();
-    else if (PassIndex == PASS_ENCODE)
-        filter_pass_encode();
+    if (PAL)
+    {
+
+    }
     else
-        filter_pass_decode();
+    {
+        if (PassIndex == PASS_DOWNSAMPLE)
+            filter_pass_downsample(DownsamplingKernel56_27);
+        else if (PassIndex == PASS_ENCODE)
+            filter_pass_encode(LumaEncodeNTSC, ChromaEncodeNTSC);
+        else if (PassIndex == PASS_DECODE)
+            filter_pass_decode(LumaDecodeNTSC, ChromaDecodeNTSC);
+    }
 }
