@@ -84,11 +84,15 @@ public:
 	{
 		// Standard BT.601.
 		// Should not be changed unless the input image is scaled horizontally.
-		// Normal 640/512 width output from parallel-gs is assumed to be standard BT.601 13.5 MHz.
-		// For best results, should be 13.5 MHz times some power of two.
+		// Normal 640 width output from parallel-gs is assumed to be standard BT.601 13.5 MHz.
+		// For best results, should be 56 MHz divided by an integer.
+		// input_sampling_rate_mhz = 56 / (MAGH + 1) for PS2.
 		float input_sampling_rate_mhz = 13.5f;
 		float subcarrier_phase_offset = 0.0f;
 		uint32_t phase = 0;
+
+		// For debug, sets chroma carrier to tiny frequency to validate IRE outputs.
+		bool validation_carrier = false;
 	};
 
 	void run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &input, const FilterOptions &options);
@@ -199,6 +203,9 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 			(options.system == System::NTSC ? (315.0f / 88.0f) : 4.43361875f) /
 			(13.5f * 2.0f);
 
+	if (filter_options.validation_carrier)
+		push.subcarrier_phases_per_pixel = 1.0f / 64.0f;
+
 	// Flip carrier phase every frame. Unsure if this is how it is supposed to work.
 	// NTSC scanlines flip phase every scanline.
 	if (options.system == System::NTSC)
@@ -266,7 +273,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	cmd.set_specialization_constant(0, PassDecode);
 	cmd.set_storage_texture(0, 2, dummy_1d_array->get_view());
 	groups_x = (get_output().get_view_width() + 255) / 256;
-	push.input_offset = -80; // Shifts the output so that we end up being centered in a standard BT.601 720 pixel container.
+	push.input_offset = -81; // Shifts the output so that we end up being centered in a standard BT.601 720 pixel container.
 	cmd.push_constants(&push, 0, sizeof(push));
 	cmd.dispatch(groups_x, input.get_view_height(), 1);
 
@@ -618,88 +625,46 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		cmd.draw(3);
 	}
 
-#if 0
-	Util::Hash last_hash = 0;
-
-	void read_page_memory()
-	{
-		auto *mapped = static_cast<const uint32_t *>(iface->map_vram_read(0x300000, PGS_PAGE_ALIGNMENT_BYTES));
-		Util::Hasher h;
-		for (uint32_t i = 0; i < PGS_PAGE_ALIGNMENT_BYTES / sizeof(uint32_t); i++)
-			h.u32(mapped[i] & 0x0f000000);
-
-		if (h.get() != last_hash)
-		{
-			LOGI("Hash changed at V #%u: %016llx\n", vsync_index, static_cast<unsigned long long>(h.get()));
-			last_hash = h.get();
-		}
-	}
-#endif
-
 	void test_filter()
 	{
 		auto &wsi = get_wsi();
 		auto &device = wsi.get_device();
 
-		bool rdoc = Device::init_renderdoc_capture();
-		if (rdoc)
-			device.begin_renderdoc_capture();
-
 		auto cmd = device.request_command_buffer();
 
-		const float test_input[] = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-		BufferCreateInfo bufinfo = {};
-		bufinfo.usage = VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
-		bufinfo.domain = BufferDomain::Device;
-		bufinfo.size = sizeof(test_input);
-		auto inputs = device.create_buffer(bufinfo, test_input);
-		bufinfo.usage = VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
-		bufinfo.domain = BufferDomain::CachedHost;
-		bufinfo.size = 64 * sizeof(float);
-		bufinfo.misc = BUFFER_MISC_ZERO_INITIALIZE_BIT;
-		auto outputs = device.create_buffer(bufinfo);
+		auto info = ImageCreateInfo::immutable_2d_image(1, 16, VK_FORMAT_R8G8B8A8_UNORM);
+		const u8vec4 data[16] = {
+			// 75% and 100% tests as prescribed.
+			u8vec4(191, 191, 191, 0),
+			u8vec4(191, 191, 0, 0),
+			u8vec4(0, 191, 191, 0),
+			u8vec4(0, 191, 0, 0),
+			u8vec4(191, 0, 191, 0),
+			u8vec4(191, 0, 0, 0),
+			u8vec4(0, 0, 191, 0),
+			u8vec4(0, 0, 0, 0),
+			u8vec4(255, 255, 255, 0),
+			u8vec4(255, 255, 0, 0),
+			u8vec4(0, 255, 255, 0),
+			u8vec4(0, 255, 0, 0),
+			u8vec4(255, 0, 255, 0),
+			u8vec4(255, 0, 0, 0),
+			u8vec4(0, 0, 255, 0),
+			u8vec4(0, 0, 0, 0),
+		};
+		ImageInitialData initial = { data, 0, 0 };
+		auto test_image = device.create_image(info, &initial);
 
-		BufferViewCreateInfo view_info = {};
-		view_info.buffer = inputs.get();
-		view_info.format = VK_FORMAT_R32_SFLOAT;
-		view_info.offset = 0;
-		view_info.range = VK_WHOLE_SIZE;
-		auto input_view = device.create_buffer_view(view_info);
-		view_info.buffer = outputs.get();
-		auto output_view = device.create_buffer_view(view_info);
-
-		struct
-		{
-			int32_t input_offset;
-			int32_t output_offset;
-			float subcarrier_phases_per_pixel; // For ENCODE pass.
-			float eotf_gamma; // For DECODE pass.
-			float input_horiz_scale; // For DOWNSAMPLE pass.
-			float carrier_phase_offset;
-		} push = {};
-		push.input_offset = -14;
-		cmd->push_constants(&push, 0, sizeof(push));
-
-		cmd->set_program("assets://composite.comp");
-		cmd->set_specialization_constant_mask(0x1);
-		cmd->set_specialization_constant(0, 0);
-		cmd->set_buffer_view(0, 0, *input_view);
-		cmd->set_storage_buffer_view(0, 1, *output_view);
-		cmd->dispatch(1, 1, 1);
-		cmd->barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-		             VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+		AnalogVideoFilter filter;
+		AnalogVideoFilter::Options dev_opts = {};
+		dev_opts.cable = AnalogVideoFilter::Cable::SVideo;
+		filter.init(device, dev_opts);
+		AnalogVideoFilter::FilterOptions opts = {};
+		opts.input_sampling_rate_mhz = 0.0f;
+		filter.run_filter(*cmd, test_image->get_view(), opts);
 
 		Fence fence;
 		device.submit(cmd, &fence);
-		fence->wait();
-
-		auto *ptr = static_cast<const float *>(device.map_host_buffer(*outputs, MEMORY_ACCESS_READ_BIT));
-		for (int i = 0; i < 64; i++)
-			LOGI("Value %u = %f\n", i, ptr[i]);
-
-		if (rdoc)
-			device.end_renderdoc_capture();
-		exit(0);
 	}
 
 	void render_frame(double, double)
@@ -711,6 +676,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		}
 		auto &wsi = get_wsi();
 		auto &device = wsi.get_device();
+
+		test_filter();
 
 		if (capture_count == NumCaptureFrames && has_renderdoc_capture)
 		{

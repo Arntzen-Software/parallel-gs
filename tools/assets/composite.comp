@@ -172,8 +172,9 @@ layout(constant_id = 1) const bool PAL = false;
 
 const int PaddingTaps = 32;
 const uint SharedInputSize = gl_WorkGroupSize.x + PaddingTaps;
-shared uint shared_loaded_inputs[SharedInputSize];
-shared uint shared_loaded_inputs_odd[SharedInputSize];
+// Could make this more compact, but readability is more important than pure perf for this shader.
+shared vec3 shared_loaded_inputs[SharedInputSize];
+shared vec3 shared_loaded_inputs_odd[SharedInputSize];
 
 layout(push_constant) uniform Registers
 {
@@ -185,49 +186,39 @@ layout(push_constant) uniform Registers
     float input_horiz_scale;
 } registers;
 
-// Give some filtering headroom.
-const float LumaBlack = 0.125;
-const float LumaWhite = 0.875;
-const float LumaRange = LumaWhite - LumaBlack;
-const float ChromaRange = 0.75;
-const float ChromaCenter = 512.0 / 1023.0;
-
-vec3 squeeze_pack10(vec3 yuv)
-{
-    return yuv * vec3(LumaRange, ChromaRange, ChromaRange) + vec3(LumaBlack, ChromaCenter, ChromaCenter);
-}
-
-vec3 unsqueeze_pack10(vec3 yuv)
-{
-    yuv -= vec3(LumaBlack, ChromaCenter, ChromaCenter);
-    return yuv / vec3(LumaRange, ChromaRange, ChromaRange);
-}
-
-uint pack10(vec3 v)
-{
-    v = squeeze_pack10(v);
-    v = clamp(v, vec3(0.0), vec3(1.0));
-    v = v * 1023.0 + 0.5;
-    uvec3 iv = uvec3(v);
-    return (iv.r << 0) | (iv.g << 10) | (iv.b << 20);
-}
-
-vec3 unpack10(uint v)
-{
-    vec3 ret = vec3((uvec3(v) >> uvec3(0u, 10u, 20u)) & 0x3ffu) / 1023.0;
-    return unsqueeze_pack10(ret);
-}
-
 vec3 encode_yuv(vec3 rgb)
 {
-    const mat3 rgb_to_yiq = mat3(vec3(0.299, 0.5959, 0.2115), vec3(0.587, -0.2746, -0.5227), vec3(0.114, -0.3213, 0.3112));
+    const mat3 rgb_to_yiq = mat3(vec3(0.3, 0.599, 0.213), vec3(0.59, -0.2773, -0.5251), vec3(0.11, -0.3217, 0.3121));
     return rgb_to_yiq * rgb;
 }
 
 vec3 decode_yuv(vec3 yuv)
 {
-    const mat3 yiq_to_rgb = mat3(vec3(1.0, 1.0, 1.0), vec3(0.956, -0.272, -1.106), vec3(0.619, -0.647, 1.703));
+    const mat3 yiq_to_rgb = mat3(vec3(1.0, 1.0, 1.0), vec3(0.9469, -0.2748, -1.1), vec3(0.6236, -0.6357, 1.7));
     return yiq_to_rgb * yuv;
+}
+
+// Configures how composite signal maps to voltage.
+// Not very interesting for us, but allows us to validate that we're compliant with standard color bar patterns,
+// since they are defined in terms of IRE.
+float encode_ire(float v)
+{
+    if (!PAL)
+        v = 7.5 + (100.0 - 7.5) * v; // NTSC-J is supposed to use 0 IRE for black level.
+    else
+        v *= 100.0;
+
+    return v;
+}
+
+float decode_ire(float v)
+{
+    if (!PAL)
+        v = (v - 7.5) / (100.0 - 7.5); // NTSC-J is supposed to use 0 IRE for black level.
+    else
+        v /= 100.0;
+
+    return v;
 }
 
 float compute_qam_phase(int coord)
@@ -257,10 +248,8 @@ void load_inputs()
             int coord_odd = scale_horiz_coord(2 * int(global_base_coord + i) + 1 + registers.input_offset);
             vec3 even = texelFetch(Inputs2D, ivec2(coord_even, gl_WorkGroupID.y), 0).rgb;
             vec3 odd = texelFetch(Inputs2D, ivec2(coord_odd, gl_WorkGroupID.y), 0).rgb;
-            even = encode_yuv(even);
-            odd = encode_yuv(odd);
-            shared_loaded_inputs[i] = pack10(even);
-            shared_loaded_inputs_odd[i] = pack10(odd);
+            shared_loaded_inputs[i] = even;
+            shared_loaded_inputs_odd[i] = odd;
         }
     }
     else if (PassIndex == PASS_ENCODE)
@@ -271,7 +260,7 @@ void load_inputs()
             int coord = int(global_base_coord + i) + registers.input_offset;
             vec3 v = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).rgb;
             v = encode_yuv(v);
-            shared_loaded_inputs[i] = pack10(v);
+            shared_loaded_inputs[i] = v;
         }
     }
     else if (PassIndex == PASS_DECODE)
@@ -280,9 +269,9 @@ void load_inputs()
         {
             int coord = int(global_base_coord + i) + registers.input_offset;
             float phase = compute_qam_phase(coord);
-            float composite = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x;
+            float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
             vec3 yuv = vec3(composite, cos(phase) * composite, sin(phase) * composite);
-            shared_loaded_inputs[i] = pack10(yuv);
+            shared_loaded_inputs[i] = yuv;
         }
     }
 
@@ -299,15 +288,13 @@ void filter_pass_downsample(float kernel[16])
     [[unroll]]
     for (int i = 0; i < 8; i++)
     {
-        vec3 even = unpack10(shared_loaded_inputs[local_index + i]);
-        vec3 odd = unpack10(shared_loaded_inputs_odd[local_index + i]);
+        vec3 even = shared_loaded_inputs[local_index + i];
+        vec3 odd = shared_loaded_inputs_odd[local_index + i];
         // Convolution happens in opposite order so array order is kinda flipped.
         // However, our kernels are symmetric, so it's whatever.
         filtered += kernel[2 * i + 1] * even;
         filtered += kernel[2 * i + 0] * odd;
     }
-
-    filtered = decode_yuv(filtered);
 
     imageStore(Outputs1D, ivec2(int(gl_GlobalInvocationID.x) + registers.output_offset, gl_WorkGroupID.y), vec4(filtered, 0.0));
 }
@@ -322,7 +309,7 @@ void filter_pass_encode(float luma_kernel[31], float chroma_kernel[31])
     [[unroll]]
     for (int i = 0; i < 31; i++)
     {
-        vec3 yuv = unpack10(shared_loaded_inputs[local_index + i]);
+        vec3 yuv = shared_loaded_inputs[local_index + i];
         filtered.x += luma_kernel[i] * yuv.x;
         filtered.yz += chroma_kernel[i] * yuv.yz;
     }
@@ -333,7 +320,7 @@ void filter_pass_encode(float luma_kernel[31], float chroma_kernel[31])
 
     // Generate composite signal and its constituents (for e.g. S-Video).
     vec4 composite;
-    composite.x = filtered.x + qam;
+    composite.x = encode_ire(filtered.x + qam);
     composite.yzw = filtered;
 
     imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), composite);
@@ -348,9 +335,9 @@ void filter_pass_decode(float luma_kernel[31], float chroma_kernel[31])
     [[unroll]]
     for (int i = 0; i < 31; i++)
     {
-        vec3 yuv = unpack10(shared_loaded_inputs[local_index + i]);
+        vec3 yuv = shared_loaded_inputs[local_index + i];
         filtered.x += luma_kernel[i] * yuv.x;
-        filtered.yz += chroma_kernel[i] * yuv.yz;
+        filtered.yz += (2.0 * chroma_kernel[i]) * yuv.yz;
     }
 
     filtered = decode_yuv(filtered);
