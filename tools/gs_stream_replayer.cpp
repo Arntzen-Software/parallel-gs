@@ -648,6 +648,10 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		auto &wsi = get_wsi();
 		auto &device = wsi.get_device();
 
+		bool rdoc = Device::init_renderdoc_capture();
+		if (rdoc)
+			device.begin_renderdoc_capture();
+
 		auto cmd = device.request_command_buffer();
 
 		auto info = ImageCreateInfo::immutable_2d_image(1, 32, VK_FORMAT_R8G8B8A8_UNORM);
@@ -717,6 +721,12 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		Fence fence;
 		device.submit(cmd, &fence);
+
+		if (rdoc)
+		{
+			device.end_renderdoc_capture();
+			request_shutdown();
+		}
 	}
 
 	void render_frame(double, double)
@@ -778,8 +788,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		if (vsync.image)
 		{
 			AnalogVideoFilter::Options dev_opts = {};
-			dev_opts.cable = AnalogVideoFilter::Cable::SVideo;
-			dev_opts.system = AnalogVideoFilter::System::PAL;
+			dev_opts.cable = AnalogVideoFilter::Cable::Composite;
+			dev_opts.system = AnalogVideoFilter::System::NTSC;
 			if (!filter.init(cmd->get_device(), dev_opts))
 				return;
 			AnalogVideoFilter::FilterOptions opts = {};
@@ -803,7 +813,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 				opts.total_line_offset = phase & 1;
 			}
 
-			opts.line_comb = false;
+			opts.line_comb = true;
 			filter.run_filter(*cmd, vsync.image->get_view(), opts);
 		}
 

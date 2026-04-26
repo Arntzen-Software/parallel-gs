@@ -1,6 +1,7 @@
 #version 450
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_EXT_samplerless_texture_functions : require
+#extension GL_EXT_debug_printf : require
 
 layout(local_size_x = 256) in;
 
@@ -39,23 +40,6 @@ layout(push_constant) uniform Registers
     int line_phase;
 } registers;
 
-vec3 encode_yuv(vec3 rgb)
-{
-    if (PAL)
-    {
-        const mat3 rgb_to_yuv = mat3(vec3(0.299, -0.14713, 0.615), vec3(0.587, -0.28886, -0.51499), vec3(0.114, 0.436, -0.10001));
-		return rgb_to_yuv * rgb;
-    }
-    else
-    {
-        // Technically NTSC uses YUV too. YIQ is rotated from YUV when modulating.
-        // It matters when I and Q use different bandwidth, but based on what I have read,
-        // composite video encoders don't bother with that, that was mostly a broadcast thing.
-        const mat3 rgb_to_yiq = mat3(vec3(0.3, 0.599, 0.213), vec3(0.59, -0.2773, -0.5251), vec3(0.11, -0.3217, 0.3121));
-        return rgb_to_yiq * rgb;
-    }
-}
-
 vec3 decode_yuv(vec3 yuv)
 {
     if (PAL)
@@ -67,6 +51,29 @@ vec3 decode_yuv(vec3 yuv)
     {
         const mat3 yiq_to_rgb = mat3(vec3(1.0, 1.0, 1.0), vec3(0.9469, -0.2748, -1.1), vec3(0.6236, -0.6357, 1.7));
         return yiq_to_rgb * yuv;
+    }
+}
+
+vec3 encode_yuv(vec3 rgb)
+{
+    if (PAL)
+    {
+        const mat3 rgb_to_yuv = mat3(vec3(0.299, -0.14713, 0.615), vec3(0.587, -0.28886, -0.51499), vec3(0.114, 0.436, -0.10001));
+        vec3 result = rgb_to_yuv * rgb;
+        if (gl_GlobalInvocationID.x == 512 && (gl_GlobalInvocationID.y == 16 || gl_GlobalInvocationID.y == 24))
+        {
+            vec3 d = decode_yuv(result);
+            debugPrintfEXT("Writing YUV (%f, %f, %f), decodes to (%f, %f, %f)", result.x, result.y, result.z, d.x, d.y, d.z);
+        }
+        return result;
+    }
+    else
+    {
+        // Technically NTSC uses YUV too. YIQ is rotated from YUV when modulating.
+        // It matters when I and Q use different bandwidth, but based on what I have read,
+        // composite video encoders don't bother with that, that was mostly a broadcast thing.
+        const mat3 rgb_to_yiq = mat3(vec3(0.3, 0.599, 0.213), vec3(0.59, -0.2773, -0.5251), vec3(0.11, -0.3217, 0.3121));
+        return rgb_to_yiq * rgb;
     }
 }
 
@@ -149,9 +156,9 @@ void load_inputs()
 
             if (PAL)
             {
-                // V flips polarity every line.
+                // V flips polarity every line. V is modulated by cos carrier.
                 if (((gl_WorkGroupID.y + registers.line_phase) & 1u) != 0u)
-                    s = -s;
+                    c = -c;
             }
 
             if (SVIDEO)
@@ -160,28 +167,42 @@ void load_inputs()
                 vec2 svideo = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).xy;
                 svideo.x = decode_ire(svideo.x);
                 svideo.y = decode_ire(svideo.y);
-                yuv = vec3(svideo.x - svideo.y, c * svideo.y, s * svideo.y);
+
+                if (PAL)
+                    yuv = vec3(svideo.x - svideo.y, s * svideo.y, c * svideo.y);
+                else
+                    yuv = vec3(svideo.x - svideo.y, c * svideo.y, s * svideo.y);
             }
             else if (COMB)
             {
                 float line = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
-                float prev = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x);
 
                 if (PAL)
                 {
-                    // PAL comb filter is much more involved.
+                    float prev = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 2), 0).x);
+                    float next = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y + 2), 0).x);
+                    float neighborhood = 0.5 * (prev + next);
+                    float qam = 0.5 * (line - neighborhood);
+                    float y = 0.5 * (line + neighborhood);
+                    yuv = vec3(y, s * qam, c * qam);
                 }
                 else
                 {
-                    float qam = 0.5 * (line - prev);
-                    float y = 0.5 * (line + prev);
-                    yuv = vec3(y, cos(phase) * qam, sin(phase) * qam);
+                    float prev = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x);
+                    float next = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y + 1), 0).x);
+                    float neighborhood = 0.5 * (prev + next);
+                    float qam = 0.5 * (line - neighborhood);
+                    float y = 0.5 * (line + neighborhood);
+                    yuv = vec3(y, c * qam, s * qam);
                 }
             }
             else
             {
                 float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
-                yuv = vec3(composite, c * composite, s * composite);
+                if (PAL)
+                    yuv = vec3(composite, s * composite, c * composite);
+                else
+                    yuv = vec3(composite, c * composite, s * composite);
             }
 
             shared_loaded_inputs[i] = yuv;
@@ -227,16 +248,28 @@ void filter_pass_encode(float luma_kernel[31], float chroma_kernel[31])
         filtered.yz += chroma_kernel[i] * yuv.yz;
     }
 
+    if (gl_GlobalInvocationID.x == 512 && (gl_GlobalInvocationID.y == 16 || gl_GlobalInvocationID.y == 24))
+    {
+        vec3 d = decode_yuv(filtered);
+        debugPrintfEXT("Post-filter YUV (%f, %f, %f), decodes to (%f, %f, %f)", filtered.x, filtered.y, filtered.z, d.x, d.y, d.z);
+    }
+
     int coord = int(gl_GlobalInvocationID.x + registers.output_offset);
     float phase = compute_qam_phase(coord);
 
     float c = cos(phase);
     float s = sin(phase);
-    // V flips polarity every line.
-    if (PAL && ((gl_WorkGroupID.y + registers.line_phase) & 1u) != 0u)
-        s = -s;
 
-    float qam = c * filtered.y + s * filtered.z;
+    // V flips polarity every line. V is modulated by cos carrier.
+    if (PAL && ((gl_WorkGroupID.y + registers.line_phase) & 1u) != 0u)
+        c = -c;
+
+    float qam;
+
+    if (PAL)
+        qam = s * filtered.y + c * filtered.z;
+    else
+        qam = c * filtered.y + s * filtered.z;
 
     // Generate composite signal and its constituents (for e.g. S-Video).
     vec2 composite;
@@ -311,7 +344,7 @@ void main()
         else if (PassIndex == PASS_DECODE)
         {
             // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
-            if (SVIDEO || COMB)
+            if (SVIDEO)
                 filter_pass_decode_simple(LumaEncodePAL, ChromaDecodePAL);
             else
                 filter_pass_decode_notch(LumaDecodePAL, ChromaDecodePAL);
