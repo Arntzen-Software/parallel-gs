@@ -650,8 +650,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		auto cmd = device.request_command_buffer();
 
-		auto info = ImageCreateInfo::immutable_2d_image(1, 16, VK_FORMAT_R8G8B8A8_UNORM);
-		const u8vec4 data[16] = {
+		auto info = ImageCreateInfo::immutable_2d_image(1, 32, VK_FORMAT_R8G8B8A8_UNORM);
+		const u8vec4 data[32] = {
 			// 75% and 100% tests as prescribed.
 			u8vec4(191, 191, 191, 0),
 			u8vec4(191, 191, 0, 0),
@@ -669,18 +669,51 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			u8vec4(255, 0, 0, 0),
 			u8vec4(0, 0, 255, 0),
 			u8vec4(0, 0, 0, 0),
+			u8vec4(0, 0, 191, 0),
+			u8vec4(0, 0, 191, 0),
+			u8vec4(0, 0, 191, 0),
+			u8vec4(0, 0, 191, 0),
+			u8vec4(0, 0, 191, 0),
+			u8vec4(0, 0, 191, 0),
+			u8vec4(0, 0, 191, 0),
+			u8vec4(0, 0, 191, 0),
+			u8vec4(191, 0, 0, 0),
+			u8vec4(191, 0, 0, 0),
+			u8vec4(191, 0, 0, 0),
+			u8vec4(191, 0, 0, 0),
+			u8vec4(191, 0, 0, 0),
+			u8vec4(191, 0, 0, 0),
+			u8vec4(191, 0, 0, 0),
+			u8vec4(191, 0, 0, 0),
 		};
 		ImageInitialData initial = { data, 0, 0 };
 		auto test_image = device.create_image(info, &initial);
 
-		AnalogVideoFilter filter;
-		AnalogVideoFilter::Options dev_opts = {};
-		dev_opts.cable = AnalogVideoFilter::Cable::Composite;
-		dev_opts.system = AnalogVideoFilter::System::PAL;
-		filter.init(device, dev_opts);
-		AnalogVideoFilter::FilterOptions opts = {};
-		opts.input_sampling_rate_mhz = 0.0f;
-		filter.run_filter(*cmd, test_image->get_view(), opts);
+		static const struct
+		{
+			const char *tag;
+			AnalogVideoFilter::Cable cable;
+			AnalogVideoFilter::System system;
+		} tests[] = {
+			{ "PAL composite", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::PAL },
+			{ "PAL svideo", AnalogVideoFilter::Cable::SVideo, AnalogVideoFilter::System::PAL },
+			{ "NTSC composite", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::NTSC },
+			{ "NTSC svideo", AnalogVideoFilter::Cable::SVideo, AnalogVideoFilter::System::NTSC },
+		};
+
+		for (auto &test : tests)
+		{
+			cmd->begin_region(test.tag);
+			AnalogVideoFilter filter;
+			AnalogVideoFilter::Options dev_opts = {};
+			dev_opts.cable = test.cable;
+			dev_opts.system = test.system;
+			filter.init(device, dev_opts);
+			AnalogVideoFilter::FilterOptions opts = {};
+			opts.input_sampling_rate_mhz = 0.0f;
+			filter.run_filter(*cmd, test_image->get_view(), opts);
+			cmd->end_region();
+		}
 
 		Fence fence;
 		device.submit(cmd, &fence);
@@ -745,7 +778,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		if (vsync.image)
 		{
 			AnalogVideoFilter::Options dev_opts = {};
-			dev_opts.cable = AnalogVideoFilter::Cable::Composite;
+			dev_opts.cable = AnalogVideoFilter::Cable::SVideo;
 			dev_opts.system = AnalogVideoFilter::System::PAL;
 			if (!filter.init(cmd->get_device(), dev_opts))
 				return;

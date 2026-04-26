@@ -22,7 +22,7 @@ layout(constant_id = 1) const bool PAL = false;
 layout(constant_id = 2) const bool SVIDEO = false;
 layout(constant_id = 3) const bool COMB = false;
 
-const int PaddingTaps = 32;
+const int PaddingTaps = 64;
 const uint SharedInputSize = gl_WorkGroupSize.x + PaddingTaps;
 // Could make this more compact, but readability is more important than pure perf for this shader.
 shared vec3 shared_loaded_inputs[SharedInputSize];
@@ -144,13 +144,23 @@ void load_inputs()
             float phase = compute_qam_phase(coord);
             vec3 yuv;
 
+            float c = cos(phase);
+            float s = sin(phase);
+
+            if (PAL)
+            {
+                // V flips polarity every line.
+                if (((gl_WorkGroupID.y + registers.line_phase) & 1u) != 0u)
+                    s = -s;
+            }
+
             if (SVIDEO)
             {
                 // For convenience the RT is encoded as (Y + C, C) to be able to read both.
                 vec2 svideo = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).xy;
                 svideo.x = decode_ire(svideo.x);
                 svideo.y = decode_ire(svideo.y);
-                yuv = vec3(svideo.x - svideo.y, cos(phase) * svideo.y, sin(phase) * svideo.y);
+                yuv = vec3(svideo.x - svideo.y, c * svideo.y, s * svideo.y);
             }
             else if (COMB)
             {
@@ -171,21 +181,7 @@ void load_inputs()
             else
             {
                 float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
-                float c = cos(phase);
-                float s = sin(phase);
-
-                if (PAL)
-                {
-                    // V flips polarity every line.
-                    if (((gl_WorkGroupID.y + registers.line_phase) & 1u) != 0u)
-                        s = -s;
-
-                    yuv = vec3(composite, c * composite, s * composite);
-                }
-                else
-                {
-                    yuv = vec3(composite, c * composite, s * composite);
-                }
+                yuv = vec3(composite, c * composite, s * composite);
             }
 
             shared_loaded_inputs[i] = yuv;
@@ -250,14 +246,47 @@ void filter_pass_encode(float luma_kernel[31], float chroma_kernel[31])
     imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), composite.xyxy);
 }
 
-void filter_pass_decode(float luma_kernel[31], float chroma_kernel[31])
+void filter_pass_decode_simple(float luma_kernel[31], float chroma_kernel[63])
 {
     uint local_index = gl_LocalInvocationIndex;
     vec3 filtered = vec3(0.0);
 
-    // 31-tap FIR.
+    // 31-tap FIR luma, 63-tap chroma.
     [[unroll]]
-    for (int i = 0; i < 31; i++)
+    for (int i = 0; i < 16; i++)
+    {
+        vec3 yuv = shared_loaded_inputs[local_index + i];
+        filtered.yz += (2.0 * chroma_kernel[i]) * yuv.yz;
+    }
+
+    [[unroll]]
+    for (int i = 16; i < 31 + 16; i++)
+    {
+        vec3 yuv = shared_loaded_inputs[local_index + i];
+        filtered.x += luma_kernel[i - 16] * yuv.x;
+        filtered.yz += (2.0 * chroma_kernel[i]) * yuv.yz;
+    }
+
+    [[unroll]]
+    for (int i = 31 + 16; i < 63; i++)
+    {
+        vec3 yuv = shared_loaded_inputs[local_index + i];
+        filtered.yz += (2.0 * chroma_kernel[i]) * yuv.yz;
+    }
+
+    filtered = decode_yuv(filtered);
+    int coord = int(gl_GlobalInvocationID.x + registers.output_offset);
+    imageStore(Outputs2D, ivec2(coord, gl_WorkGroupID.y), vec4(filtered, 0.0));
+}
+
+void filter_pass_decode_notch(float luma_kernel[63], float chroma_kernel[63])
+{
+    uint local_index = gl_LocalInvocationIndex;
+    vec3 filtered = vec3(0.0);
+
+    // 63-tap FIR. Maximum tomfoolery.
+    [[unroll]]
+    for (int i = 0; i < 63; i++)
     {
         vec3 yuv = shared_loaded_inputs[local_index + i];
         filtered.x += luma_kernel[i] * yuv.x;
@@ -283,9 +312,9 @@ void main()
         {
             // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
             if (SVIDEO || COMB)
-                filter_pass_decode(LumaEncodePAL, ChromaDecodePAL);
+                filter_pass_decode_simple(LumaEncodePAL, ChromaDecodePAL);
             else
-                filter_pass_decode(LumaDecodePAL, ChromaDecodePAL);
+                filter_pass_decode_notch(LumaDecodePAL, ChromaDecodePAL);
         }
     }
     else
@@ -298,9 +327,9 @@ void main()
         {
             // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
             if (SVIDEO || COMB)
-                filter_pass_decode(LumaEncodeNTSC, ChromaDecodeNTSC);
+                filter_pass_decode_simple(LumaEncodeNTSC, ChromaDecodeNTSC);
             else
-                filter_pass_decode(LumaDecodeNTSC, ChromaDecodeNTSC);
+                filter_pass_decode_notch(LumaDecodeNTSC, ChromaDecodeNTSC);
         }
     }
 }
