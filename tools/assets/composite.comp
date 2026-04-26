@@ -169,6 +169,8 @@ const int PASS_DECODE = 2;
 
 layout(constant_id = 0) const int PassIndex = 0;
 layout(constant_id = 1) const bool PAL = false;
+layout(constant_id = 2) const bool SVIDEO = false;
+layout(constant_id = 3) const bool COMB = false;
 
 const int PaddingTaps = 32;
 const uint SharedInputSize = gl_WorkGroupSize.x + PaddingTaps;
@@ -269,8 +271,38 @@ void load_inputs()
         {
             int coord = int(global_base_coord + i) + registers.input_offset;
             float phase = compute_qam_phase(coord);
-            float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
-            vec3 yuv = vec3(composite, cos(phase) * composite, sin(phase) * composite);
+            vec3 yuv;
+
+            if (SVIDEO)
+            {
+                // For convenience the RT is encoded as (Y + C, C) to be able to read both.
+                vec2 svideo = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).xy;
+                svideo.x = decode_ire(svideo.x);
+                svideo.y = decode_ire(svideo.y);
+                yuv = vec3(svideo.x - svideo.y, cos(phase) * svideo.y, sin(phase) * svideo.y);
+            }
+            else if (COMB)
+            {
+                float line = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
+                float prev = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x);
+
+                if (PAL)
+                {
+                    // PAL comb filter is much more involved.
+                }
+                else
+                {
+                    float qam = 0.5 * (line - prev);
+                    float y = 0.5 * (line + prev);
+                    yuv = vec3(y, cos(phase) * qam, sin(phase) * qam);
+                }
+            }
+            else
+            {
+                float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
+                yuv = vec3(composite, cos(phase) * composite, sin(phase) * composite);
+            }
+
             shared_loaded_inputs[i] = yuv;
         }
     }
@@ -319,11 +351,11 @@ void filter_pass_encode(float luma_kernel[31], float chroma_kernel[31])
     float qam = cos(phase) * filtered.y + sin(phase) * filtered.z;
 
     // Generate composite signal and its constituents (for e.g. S-Video).
-    vec4 composite;
+    vec2 composite;
     composite.x = encode_ire(filtered.x + qam);
-    composite.yzw = filtered;
+    composite.y = encode_ire(qam);
 
-    imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), composite);
+    imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), composite.xyxy);
 }
 
 void filter_pass_decode(float luma_kernel[31], float chroma_kernel[31])
@@ -349,17 +381,25 @@ void main()
 {
     load_inputs();
 
-    if (PAL)
+    if (PassIndex == PASS_DOWNSAMPLE)
+    {
+        filter_pass_downsample(DownsamplingKernel);
+    }
+    else if (PAL)
     {
 
     }
     else
     {
-        if (PassIndex == PASS_DOWNSAMPLE)
-            filter_pass_downsample(DownsamplingKernel);
-        else if (PassIndex == PASS_ENCODE)
+        if (PassIndex == PASS_ENCODE)
             filter_pass_encode(LumaEncodeNTSC, ChromaEncodeNTSC);
         else if (PassIndex == PASS_DECODE)
-            filter_pass_decode(LumaDecodeNTSC, ChromaDecodeNTSC);
+        {
+            // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
+            if (SVIDEO || COMB)
+                filter_pass_decode(LumaEncodeNTSC, ChromaDecodeNTSC);
+            else
+                filter_pass_decode(LumaDecodeNTSC, ChromaDecodeNTSC);
+        }
     }
 }

@@ -88,11 +88,10 @@ public:
 		// For best results, should be 56 MHz divided by an integer.
 		// input_sampling_rate_mhz = 56 / (MAGH + 1) for PS2.
 		float input_sampling_rate_mhz = 13.5f;
-		float subcarrier_phase_offset = 0.0f;
-		uint32_t phase = 0;
 
-		// For debug, sets chroma carrier to tiny frequency to validate IRE outputs.
-		bool validation_carrier = false;
+		float subcarrier_phase_offset = 0.0f;
+		uint32_t phase = 0; // Interlacing phase.
+		bool line_comb = false;
 	};
 
 	void run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &input, const FilterOptions &options);
@@ -143,7 +142,7 @@ bool AnalogVideoFilter::init(Vulkan::Device &device_, const Options &options_)
 	downsample_target = device->create_image(image_info);
 	device->set_name(*downsample_target, "downsample-target");
 
-	image_info.format = options.cable == Cable::Composite ? VK_FORMAT_R16_SFLOAT : VK_FORMAT_R16G16B16A16_SFLOAT;
+	image_info.format = options.cable == Cable::Composite ? VK_FORMAT_R16_SFLOAT : VK_FORMAT_R16G16_SFLOAT;
 	encode_target = device->create_image(image_info);
 	device->set_name(*encode_target, "encode-target");
 
@@ -192,7 +191,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	} push = {};
 
 	cmd.set_program("assets://composite.comp");
-	cmd.set_specialization_constant_mask(0x3);
+	cmd.set_specialization_constant_mask(0xf);
 	// Controls the filters. PAL has a bit more bandwidth.
 	cmd.set_specialization_constant(1, options.system == System::PAL);
 
@@ -202,9 +201,6 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	push.subcarrier_phases_per_pixel =
 			(options.system == System::NTSC ? (315.0f / 88.0f) : 4.43361875f) /
 			(13.5f * 2.0f);
-
-	if (filter_options.validation_carrier)
-		push.subcarrier_phases_per_pixel = 1.0f / 64.0f;
 
 	// Flip carrier phase every frame. Unsure if this is how it is supposed to work.
 	// NTSC scanlines flip phase every scanline.
@@ -275,6 +271,8 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	groups_x = (get_output().get_view_width() + 255) / 256;
 	push.input_offset = -81; // Shifts the output so that we end up being centered in a standard BT.601 720 pixel container.
 	cmd.push_constants(&push, 0, sizeof(push));
+	cmd.set_specialization_constant(2, options.cable == Cable::SVideo);
+	cmd.set_specialization_constant(3, filter_options.line_comb);
 	cmd.dispatch(groups_x, input.get_view_height(), 1);
 
 	cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
@@ -725,12 +723,16 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		AnalogVideoFilter filter;
 		if (vsync.image)
 		{
-			if (!filter.init(cmd->get_device(), {}))
+			AnalogVideoFilter::Options dev_opts = {};
+			dev_opts.cable = AnalogVideoFilter::Cable::Composite;
+			dev_opts.system = AnalogVideoFilter::System::PAL;
+			if (!filter.init(cmd->get_device(), dev_opts))
 				return;
 			AnalogVideoFilter::FilterOptions opts = {};
 			static uint32_t phase;
 			opts.phase = phase++;
 			opts.subcarrier_phase_offset = (opts.phase & 1) ? 0.5f : 0.0f;
+			opts.line_comb = true;
 			filter.run_filter(*cmd, vsync.image->get_view(), opts);
 		}
 
