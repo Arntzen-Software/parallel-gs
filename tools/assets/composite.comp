@@ -171,14 +171,21 @@ void load_inputs()
             else
             {
                 float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
-
                 float c = cos(phase);
                 float s = sin(phase);
-                // V flips polarity every line.
-                if (PAL && ((gl_WorkGroupID.y + registers.line_phase) & 1u) != 0u)
-                    s = -s;
 
-                yuv = vec3(composite, c * composite, s * composite);
+                if (PAL)
+                {
+                    // V flips polarity every line.
+                    if (((gl_WorkGroupID.y + registers.line_phase) & 1u) != 0u)
+                        s = -s;
+
+                    yuv = vec3(composite, c * composite, s * composite);
+                }
+                else
+                {
+                    yuv = vec3(composite, c * composite, s * composite);
+                }
             }
 
             shared_loaded_inputs[i] = yuv;

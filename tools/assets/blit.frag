@@ -82,7 +82,7 @@ void main()
     FragColor = sample_scan(vUV);
     //FragColor = textureLod(uSampler, vUV, 0.0).rgb;
 
-    FragColor = grille(FragColor, vUV * output_size);
+    //FragColor = grille(FragColor, vUV * output_size);
 
     if (HDR10)
         FragColor = encode_pq(primary_transform * FragColor);
