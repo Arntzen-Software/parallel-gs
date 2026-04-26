@@ -89,12 +89,17 @@ public:
 		// input_sampling_rate_mhz = 56 / (MAGH + 1) for PS2.
 		float input_sampling_rate_mhz = 13.5f;
 
-		float subcarrier_phase_offset = 0.0f;
+		// Adds a temporary offset to line counter. Useful for testing.
+		// Otherwise, this should be 0 to let the subcarrier work as intended.
+		uint64_t total_line_offset = 0;
+
 		uint32_t phase = 0; // Interlacing phase.
 		bool line_comb = false;
 	};
 
 	void run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &input, const FilterOptions &options);
+
+	void reset_line_counter(uint64_t value);
 
 	// Y resolution is the same as input resolution.
 	// X resolution is standard 720 horizontal active pixels, but doubled to bandlimited 1440 pixels.
@@ -159,6 +164,11 @@ bool AnalogVideoFilter::init(Vulkan::Device &device_, const Options &options_)
 	return true;
 }
 
+void AnalogVideoFilter::reset_line_counter(uint64_t value)
+{
+	total_line_counter = value;
+}
+
 void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &input,
                                    const FilterOptions &filter_options)
 {
@@ -188,12 +198,15 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		float subcarrier_phases_per_line; // For ENCODE pass.
 		float subcarrier_phase_offset;
 		float input_horiz_scale; // For DOWNSAMPLE pass.
+		int32_t line_phase; // For PAL. V flips polarity every line.
 	} push = {};
 
 	cmd.set_program("assets://composite.comp");
 	cmd.set_specialization_constant_mask(0xf);
 	// Controls the filters. PAL has a bit more bandwidth.
 	cmd.set_specialization_constant(1, options.system == System::PAL);
+	cmd.set_specialization_constant(2, false);
+	cmd.set_specialization_constant(3, false);
 
 	// PS2 CRTC subpixel clock is 4x BT.601 it seems.
 	push.input_offset = -16;
@@ -202,19 +215,26 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 			(options.system == System::NTSC ? (315.0f / 88.0f) : 4.43361875f) /
 			(13.5f * 2.0f);
 
-	// Flip carrier phase every frame. Unsure if this is how it is supposed to work.
-	// NTSC scanlines flip phase every scanline.
+	auto line_counter = total_line_counter + filter_options.total_line_offset;
+
 	if (options.system == System::NTSC)
 	{
-		push.subcarrier_phase_offset = (total_line_counter & 1) ? 0.5f : 0.0f;
+		// NTSC scanlines flip phase every scanline. Very easy to deal with.
+		push.subcarrier_phase_offset = (line_counter & 1) ? 0.5f : 0.0f;
 		push.subcarrier_phases_per_line = 227.5f;
 	}
 	else
 	{
-		// TODO: PAL. It's more complicated.
+		// PAL is more ... complicated.
+		// Each scanline is 283.75f subcarrier cycles, but PAL adds a +25 Hz bias to the subcarrier
+		// which was designed to mitigate Hanover Bars (how phase shifts manifest in PAL).
+		push.subcarrier_phases_per_line = 283.75f + 1.0f / 625.0f;
+
+		// The pattern repeats after 1250 lines.
+		push.subcarrier_phase_offset = float(line_counter % 1250) * push.subcarrier_phases_per_line;
 	}
 
-	push.subcarrier_phase_offset += filter_options.subcarrier_phase_offset;
+	push.line_phase = int(line_counter & 1);
 
 	// The exact specifics shouldn't matter too much, just need some way to nudge the carrier phase.
 	auto odd_lines = options.system == System::NTSC ? 263 : 262;
@@ -655,7 +675,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		AnalogVideoFilter filter;
 		AnalogVideoFilter::Options dev_opts = {};
-		dev_opts.cable = AnalogVideoFilter::Cable::SVideo;
+		dev_opts.cable = AnalogVideoFilter::Cable::Composite;
+		dev_opts.system = AnalogVideoFilter::System::PAL;
 		filter.init(device, dev_opts);
 		AnalogVideoFilter::FilterOptions opts = {};
 		opts.input_sampling_rate_mhz = 0.0f;
@@ -730,9 +751,26 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 				return;
 			AnalogVideoFilter::FilterOptions opts = {};
 			static uint32_t phase;
-			opts.phase = phase++;
-			opts.subcarrier_phase_offset = (opts.phase & 1) ? 0.5f : 0.0f;
-			opts.line_comb = true;
+
+			if (mode != IterationMode::Pause)
+				opts.phase = phase++;
+
+			if (dev_opts.system == AnalogVideoFilter::System::PAL)
+			{
+				switch (phase & 3)
+				{
+				case 0: opts.total_line_offset = 0; break;
+				case 1: opts.total_line_offset = 313; break;
+				case 2: opts.total_line_offset = 313 + 312; break;
+				case 3: opts.total_line_offset = 313 + 312 + 313; break;
+				}
+			}
+			else
+			{
+				opts.total_line_offset = phase & 1;
+			}
+
+			opts.line_comb = false;
 			filter.run_filter(*cmd, vsync.image->get_view(), opts);
 		}
 
