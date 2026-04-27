@@ -94,7 +94,7 @@ public:
 		uint64_t total_line_offset = 0;
 
 		uint32_t phase = 0; // Interlacing phase.
-		bool line_comb = false;
+		bool line_comb = true;
 	};
 
 	void run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &input, const FilterOptions &options);
@@ -124,6 +124,8 @@ private:
 	Vulkan::ImageHandle encode_target;
 	Vulkan::ImageHandle dummy_1d_array;
 	Vulkan::ImageHandle decode_target;
+	Vulkan::ImageHandle bandpass_target;
+	Vulkan::ImageHandle chroma_estimate_target;
 	uint64_t total_line_counter = 0;
 };
 
@@ -151,6 +153,14 @@ bool AnalogVideoFilter::init(Vulkan::Device &device_, const Options &options_)
 	encode_target = device->create_image(image_info);
 	device->set_name(*encode_target, "encode-target");
 
+	image_info.format = VK_FORMAT_R16_SFLOAT;
+	bandpass_target = device->create_image(image_info);
+	device->set_name(*bandpass_target, "bandpass-target");
+
+	image_info.format = VK_FORMAT_R16_SFLOAT;
+	chroma_estimate_target = device->create_image(image_info);
+	device->set_name(*chroma_estimate_target, "chroma-estimate");
+
 	image_info.width = 1;
 	image_info.layers = 1;
 	image_info.misc = Vulkan::IMAGE_MISC_FORCE_ARRAY_BIT;
@@ -167,6 +177,14 @@ bool AnalogVideoFilter::init(Vulkan::Device &device_, const Options &options_)
 void AnalogVideoFilter::reset_line_counter(uint64_t value)
 {
 	total_line_counter = value;
+}
+
+static void storage_to_sampled_barrier(Vulkan::CommandBuffer &cmd, const Vulkan::Image &img,
+                                       VkPipelineStageFlags2 extra_stages = VK_PIPELINE_STAGE_NONE)
+{
+	cmd.image_barrier(img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | extra_stages, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 }
 
 void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &input,
@@ -245,24 +263,35 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	cmd.set_texture(0, 1, dummy_1d_array->get_view());
 	cmd.set_storage_texture(0, 2, downsample_target->get_view());
 	cmd.set_storage_texture(0, 3, get_output());
+	cmd.set_texture(0, 4, dummy_1d_array->get_view());
+
+	const Vulkan::Image *images[] = {
+		downsample_target.get(),
+		encode_target.get(),
+		decode_target.get(),
+		bandpass_target.get(),
+		chroma_estimate_target.get(),
+	};
 
 	cmd.begin_barrier_batch();
-	cmd.image_barrier(*downsample_target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-	                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
-	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-	cmd.image_barrier(*encode_target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-	                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
-	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-	cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-	                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
-	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+	for (auto *img : images)
+	{
+		if (img)
+		{
+			cmd.image_barrier(*img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+						  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
+						  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+		}
+	}
 	cmd.end_barrier_batch();
 
 	enum
 	{
 		PassDownsample = 0,
 		PassEncode,
-		PassDecode
+		PassDecode,
+		PassBandpass,
+		PassSeparation
 	};
 
 	cmd.push_constants(&push, 0, sizeof(push));
@@ -271,9 +300,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	uint32_t groups_x = (downsample_target->get_width() + 255) / 256;
 	cmd.set_specialization_constant(0, PassDownsample);
 	cmd.dispatch(groups_x, input.get_view_height(), 1);
-	cmd.image_barrier(*downsample_target, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
-	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	storage_to_sampled_barrier(cmd, *downsample_target);
 
 	cmd.set_storage_texture(0, 2, encode_target->get_view());
 	cmd.set_specialization_constant(0, PassEncode);
@@ -281,24 +308,59 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	cmd.set_texture(0, 1, downsample_target->get_view());
 	cmd.dispatch(groups_x, input.get_view_height(), 1);
 
-	cmd.image_barrier(*encode_target, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
-				  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-				  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	storage_to_sampled_barrier(cmd, *encode_target);
 
+	if (options.cable == Cable::Composite && filter_options.line_comb)
+	{
+		if (options.system == System::NTSC)
+		{
+			// Simple 3-line comb filter approach.
+			// Estimate opposing phase by averaging neighbor lines which are both in opposing chroma carrier phase.
+			// E = 0.5 * (Line - 0.5 * (Prev + Next))
+			// BandE = bandpass(E)
+			// Y = Line - BandE
+			// C = BandE
+
+			// First estimate.
+			groups_x = (chroma_estimate_target->get_width() + 255) / 256;
+			cmd.set_texture(0, 1, encode_target->get_view());
+			cmd.set_storage_texture(0, 2, chroma_estimate_target->get_view());
+			push.input_offset = 0;
+			cmd.push_constants(&push, 0, sizeof(push));
+			cmd.set_specialization_constant(0, PassSeparation);
+			cmd.dispatch(groups_x, input.get_view_height(), 1);
+			storage_to_sampled_barrier(cmd, *chroma_estimate_target);
+
+			// Then bandpass to create estimated chroma signal.
+			groups_x = (bandpass_target->get_width() + 255) / 256;
+			push.input_offset = -15;
+			cmd.push_constants(&push, 0, sizeof(push));
+			cmd.set_texture(0, 1, chroma_estimate_target->get_view());
+			cmd.set_storage_texture(0, 2, bandpass_target->get_view());
+			cmd.set_specialization_constant(0, PassBandpass);
+			cmd.dispatch(groups_x, input.get_view_height(), 1);
+			storage_to_sampled_barrier(cmd, *bandpass_target);
+
+			cmd.set_texture(0, 4, bandpass_target->get_view());
+		}
+	}
+
+	// No need for further processing.
 	cmd.set_texture(0, 1, encode_target->get_view());
+
+	// We have Y + modulated C. Generate output RGB.
 	cmd.set_specialization_constant(0, PassDecode);
 	cmd.set_storage_texture(0, 2, dummy_1d_array->get_view());
 	groups_x = (get_output().get_view_width() + 255) / 256;
-	push.input_offset = -81; // Shifts the output so that we end up being centered in a standard BT.601 720 pixel container.
+	// Shifts the output so that we end up being centered in a standard BT.601 720 pixel container.
+	// TODO: Compute proper values here.
+	push.input_offset = -81;
 	cmd.push_constants(&push, 0, sizeof(push));
 	cmd.set_specialization_constant(2, options.cable == Cable::SVideo);
 	cmd.set_specialization_constant(3, filter_options.line_comb);
 	cmd.dispatch(groups_x, input.get_view_height(), 1);
 
-	cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
-	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-	                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	storage_to_sampled_barrier(cmd, *decode_target, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 }
 
 const Vulkan::ImageView &AnalogVideoFilter::get_output() const
@@ -698,11 +760,14 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			const char *tag;
 			AnalogVideoFilter::Cable cable;
 			AnalogVideoFilter::System system;
+			bool comb;
 		} tests[] = {
 			{ "PAL composite", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::PAL },
 			{ "PAL svideo", AnalogVideoFilter::Cable::SVideo, AnalogVideoFilter::System::PAL },
 			{ "NTSC composite", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::NTSC },
 			{ "NTSC svideo", AnalogVideoFilter::Cable::SVideo, AnalogVideoFilter::System::NTSC },
+			{ "NTSC composite + comb", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::NTSC, true },
+			{ "PAL composite + comb", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::PAL, true },
 		};
 
 		for (auto &test : tests)
@@ -715,6 +780,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			filter.init(device, dev_opts);
 			AnalogVideoFilter::FilterOptions opts = {};
 			opts.input_sampling_rate_mhz = 0.0f;
+			opts.line_comb = test.comb;
 			filter.run_filter(*cmd, test_image->get_view(), opts);
 			cmd->end_region();
 		}

@@ -1,7 +1,6 @@
 #version 450
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_EXT_samplerless_texture_functions : require
-#extension GL_EXT_debug_printf : require
 
 layout(local_size_x = 256) in;
 
@@ -9,6 +8,7 @@ layout(set = 0, binding = 0) uniform texture2D Inputs2D;
 layout(set = 0, binding = 1) uniform texture1DArray Inputs1D;
 layout(set = 0, binding = 2) writeonly uniform image1DArray Outputs1D;
 layout(set = 0, binding = 3) writeonly uniform image2D Outputs2D;
+layout(set = 0, binding = 4) uniform texture1DArray InputChromaEstimate;
 
 #include "filters.h"
 
@@ -17,6 +17,8 @@ const float PI = 3.14159265359;
 const int PASS_DOWNSAMPLE = 0;
 const int PASS_ENCODE = 1;
 const int PASS_DECODE = 2;
+const int PASS_BANDPASS = 3;
+const int PASS_SEPARATION = 4;
 
 layout(constant_id = 0) const int PassIndex = 0;
 layout(constant_id = 1) const bool PAL = false;
@@ -28,6 +30,7 @@ const uint SharedInputSize = gl_WorkGroupSize.x + PaddingTaps;
 // Could make this more compact, but readability is more important than pure perf for this shader.
 shared vec3 shared_loaded_inputs[SharedInputSize];
 shared vec3 shared_loaded_inputs_odd[SharedInputSize];
+shared float shared_loaded_inputs_float[SharedInputSize];
 
 layout(push_constant) uniform Registers
 {
@@ -60,11 +63,6 @@ vec3 encode_yuv(vec3 rgb)
     {
         const mat3 rgb_to_yuv = mat3(vec3(0.299, -0.14713, 0.615), vec3(0.587, -0.28886, -0.51499), vec3(0.114, 0.436, -0.10001));
         vec3 result = rgb_to_yuv * rgb;
-        if (gl_GlobalInvocationID.x == 512 && (gl_GlobalInvocationID.y == 16 || gl_GlobalInvocationID.y == 24))
-        {
-            vec3 d = decode_yuv(result);
-            debugPrintfEXT("Writing YUV (%f, %f, %f), decodes to (%f, %f, %f)", result.x, result.y, result.z, d.x, d.y, d.z);
-        }
         return result;
     }
     else
@@ -83,20 +81,24 @@ vec3 encode_yuv(vec3 rgb)
 
 float encode_ire(float v)
 {
+#if 0
     if (PAL)
         v *= 100.0;
     else
         v = 7.5 + (100.0 - 7.5) * v; // NTSC-J is supposed to use 0 IRE for black level.
+#endif
 
     return v;
 }
 
 float decode_ire(float v)
 {
+#if 0
     if (PAL)
         v /= 100.0;
     else
         v = (v - 7.5) / (100.0 - 7.5); // NTSC-J is supposed to use 0 IRE for black level.
+#endif
 
     return v;
 }
@@ -113,6 +115,23 @@ float compute_qam_phase(int coord)
 int scale_horiz_coord(int x)
 {
     return int(floor((float(x) + 0.5) * registers.input_horiz_scale));
+}
+
+void chroma_separation_pal()
+{
+
+}
+
+void chroma_separation_ntsc()
+{
+    int coord = int(gl_GlobalInvocationID.x);
+    float prev = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x);
+    float line = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y + 0), 0).x);
+    float next = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y + 1), 0).x);
+
+    float estimate = 0.5 * (line - 0.5 * (prev + next));
+
+    imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), vec4(encode_ire(estimate)));
 }
 
 void load_inputs()
@@ -134,13 +153,21 @@ void load_inputs()
     }
     else if (PassIndex == PASS_ENCODE)
     {
-        // Normal sampling or upsampling.
         for (uint i = gl_LocalInvocationIndex; i < SharedInputSize; i += gl_WorkGroupSize.x)
         {
             int coord = int(global_base_coord + i) + registers.input_offset;
             vec3 v = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).rgb;
             v = encode_yuv(v);
             shared_loaded_inputs[i] = v;
+        }
+    }
+    else if (PassIndex == PASS_BANDPASS)
+    {
+        for (uint i = gl_LocalInvocationIndex; i < SharedInputSize; i += gl_WorkGroupSize.x)
+        {
+            int coord = int(global_base_coord + i) + registers.input_offset;
+            float v = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x;
+            shared_loaded_inputs_float[i] = v;
         }
     }
     else if (PassIndex == PASS_DECODE)
@@ -163,7 +190,8 @@ void load_inputs()
 
             if (SVIDEO)
             {
-                // For convenience the RT is encoded as (Y + C, C) to be able to read both.
+                // For convenience the render target is encoded as (Y + C, C)
+                // to be able to read both when debugging and validate separation error.
                 vec2 svideo = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).xy;
                 svideo.x = decode_ire(svideo.x);
                 svideo.y = decode_ire(svideo.y);
@@ -175,25 +203,17 @@ void load_inputs()
             }
             else if (COMB)
             {
-                float line = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
+                float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
 
                 if (PAL)
                 {
-                    float prev = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 2), 0).x);
-                    float next = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y + 2), 0).x);
-                    float neighborhood = 0.5 * (prev + next);
-                    float qam = 0.5 * (line - neighborhood);
-                    float y = 0.5 * (line + neighborhood);
-                    yuv = vec3(y, s * qam, c * qam);
+                    // TODO
+                    yuv = vec3(composite, s * composite, c * composite);
                 }
                 else
                 {
-                    float prev = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x);
-                    float next = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y + 1), 0).x);
-                    float neighborhood = 0.5 * (prev + next);
-                    float qam = 0.5 * (line - neighborhood);
-                    float y = 0.5 * (line + neighborhood);
-                    yuv = vec3(y, c * qam, s * qam);
+                    float chroma_est = decode_ire(texelFetch(InputChromaEstimate, ivec2(coord, gl_WorkGroupID.y), 0).x);
+                    yuv = vec3(composite - chroma_est, c * chroma_est, s * chroma_est);
                 }
             }
             else
@@ -233,6 +253,22 @@ void filter_pass_downsample(float kernel[16])
     imageStore(Outputs1D, ivec2(int(gl_GlobalInvocationID.x) + registers.output_offset, gl_WorkGroupID.y), vec4(filtered, 0.0));
 }
 
+void filter_pass_bandpass(float kernel[31])
+{
+    uint local_index = gl_LocalInvocationIndex;
+    float filtered = 0.0;
+
+    // 31-tap FIR.
+    [[unroll]]
+    for (int i = 0; i < 31; i++)
+    {
+        float composite = shared_loaded_inputs_float[local_index + i];
+        filtered += kernel[i] * composite;
+    }
+
+    imageStore(Outputs1D, ivec2(int(gl_GlobalInvocationID.x) + registers.output_offset, gl_WorkGroupID.y), vec4(filtered));
+}
+
 // In 27 MHz domain. Easier this way.
 void filter_pass_encode(float luma_kernel[31], float chroma_kernel[31])
 {
@@ -246,12 +282,6 @@ void filter_pass_encode(float luma_kernel[31], float chroma_kernel[31])
         vec3 yuv = shared_loaded_inputs[local_index + i];
         filtered.x += luma_kernel[i] * yuv.x;
         filtered.yz += chroma_kernel[i] * yuv.yz;
-    }
-
-    if (gl_GlobalInvocationID.x == 512 && (gl_GlobalInvocationID.y == 16 || gl_GlobalInvocationID.y == 24))
-    {
-        vec3 d = decode_yuv(filtered);
-        debugPrintfEXT("Post-filter YUV (%f, %f, %f), decodes to (%f, %f, %f)", filtered.x, filtered.y, filtered.z, d.x, d.y, d.z);
     }
 
     int coord = int(gl_GlobalInvocationID.x + registers.output_offset);
@@ -333,36 +363,50 @@ void filter_pass_decode_notch(float luma_kernel[63], float chroma_kernel[63])
 
 void main()
 {
-    load_inputs();
-
-    if (PAL)
+    if (PassIndex == PASS_SEPARATION)
     {
-        if (PassIndex == PASS_DOWNSAMPLE)
-            filter_pass_downsample(DownsamplingKernelPAL);
-        else if (PassIndex == PASS_ENCODE)
-            filter_pass_encode(LumaEncodePAL, ChromaEncodePAL);
-        else if (PassIndex == PASS_DECODE)
-        {
-            // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
-            if (SVIDEO)
-                filter_pass_decode_simple(LumaEncodePAL, ChromaDecodePAL);
-            else
-                filter_pass_decode_notch(LumaDecodePAL, ChromaDecodePAL);
-        }
+        if (PAL)
+            chroma_separation_pal();
+        else
+            chroma_separation_ntsc();
     }
     else
     {
-        if (PassIndex == PASS_DOWNSAMPLE)
-            filter_pass_downsample(DownsamplingKernelNTSC);
-        else if (PassIndex == PASS_ENCODE)
-            filter_pass_encode(LumaEncodeNTSC, ChromaEncodeNTSC);
-        else if (PassIndex == PASS_DECODE)
+        load_inputs();
+
+        if (PAL)
         {
-            // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
-            if (SVIDEO || COMB)
-                filter_pass_decode_simple(LumaEncodeNTSC, ChromaDecodeNTSC);
-            else
-                filter_pass_decode_notch(LumaDecodeNTSC, ChromaDecodeNTSC);
+            if (PassIndex == PASS_DOWNSAMPLE)
+                filter_pass_downsample(DownsamplingKernelPAL);
+            else if (PassIndex == PASS_ENCODE)
+                filter_pass_encode(LumaEncodePAL, ChromaEncodePAL);
+            else if (PassIndex == PASS_DECODE)
+            {
+                // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
+                if (SVIDEO)
+                    filter_pass_decode_simple(LumaEncodePAL, ChromaDecodePAL);
+                else
+                    filter_pass_decode_notch(LumaDecodePAL, ChromaDecodePAL);
+            }
+            else if (PassIndex == PASS_BANDPASS)
+                filter_pass_bandpass(ChromaBandpassPAL);
+        }
+        else
+        {
+            if (PassIndex == PASS_DOWNSAMPLE)
+                filter_pass_downsample(DownsamplingKernelNTSC);
+            else if (PassIndex == PASS_ENCODE)
+                filter_pass_encode(LumaEncodeNTSC, ChromaEncodeNTSC);
+            else if (PassIndex == PASS_DECODE)
+            {
+                // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
+                if (SVIDEO || COMB)
+                    filter_pass_decode_simple(LumaEncodeNTSC, ChromaDecodeNTSC);
+                else
+                    filter_pass_decode_notch(LumaDecodeNTSC, ChromaDecodeNTSC);
+            }
+            else if (PassIndex == PASS_BANDPASS)
+                filter_pass_bandpass(ChromaBandpassNTSC);
         }
     }
 }
