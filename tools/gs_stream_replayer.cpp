@@ -126,6 +126,7 @@ private:
 	Vulkan::ImageHandle decode_target;
 	Vulkan::ImageHandle bandpass_target;
 	Vulkan::ImageHandle chroma_estimate_target;
+	Vulkan::ImageHandle pal_chroma_estimate_target;
 	uint64_t total_line_counter = 0;
 };
 
@@ -160,6 +161,9 @@ bool AnalogVideoFilter::init(Vulkan::Device &device_, const Options &options_)
 	image_info.format = VK_FORMAT_R16_SFLOAT;
 	chroma_estimate_target = device->create_image(image_info);
 	device->set_name(*chroma_estimate_target, "chroma-estimate");
+
+	pal_chroma_estimate_target = device->create_image(image_info);
+	device->set_name(*pal_chroma_estimate_target, "pal-chroma-estimate");
 
 	image_info.width = 1;
 	image_info.layers = 1;
@@ -271,6 +275,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		decode_target.get(),
 		bandpass_target.get(),
 		chroma_estimate_target.get(),
+		pal_chroma_estimate_target.get(),
 	};
 
 	cmd.begin_barrier_batch();
@@ -291,7 +296,8 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		PassEncode,
 		PassDecode,
 		PassBandpass,
-		PassSeparation
+		PassSeparation,
+		PassPALModulate
 	};
 
 	cmd.push_constants(&push, 0, sizeof(push));
@@ -342,6 +348,30 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 			storage_to_sampled_barrier(cmd, *bandpass_target);
 
 			cmd.set_texture(0, 4, bandpass_target->get_view());
+		}
+		else
+		{
+			// Single Line PAL Y/C separator.
+
+			// Bandpass to create estimated chroma signal.
+			groups_x = (bandpass_target->get_width() + 255) / 256;
+			push.input_offset = -15;
+			cmd.push_constants(&push, 0, sizeof(push));
+			cmd.set_texture(0, 1, encode_target->get_view());
+			cmd.set_storage_texture(0, 2, bandpass_target->get_view());
+			cmd.set_specialization_constant(0, PassBandpass);
+			cmd.dispatch(groups_x, input.get_view_height(), 1);
+			storage_to_sampled_barrier(cmd, *bandpass_target);
+
+			groups_x = (pal_chroma_estimate_target->get_width() + 255) / 256;
+			cmd.set_texture(0, 1, encode_target->get_view());
+			cmd.set_texture(0, 4, bandpass_target->get_view());
+			cmd.set_storage_texture(0, 2, pal_chroma_estimate_target->get_view());
+			cmd.set_specialization_constant(0, PassPALModulate);
+			cmd.dispatch(groups_x, input.get_view_height(), 1);
+			storage_to_sampled_barrier(cmd, *pal_chroma_estimate_target);
+
+			cmd.set_texture(0, 4, pal_chroma_estimate_target->get_view());
 		}
 	}
 
@@ -855,7 +885,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		{
 			AnalogVideoFilter::Options dev_opts = {};
 			dev_opts.cable = AnalogVideoFilter::Cable::Composite;
-			dev_opts.system = AnalogVideoFilter::System::NTSC;
+			dev_opts.system = AnalogVideoFilter::System::PAL;
 			if (!filter.init(cmd->get_device(), dev_opts))
 				return;
 			AnalogVideoFilter::FilterOptions opts = {};

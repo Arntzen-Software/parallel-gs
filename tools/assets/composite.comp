@@ -19,6 +19,7 @@ const int PASS_ENCODE = 1;
 const int PASS_DECODE = 2;
 const int PASS_BANDPASS = 3;
 const int PASS_SEPARATION = 4;
+const int PASS_PAL_MODULATE = 5;
 
 layout(constant_id = 0) const int PassIndex = 0;
 layout(constant_id = 1) const bool PAL = false;
@@ -119,7 +120,11 @@ int scale_horiz_coord(int x)
 
 void chroma_separation_pal()
 {
+    int coord = int(gl_GlobalInvocationID.x);
 
+    float prev = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x);
+    float estimate = prev;
+    imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), vec4(encode_ire(estimate)));
 }
 
 void chroma_separation_ntsc()
@@ -161,12 +166,20 @@ void load_inputs()
             shared_loaded_inputs[i] = v;
         }
     }
-    else if (PassIndex == PASS_BANDPASS)
+    else if (PassIndex == PASS_BANDPASS || PassIndex == PASS_PAL_MODULATE)
     {
         for (uint i = gl_LocalInvocationIndex; i < SharedInputSize; i += gl_WorkGroupSize.x)
         {
             int coord = int(global_base_coord + i) + registers.input_offset;
             float v = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x;
+            if (PassIndex == PASS_PAL_MODULATE)
+            {
+                float bandpass_prev = texelFetch(InputChromaEstimate, ivec2(coord, gl_WorkGroupID.y - 1), 0).x;
+                float phase = compute_qam_phase(coord);
+                float s = 2.0 * sin(2.0 * phase);
+                bandpass_prev *= s;
+                v = 0.5 * (v + bandpass_prev);
+            }
             shared_loaded_inputs_float[i] = v;
         }
     }
@@ -207,8 +220,8 @@ void load_inputs()
 
                 if (PAL)
                 {
-                    // TODO
-                    yuv = vec3(composite, s * composite, c * composite);
+                    float chroma_est = decode_ire(texelFetch(InputChromaEstimate, ivec2(coord, gl_WorkGroupID.y), 0).x);
+                    yuv = vec3(composite - chroma_est, s * chroma_est, c * chroma_est);
                 }
                 else
                 {
@@ -363,7 +376,12 @@ void filter_pass_decode_notch(float luma_kernel[63], float chroma_kernel[63])
 
 void main()
 {
-    if (PassIndex == PASS_SEPARATION)
+    if (PassIndex == PASS_PAL_MODULATE)
+    {
+        load_inputs();
+        filter_pass_bandpass(ChromaBandpassPAL);
+    }
+    else if (PassIndex == PASS_SEPARATION)
     {
         if (PAL)
             chroma_separation_pal();
@@ -383,7 +401,7 @@ void main()
             else if (PassIndex == PASS_DECODE)
             {
                 // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
-                if (SVIDEO)
+                if (SVIDEO || COMB)
                     filter_pass_decode_simple(LumaEncodePAL, ChromaDecodePAL);
                 else
                     filter_pass_decode_notch(LumaDecodePAL, ChromaDecodePAL);
