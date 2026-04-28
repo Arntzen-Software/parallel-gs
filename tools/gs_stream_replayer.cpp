@@ -285,7 +285,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	}
 	cmd.end_barrier_batch();
 
-	enum
+	enum Pass
 	{
 		PassDownsample = 0,
 		PassEncode,
@@ -294,63 +294,57 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		PassSeparation
 	};
 
-	cmd.push_constants(&push, 0, sizeof(push));
+	const auto run_pass = [&](Pass pass, const Vulkan::ImageView *src, const Vulkan::ImageView *dst)
+	{
+		cmd.push_constants(&push, 0, sizeof(push));
+
+		if (src)
+			cmd.set_texture(0, 1, *src);
+
+		uint32_t groups_x;
+
+		if (dst)
+		{
+			cmd.set_storage_texture(0, 2, *dst);
+			groups_x = (dst->get_view_width() + 255) / 256;
+		}
+		else
+		{
+			groups_x = (get_output().get_view_width() + 255) / 256;
+		}
+
+		cmd.set_specialization_constant(0, pass);
+		cmd.dispatch(groups_x, input.get_view_height(), 1);
+		if (dst)
+			storage_to_sampled_barrier(cmd, dst->get_image());
+	};
 
 	// Run downsampling filter to 2x BT.601 rate. It's a comfortable and convenient sampling rate to do DSP on.
-	uint32_t groups_x = (downsample_target->get_width() + 255) / 256;
-	cmd.set_specialization_constant(0, PassDownsample);
-	cmd.dispatch(groups_x, input.get_view_height(), 1);
-	storage_to_sampled_barrier(cmd, *downsample_target);
-
-	cmd.set_storage_texture(0, 2, encode_target->get_view());
-	cmd.set_specialization_constant(0, PassEncode);
-	groups_x = (encode_target->get_width() + 255) / 256;
-	cmd.set_texture(0, 1, downsample_target->get_view());
-	cmd.dispatch(groups_x, input.get_view_height(), 1);
-
-	storage_to_sampled_barrier(cmd, *encode_target);
+	run_pass(PassDownsample, nullptr, &downsample_target->get_view());
+	run_pass(PassEncode, &downsample_target->get_view(), &encode_target->get_view());
 
 	if (options.cable == Cable::Composite && filter_options.line_comb)
 	{
 		// PAL does a bandpass while NTSC does not, so shift accordingly.
 		push.input_offset = options.system == System::PAL ? -15 : 0;
+		run_pass(PassSeparation, &encode_target->get_view(), &chroma_estimate_target->get_view());
 
-		// First estimate.
-		groups_x = (chroma_estimate_target->get_width() + 255) / 256;
-		cmd.set_texture(0, 1, encode_target->get_view());
-		cmd.set_storage_texture(0, 2, chroma_estimate_target->get_view());
-		cmd.push_constants(&push, 0, sizeof(push));
-		cmd.set_specialization_constant(0, PassSeparation);
-		cmd.dispatch(groups_x, input.get_view_height(), 1);
-		storage_to_sampled_barrier(cmd, *chroma_estimate_target);
-
-		// Then bandpass to create estimated chroma signal.
-		groups_x = (bandpass_target->get_width() + 255) / 256;
 		push.input_offset = -15;
-		cmd.push_constants(&push, 0, sizeof(push));
-		cmd.set_texture(0, 1, chroma_estimate_target->get_view());
-		cmd.set_storage_texture(0, 2, bandpass_target->get_view());
-		cmd.set_specialization_constant(0, PassBandpass);
-		cmd.dispatch(groups_x, input.get_view_height(), 1);
-		storage_to_sampled_barrier(cmd, *bandpass_target);
+		run_pass(PassBandpass, &chroma_estimate_target->get_view(), &bandpass_target->get_view());
 
 		cmd.set_texture(0, 4, bandpass_target->get_view());
 	}
 
 	// No need for further processing.
-	cmd.set_texture(0, 1, encode_target->get_view());
+	cmd.set_storage_texture(0, 2, dummy_1d_array->get_view());
 
 	// We have Y + modulated C. Generate output RGB.
-	cmd.set_specialization_constant(0, PassDecode);
-	cmd.set_storage_texture(0, 2, dummy_1d_array->get_view());
-	groups_x = (get_output().get_view_width() + 255) / 256;
 	// Shifts the output so that we end up being centered in a standard BT.601 720 pixel container.
 	// TODO: Compute proper values here.
 	push.input_offset = -81;
-	cmd.push_constants(&push, 0, sizeof(push));
 	cmd.set_specialization_constant(2, options.cable == Cable::SVideo);
 	cmd.set_specialization_constant(3, filter_options.line_comb);
-	cmd.dispatch(groups_x, input.get_view_height(), 1);
+	run_pass(PassDecode, &encode_target->get_view(), nullptr);
 
 	storage_to_sampled_barrier(cmd, *decode_target, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 }
