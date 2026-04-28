@@ -708,8 +708,9 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		auto cmd = device.request_command_buffer();
 
-		auto info = ImageCreateInfo::immutable_2d_image(1, 32, VK_FORMAT_R8G8B8A8_UNORM);
-		const u8vec4 data[32] = {
+		auto info = ImageCreateInfo::immutable_2d_image(1, 16, VK_FORMAT_R8G8B8A8_UNORM);
+		const u8vec4 data[16] = {
+#if 0
 			// 75% and 100% tests as prescribed.
 			u8vec4(191, 191, 191, 0),
 			u8vec4(191, 191, 0, 0),
@@ -727,6 +728,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			u8vec4(255, 0, 0, 0),
 			u8vec4(0, 0, 255, 0),
 			u8vec4(0, 0, 0, 0),
+#endif
 			u8vec4(0, 0, 191, 0),
 			u8vec4(0, 0, 191, 0),
 			u8vec4(0, 0, 191, 0),
@@ -847,7 +849,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		{
 			AnalogVideoFilter::Options dev_opts = {};
 			dev_opts.cable = AnalogVideoFilter::Cable::Composite;
-			dev_opts.system = AnalogVideoFilter::System::PAL;
+			dev_opts.system = AnalogVideoFilter::System::NTSC;
 			if (!filter.init(cmd->get_device(), dev_opts))
 				return;
 			AnalogVideoFilter::FilterOptions opts = {};

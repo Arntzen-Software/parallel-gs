@@ -191,6 +191,8 @@ void load_inputs()
             float chroma_cancel = line1 - 0.5 * (line2 + line0); // Fed through bandpass
             float chroma_estimator = 0.5 * (line0 - line2); // Fed through bandpass
 
+            chroma_estimator = line1;
+
             shared_loaded_inputs_float_x[i] = chroma_cancel;
             shared_loaded_inputs_float_y[i] = chroma_estimator;
         }
@@ -200,7 +202,7 @@ void load_inputs()
         for (uint i = gl_LocalInvocationIndex; i < SharedInputSize; i += gl_WorkGroupSize.x)
         {
             int coord = int(global_base_coord + i) + registers.input_offset;
-            float phase = compute_qam_phase(coord, COMB ? -1 : 0);
+            float phase = compute_qam_phase(coord, !PAL && COMB ? -1 : 0);
 
             vec3 yuv;
 
@@ -210,7 +212,7 @@ void load_inputs()
             if (PAL)
             {
                 // V flips polarity every line. V is modulated by cos carrier.
-                if (((int(gl_WorkGroupID.y) + (COMB ? -1 : 0) + registers.line_phase) & 1u) != 0u)
+                if (((int(gl_WorkGroupID.y) + registers.line_phase) & 1u) != 0u)
                     c = -c;
             }
 
@@ -229,18 +231,21 @@ void load_inputs()
             }
             else if (COMB)
             {
-                // Make sure we consider causality of the delay lines.
-                float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x);
-
                 if (PAL)
                 {
+                    // Make sure we consider causality of the delay lines.
+                    float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
+
                     vec2 estimates = texelFetch(InputChromaEstimate, ivec2(coord, gl_WorkGroupID.y), 0).xy;
                     estimates.x = decode_ire(estimates.x);
                     estimates.y = decode_ire(estimates.y);
-                    yuv = vec3(composite - estimates.x, s * estimates.y, c * estimates.y);
+                    yuv = vec3(composite - estimates.y, s * estimates.y, c * estimates.y);
                 }
                 else
                 {
+                    // Make sure we consider causality of the delay lines.
+                    float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x);
+
                     float chroma_est = decode_ire(texelFetch(InputChromaEstimate, ivec2(coord, gl_WorkGroupID.y), 0).x);
                     yuv = vec3(composite - chroma_est, c * chroma_est, s * chroma_est);
                 }
@@ -326,7 +331,8 @@ void filter_pass_bandpass_pal_separator(float kernel[31])
     int coord = int(gl_GlobalInvocationID.x);
     float phase = compute_pal_phase(coord);
     filtered1 *= 2.0 * sin(phase);
-    filtered1 += texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x;
+
+    filtered1 += texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x;
     filtered1 *= 0.5;
 
     // filtered0 is ready to go.
