@@ -126,7 +126,6 @@ private:
 	Vulkan::ImageHandle decode_target;
 	Vulkan::ImageHandle bandpass_target;
 	Vulkan::ImageHandle chroma_estimate_target;
-	Vulkan::ImageHandle pal_chroma_estimate_target;
 	uint64_t total_line_counter = 0;
 };
 
@@ -154,16 +153,13 @@ bool AnalogVideoFilter::init(Vulkan::Device &device_, const Options &options_)
 	encode_target = device->create_image(image_info);
 	device->set_name(*encode_target, "encode-target");
 
-	image_info.format = VK_FORMAT_R16_SFLOAT;
+	image_info.format = options.system == System::PAL ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16_SFLOAT;
 	bandpass_target = device->create_image(image_info);
 	device->set_name(*bandpass_target, "bandpass-target");
 
-	image_info.format = VK_FORMAT_R16_SFLOAT;
+	image_info.format = options.system == System::PAL ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16_SFLOAT;
 	chroma_estimate_target = device->create_image(image_info);
 	device->set_name(*chroma_estimate_target, "chroma-estimate");
-
-	pal_chroma_estimate_target = device->create_image(image_info);
-	device->set_name(*pal_chroma_estimate_target, "pal-chroma-estimate");
 
 	image_info.width = 1;
 	image_info.layers = 1;
@@ -275,7 +271,6 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		decode_target.get(),
 		bandpass_target.get(),
 		chroma_estimate_target.get(),
-		pal_chroma_estimate_target.get(),
 	};
 
 	cmd.begin_barrier_batch();
@@ -296,8 +291,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		PassEncode,
 		PassDecode,
 		PassBandpass,
-		PassSeparation,
-		PassPALModulate
+		PassSeparation
 	};
 
 	cmd.push_constants(&push, 0, sizeof(push));
@@ -318,61 +312,29 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 
 	if (options.cable == Cable::Composite && filter_options.line_comb)
 	{
-		if (options.system == System::NTSC)
-		{
-			// Simple 3-line comb filter approach.
-			// Estimate opposing phase by averaging neighbor lines which are both in opposing chroma carrier phase.
-			// E = 0.5 * (Line - 0.5 * (Prev + Next))
-			// BandE = bandpass(E)
-			// Y = Line - BandE
-			// C = BandE
+		// PAL does a bandpass while NTSC does not, so shift accordingly.
+		push.input_offset = options.system == System::PAL ? -15 : 0;
 
-			// First estimate.
-			groups_x = (chroma_estimate_target->get_width() + 255) / 256;
-			cmd.set_texture(0, 1, encode_target->get_view());
-			cmd.set_storage_texture(0, 2, chroma_estimate_target->get_view());
-			push.input_offset = 0;
-			cmd.push_constants(&push, 0, sizeof(push));
-			cmd.set_specialization_constant(0, PassSeparation);
-			cmd.dispatch(groups_x, input.get_view_height(), 1);
-			storage_to_sampled_barrier(cmd, *chroma_estimate_target);
+		// First estimate.
+		groups_x = (chroma_estimate_target->get_width() + 255) / 256;
+		cmd.set_texture(0, 1, encode_target->get_view());
+		cmd.set_storage_texture(0, 2, chroma_estimate_target->get_view());
+		cmd.push_constants(&push, 0, sizeof(push));
+		cmd.set_specialization_constant(0, PassSeparation);
+		cmd.dispatch(groups_x, input.get_view_height(), 1);
+		storage_to_sampled_barrier(cmd, *chroma_estimate_target);
 
-			// Then bandpass to create estimated chroma signal.
-			groups_x = (bandpass_target->get_width() + 255) / 256;
-			push.input_offset = -15;
-			cmd.push_constants(&push, 0, sizeof(push));
-			cmd.set_texture(0, 1, chroma_estimate_target->get_view());
-			cmd.set_storage_texture(0, 2, bandpass_target->get_view());
-			cmd.set_specialization_constant(0, PassBandpass);
-			cmd.dispatch(groups_x, input.get_view_height(), 1);
-			storage_to_sampled_barrier(cmd, *bandpass_target);
+		// Then bandpass to create estimated chroma signal.
+		groups_x = (bandpass_target->get_width() + 255) / 256;
+		push.input_offset = -15;
+		cmd.push_constants(&push, 0, sizeof(push));
+		cmd.set_texture(0, 1, chroma_estimate_target->get_view());
+		cmd.set_storage_texture(0, 2, bandpass_target->get_view());
+		cmd.set_specialization_constant(0, PassBandpass);
+		cmd.dispatch(groups_x, input.get_view_height(), 1);
+		storage_to_sampled_barrier(cmd, *bandpass_target);
 
-			cmd.set_texture(0, 4, bandpass_target->get_view());
-		}
-		else
-		{
-			// Single Line PAL Y/C separator.
-
-			// Bandpass to create estimated chroma signal.
-			groups_x = (bandpass_target->get_width() + 255) / 256;
-			push.input_offset = -15;
-			cmd.push_constants(&push, 0, sizeof(push));
-			cmd.set_texture(0, 1, encode_target->get_view());
-			cmd.set_storage_texture(0, 2, bandpass_target->get_view());
-			cmd.set_specialization_constant(0, PassBandpass);
-			cmd.dispatch(groups_x, input.get_view_height(), 1);
-			storage_to_sampled_barrier(cmd, *bandpass_target);
-
-			groups_x = (pal_chroma_estimate_target->get_width() + 255) / 256;
-			cmd.set_texture(0, 1, encode_target->get_view());
-			cmd.set_texture(0, 4, bandpass_target->get_view());
-			cmd.set_storage_texture(0, 2, pal_chroma_estimate_target->get_view());
-			cmd.set_specialization_constant(0, PassPALModulate);
-			cmd.dispatch(groups_x, input.get_view_height(), 1);
-			storage_to_sampled_barrier(cmd, *pal_chroma_estimate_target);
-
-			cmd.set_texture(0, 4, pal_chroma_estimate_target->get_view());
-		}
+		cmd.set_texture(0, 4, bandpass_target->get_view());
 	}
 
 	// No need for further processing.
