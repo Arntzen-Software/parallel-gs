@@ -15,14 +15,14 @@ pal_subcarrier = 4.43361875e6;
 % so it looks plausible that PS2 would ship something similar.
 ntsc_luma_bw = 4.2e6;
 ntsc_luma_stop = 6.75e6;
-ntsc_chroma_bw = 1.0e6;
-ntsc_chroma_stop = 2.0e6;
+ntsc_chroma_bw = 0.8e6;
+ntsc_chroma_stop = 1.5e6;
 
 % PAL-B which was used in Norway.
 pal_luma_bw = 5e6;
 pal_luma_stop = 6.75e6;
-pal_chroma_bw = 1.3e6;
-pal_chroma_stop = 2.2e6;
+pal_chroma_bw = 1.0e6;
+pal_chroma_stop = 2.0e6;
 
 % First stage of downsampling from 54 MHz to 27 MHz.
 % Assume some zero-order hold behavior coming out of the CRTC due to its subclock behavior.
@@ -47,7 +47,7 @@ pal_chroma_lp_encode = firls(30, [0, pal_chroma_bw, ntsc_chroma_stop, bt601_rate
 
 % NTSC decode
 % Suppress the luma DC which ends up at subcarrier freq after demodulating.
-ntsc_chroma_lp_decode = firls(64 - 6, [0, ntsc_chroma_bw * 0.5, ntsc_chroma_stop * 0.5, bt601_rate] / bt601_rate, [1 1 0 0])';
+ntsc_chroma_lp_decode = firls(64 - 6, [0, ntsc_chroma_bw * 0.75, ntsc_chroma_stop * 0.75, bt601_rate] / bt601_rate, [1 1 0 0])';
 
 ntsc_subcarrier_w = ntsc_subcarrier / (2 * bt601_rate);
 subcarrier_zero = exp(2 * pi * j * ntsc_subcarrier_w);
@@ -71,7 +71,7 @@ ntsc_chroma_lp_decode = conv(ntsc_chroma_lp_decode, subcarrier_notch)';
 
 % PAL decode
 % Just use different carrier freqs.
-pal_chroma_lp_decode = firls(64 - 6, [0, pal_chroma_bw * 0.5, pal_chroma_stop * 0.5, bt601_rate] / bt601_rate, [1 1 0 0])';
+pal_chroma_lp_decode = firls(64 - 6, [0, pal_chroma_bw * 0.75, pal_chroma_stop * 0.75, bt601_rate] / bt601_rate, [1 1 0 0])';
 
 pal_subcarrier_w = pal_subcarrier / (2 * bt601_rate);
 subcarrier_zero = exp(2 * pi * j * pal_subcarrier_w);
