@@ -215,6 +215,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		float subcarrier_phase_offset;
 		float input_horiz_scale; // For DOWNSAMPLE pass.
 		int32_t line_phase; // For PAL. V flips polarity every line.
+		int32_t height; // For chroma reconstruction filter.
 	} push = {};
 
 	cmd.set_program("assets://composite.comp");
@@ -227,6 +228,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	// PS2 CRTC subpixel clock is 4x BT.601 it seems.
 	push.input_offset = -16;
 	push.input_horiz_scale = filter_options.input_sampling_rate_mhz / (13.5f * 4.0f);
+	push.height = int(input.get_view_height());
 	push.subcarrier_phases_per_pixel =
 			(options.system == System::NTSC ? (315.0f / 88.0f) : 4.43361875f) /
 			(13.5f * 2.0f);

@@ -42,6 +42,7 @@ layout(push_constant) uniform Registers
     float subcarrier_phase_offset;
     float input_horiz_scale;
     int line_phase;
+    int height;
 } registers;
 
 vec3 decode_yuv(vec3 yuv)
@@ -116,11 +117,6 @@ float compute_qam_phase(int coord, int line_offset)
     return 2.0 * PI * fract(get_qam_phase(coord, line_offset));
 }
 
-float compute_pal_phase(int coord)
-{
-    return 2.0 * PI * fract(2.0 * get_qam_phase(coord, 0));
-}
-
 int scale_horiz_coord(int x)
 {
     return int(floor((float(x) + 0.5) * registers.input_horiz_scale));
@@ -141,14 +137,17 @@ void chroma_separation_pal()
     {
         float line = 0.0;
 
-        [[unroll]]
-        for (int x = -2; x <= 2; x++)
+        if (y <= 0 || (int(gl_WorkGroupID.y) + 1 < registers.height))
         {
-            float pix = decode_ire(texelFetch(Inputs1D, ivec2(coord + x, int(gl_WorkGroupID.y) + y), 0).x);
-            line += horiz_filter[x + 2] * pix;
-        }
+            [[unroll]]
+            for (int x = -2; x <= 2; x++)
+            {
+                float pix = decode_ire(texelFetch(Inputs1D, ivec2(coord + x, int(gl_WorkGroupID.y) + y), 0).x);
+                line += horiz_filter[x + 2] * pix;
+            }
 
-        estimate += vert_filter[y + 1] * line;
+            estimate += vert_filter[y + 1] * line;
+        }
     }
 
     imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), vec4(encode_ire(estimate)));
@@ -159,7 +158,11 @@ void chroma_separation_ntsc()
     int coord = int(gl_GlobalInvocationID.x);
     float line0 = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x);
     float line1 = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y + 0), 0).x);
-    float line2 = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y + 1), 0).x);
+
+    float line2 = 0.0;
+    if (int(gl_WorkGroupID.y) + 1 < registers.height)
+        line2 = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y + 1), 0).x);
+
     float estimate = 0.5 * (line1 - 0.5 * (line2 + line0));
     imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), vec4(encode_ire(estimate)));
 }
@@ -306,35 +309,6 @@ void filter_pass_bandpass(float kernel[31])
     {
         imageStore(Outputs1D, ivec2(int(gl_GlobalInvocationID.x) + registers.output_offset, gl_WorkGroupID.y), vec4(filtered));
     }
-}
-
-void filter_pass_bandpass_pal_separator(float kernel[31])
-{
-    uint local_index = gl_LocalInvocationIndex;
-    float filtered0 = 0.0;
-    float filtered1 = 0.0;
-
-    // 31-tap FIR.
-    [[unroll]]
-    for (int i = 0; i < 31; i++)
-    {
-        float c0 = shared_loaded_inputs_float_x[local_index + i];
-        float c1 = shared_loaded_inputs_float_y[local_index + i];
-        filtered0 += kernel[i] * c0;
-        filtered1 += kernel[i] * c1;
-    }
-
-    int coord = int(gl_GlobalInvocationID.x);
-    float phase = compute_pal_phase(coord);
-    filtered1 *= 2.0 * sin(phase);
-
-    filtered1 += texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x;
-    filtered1 *= 0.5;
-
-    // filtered0 is ready to go.
-    // filtered1 now need to be bandpassed before demodulating.
-    imageStore(Outputs1D, ivec2(int(gl_GlobalInvocationID.x) + registers.output_offset, gl_WorkGroupID.y),
-            vec2(filtered0, filtered1).xyxy);
 }
 
 // In 27 MHz domain. Easier this way.
