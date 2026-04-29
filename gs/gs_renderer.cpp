@@ -5000,7 +5000,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		}
 	}
 
-	if (!high_resolution_scanout && (is_interlaced || force_deinterlace))
+	bool should_deinterlace = !high_resolution_scanout && (is_interlaced || force_deinterlace);
+
+	if (!info.skip_deinterlace && should_deinterlace)
 	{
 		for (int i = 3; i >= 1; i--)
 			vsync_last_fields[i] = std::move(vsync_last_fields[i - 1]);
@@ -5032,6 +5034,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	}
 
 	result.image = std::move(merged);
+	result.interlaced = info.skip_deinterlace && should_deinterlace;
+	result.interlace_phase = info.phase;
+
 	flush_submit(0);
 	return result;
 }

@@ -527,6 +527,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		fsr_render_target.reset();
 	}
 
+	AnalogVideoFilter filter;
+
 	void on_device_created(const DeviceCreatedEvent &e)
 	{
 		// We will cycle through many memory contexts per frame most likely.
@@ -562,6 +564,12 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		Shaders<> suite(e.get_device(), layout, 0);
 		upscale_program = e.get_device().request_program(suite.upscale_vert, suite.upscale_frag);
 		sharpen_program = e.get_device().request_program(suite.sharpen_vert, suite.sharpen_frag);
+
+		AnalogVideoFilter::Options dev_opts = {};
+		dev_opts.cable = AnalogVideoFilter::Cable::Composite;
+		dev_opts.system = AnalogVideoFilter::System::PAL;
+		if (!filter.init(e.get_device(), dev_opts))
+			request_shutdown();
 	}
 
 	void on_device_destroyed(const DeviceCreatedEvent &)
@@ -630,7 +638,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	}
 
-	void render_dummy(CommandBuffer &cmd, const ImageView &view)
+	void render_dummy(CommandBuffer &cmd, const ImageView &view, uint32_t phase)
 	{
 		cmd.set_opaque_sprite_state();
 		cmd.set_depth_test(false, false);
@@ -653,6 +661,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		{
 			vec4 input_sizes;
 			vec4 output_sizes;
+			float phase;
 		} push = {};
 
 		push.input_sizes = vec4(
@@ -666,6 +675,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			cmd.get_viewport().height,
 			1.0f / cmd.get_viewport().width,
 			1.0f / cmd.get_viewport().height);
+
+		push.phase = float(phase);
 
 		cmd.push_constants(&push, 0, sizeof(push));
 
@@ -769,15 +780,15 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		for (auto &test : tests)
 		{
 			cmd->begin_region(test.tag);
-			AnalogVideoFilter filter;
+			AnalogVideoFilter test_filter;
 			AnalogVideoFilter::Options dev_opts = {};
 			dev_opts.cable = test.cable;
 			dev_opts.system = test.system;
-			filter.init(device, dev_opts);
+			test_filter.init(device, dev_opts);
 			AnalogVideoFilter::FilterOptions opts = {};
 			opts.input_sampling_rate_mhz = 0.0f;
 			opts.line_comb = test.comb;
-			filter.run_filter(*cmd, test_image->get_view(), opts);
+			test_filter.run_filter(*cmd, test_image->get_view(), opts);
 			cmd->end_region();
 		}
 
@@ -801,7 +812,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		auto &wsi = get_wsi();
 		auto &device = wsi.get_device();
 
-		test_filter();
+		//test_filter();
 
 		if (capture_count == NumCaptureFrames && has_renderdoc_capture)
 		{
@@ -817,7 +828,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		if (mode != IterationMode::Pause && !is_eof)
 		{
-			if (parser.iterate_until_vsync())
+			if (parser.iterate_until_vsync(false, true))
 			{
 				vsync = parser.consume_vsync_result();
 				auto flush_stats = iface->consume_flush_stats();
@@ -846,35 +857,11 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		//if (vsync.image)
 		//	render_fsr(*cmd, vsync.image->get_view());
 
-		AnalogVideoFilter filter;
 		if (vsync.image)
 		{
-			AnalogVideoFilter::Options dev_opts = {};
-			dev_opts.cable = AnalogVideoFilter::Cable::Composite;
-			dev_opts.system = AnalogVideoFilter::System::PAL;
-			if (!filter.init(cmd->get_device(), dev_opts))
-				return;
 			AnalogVideoFilter::FilterOptions opts = {};
-			static uint32_t phase;
-
-			if (mode != IterationMode::Pause)
-				opts.phase = phase++;
-
-			if (dev_opts.system == AnalogVideoFilter::System::PAL)
-			{
-				switch (phase & 3)
-				{
-				case 0: opts.total_line_offset = 0; break;
-				case 1: opts.total_line_offset = 313; break;
-				case 2: opts.total_line_offset = 313 + 312; break;
-				case 3: opts.total_line_offset = 313 + 312 + 313; break;
-				}
-			}
-			else
-			{
-				opts.total_line_offset = phase & 1;
-			}
-
+			opts.phase = vsync.interlace_phase;
+			opts.input_sampling_rate_mhz = 13.5f * float(vsync.image->get_width()) / 640.0f;
 			opts.line_comb = true;
 			filter.run_filter(*cmd, vsync.image->get_view(), opts);
 		}
@@ -884,7 +871,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		if (vsync.image)
 		{
 			//render_rcas(*cmd, fsr_render_target->get_view());
-			render_dummy(*cmd, filter.get_output());
+			render_dummy(*cmd, filter.get_output(), vsync.interlace_phase);
 		}
 
 #if 1

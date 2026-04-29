@@ -9,6 +9,7 @@ layout(push_constant) uniform Registers
 {
     vec2 input_size, inv_input_size;
     vec2 output_size, inv_output_size;
+    float phase;
 };
 
 layout(set = 0, binding = 1, std140) uniform Primary
@@ -16,8 +17,7 @@ layout(set = 0, binding = 1, std140) uniform Primary
     mat3 primary_transform;
 };
 
-const float HorizFactor = 2.0;
-const float VertFactor = 4.0;
+const float VertFactor = 3.0;
 
 layout(constant_id = 0) const bool HDR10 = false;
 
@@ -30,7 +30,7 @@ void accumulate(vec3 sampled, inout vec3 color, int y, float phase)
 
 vec3 sample_scan(vec2 coord)
 {
-    float input_coord_y = coord.y * input_size.y;
+    float input_coord_y = coord.y * input_size.y - 0.5 * phase;
     float floor_coord_y = floor(input_coord_y);
     float phase = (input_coord_y - floor_coord_y) - 0.5;
     coord.y = (floor_coord_y + 0.5) * inv_input_size.y;
@@ -77,9 +77,22 @@ vec3 grille(vec3 color, vec2 pos)
     return color * mask;
 }
 
+// Distortion of scanlines, and end of screen alpha.
+vec2 warp(vec2 pos)
+{
+    pos = pos * 2.0 - 1.0;
+
+    pos *= 0.9;
+
+    const float warp_x = 0.02;
+    const float warp_y = 0.02;
+    pos *= vec2(1.0 + (pos.y * pos.y) * warp_x, 1.0 + (pos.x * pos.x) * warp_y);
+    return pos * 0.5 + 0.5;
+}
+
 void main()
 {
-    FragColor = sample_scan(vUV);
+    FragColor = sample_scan(warp(vUV));
     //FragColor = textureLod(uSampler, vUV, 0.0).rgb;
 
     FragColor = grille(FragColor, vUV * output_size);

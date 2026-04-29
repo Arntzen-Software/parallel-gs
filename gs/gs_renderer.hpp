@@ -35,6 +35,12 @@ struct ScanoutResult
 
 	// Set to true if we scanned out at a higher resolution.
 	bool high_resolution_scanout;
+
+	// If the result is interlaced (and vsync was asked to skip any deinterlacing).
+	bool interlaced;
+
+	// If interlaced, top (0) or bottom (1).
+	uint32_t interlace_phase;
 };
 
 struct FlushStats
