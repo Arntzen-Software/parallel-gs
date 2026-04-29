@@ -63,7 +63,7 @@ static void FsrRcasCon(float *con, float sharpness)
 	con[3] = 0.0f;
 }
 
-static constexpr float SDRScale = 800.0f;
+static constexpr float SDRScale = 250.0f;
 
 class AnalogVideoFilter
 {
@@ -95,6 +95,10 @@ public:
 
 		uint32_t phase = 0; // Interlacing phase.
 		bool line_comb = true;
+
+		// For comb filter, skip the additional notch filter to clean up chroma rejection
+		// artifacts. TODO: Maybe make it adaptive somehow ...
+		bool skip_notch = false;
 
 		// Where the final image will be consumed.
 		VkImageLayout dst_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
@@ -224,7 +228,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	} push = {};
 
 	cmd.set_program("assets://composite.comp");
-	cmd.set_specialization_constant_mask(0xf);
+	cmd.set_specialization_constant_mask(0x1f);
 	// Controls the filters. PAL has a bit more bandwidth.
 	cmd.set_specialization_constant(1, options.system == System::PAL);
 	cmd.set_specialization_constant(2, false);
@@ -350,6 +354,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	push.input_offset = -81;
 	cmd.set_specialization_constant(2, options.cable == Cable::SVideo);
 	cmd.set_specialization_constant(3, filter_options.line_comb);
+	cmd.set_specialization_constant(4, filter_options.skip_notch);
 	run_pass(PassDecode, &encode_target->get_view(), nullptr);
 
 	cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_GENERAL, filter_options.dst_layout,
@@ -863,6 +868,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			opts.phase = vsync.interlace_phase;
 			opts.input_sampling_rate_mhz = 13.5f * float(vsync.image->get_width()) / 640.0f;
 			opts.line_comb = true;
+			opts.skip_notch = false;
 			filter.run_filter(*cmd, vsync.image->get_view(), opts);
 		}
 

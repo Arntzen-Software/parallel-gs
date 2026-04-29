@@ -24,6 +24,7 @@ layout(constant_id = 0) const int PassIndex = 0;
 layout(constant_id = 1) const bool PAL = false;
 layout(constant_id = 2) const bool SVIDEO = false;
 layout(constant_id = 3) const bool COMB = false;
+layout(constant_id = 4) const bool SKIP_NOTCH = false;
 
 const int PaddingTaps = 64;
 const uint SharedInputSize = gl_WorkGroupSize.x + PaddingTaps;
@@ -425,7 +426,7 @@ void main()
             else if (PassIndex == PASS_DECODE)
             {
                 // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
-                if (SVIDEO)
+                if (SVIDEO || SKIP_NOTCH)
                     filter_pass_decode_simple(LumaEncodePAL, ChromaDecodePAL);
                 else
                     filter_pass_decode_notch(LumaDecodePAL, ChromaDecodePAL);
@@ -442,7 +443,7 @@ void main()
             else if (PassIndex == PASS_DECODE)
             {
                 // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
-                if (SVIDEO)
+                if (SVIDEO || SKIP_NOTCH)
                     filter_pass_decode_simple(LumaEncodeNTSC, ChromaDecodeNTSC);
                 else
                     filter_pass_decode_notch(LumaDecodeNTSC, ChromaDecodeNTSC);
