@@ -126,15 +126,41 @@ int scale_horiz_coord(int x)
     return int(floor((float(x) + 0.5) * registers.input_horiz_scale));
 }
 
+void chroma_separation_pal()
+{
+    const float horiz_filter[5] = float[](-0.2602, -0.2398, 1.0, -0.2398, -0.2602);
+    const float vert_filter[3] = float[](-0.5, 1, -0.5);
+
+    int coord = int(gl_GlobalInvocationID.x);
+    float estimate = 0.0;
+
+    // A bit more complicated.
+
+    [[unroll]]
+    for (int y = -1; y <= 1; y++)
+    {
+        float line = 0.0;
+
+        [[unroll]]
+        for (int x = -2; x <= 2; x++)
+        {
+            float pix = decode_ire(texelFetch(Inputs1D, ivec2(coord + x, int(gl_WorkGroupID.y) + y), 0).x);
+            line += horiz_filter[x + 2] * pix;
+        }
+
+        estimate += vert_filter[y + 1] * line;
+    }
+
+    imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), vec4(encode_ire(estimate)));
+}
+
 void chroma_separation_ntsc()
 {
     int coord = int(gl_GlobalInvocationID.x);
-    float line0 = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 2), 0).x);
-    float line1 = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x);
-    float line2 = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
-
+    float line0 = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x);
+    float line1 = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y + 0), 0).x);
+    float line2 = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y + 1), 0).x);
     float estimate = 0.5 * (line1 - 0.5 * (line2 + line0));
-
     imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), vec4(encode_ire(estimate)));
 }
 
@@ -178,31 +204,12 @@ void load_inputs()
             shared_loaded_inputs_float_x[i] = v;
         }
     }
-    else if (PassIndex == PASS_SEPARATION)
-    {
-        // PAL separator.
-        for (uint i = gl_LocalInvocationIndex; i < SharedInputSize; i += gl_WorkGroupSize.x)
-        {
-            int coord = int(global_base_coord + i) + registers.input_offset;
-            float line0 = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 2), 0).x;
-            float line1 = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x;
-            float line2 = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x;
-
-            float chroma_cancel = line1 - 0.5 * (line2 + line0); // Fed through bandpass
-            float chroma_estimator = 0.5 * (line0 - line2); // Fed through bandpass
-
-            chroma_estimator = line1;
-
-            shared_loaded_inputs_float_x[i] = chroma_cancel;
-            shared_loaded_inputs_float_y[i] = chroma_estimator;
-        }
-    }
     else if (PassIndex == PASS_DECODE)
     {
         for (uint i = gl_LocalInvocationIndex; i < SharedInputSize; i += gl_WorkGroupSize.x)
         {
             int coord = int(global_base_coord + i) + registers.input_offset;
-            float phase = compute_qam_phase(coord, !PAL && COMB ? -1 : 0);
+            float phase = compute_qam_phase(coord, 0);
 
             vec3 yuv;
 
@@ -231,24 +238,13 @@ void load_inputs()
             }
             else if (COMB)
             {
+                float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
+                float chroma_est = decode_ire(texelFetch(InputChromaEstimate, ivec2(coord, gl_WorkGroupID.y), 0).x);
+
                 if (PAL)
-                {
-                    // Make sure we consider causality of the delay lines.
-                    float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x);
-
-                    vec2 estimates = texelFetch(InputChromaEstimate, ivec2(coord, gl_WorkGroupID.y), 0).xy;
-                    estimates.x = decode_ire(estimates.x);
-                    estimates.y = decode_ire(estimates.y);
-                    yuv = vec3(composite - estimates.y, s * estimates.y, c * estimates.y);
-                }
+                    yuv = vec3(composite - chroma_est, s * chroma_est, c * chroma_est);
                 else
-                {
-                    // Make sure we consider causality of the delay lines.
-                    float composite = decode_ire(texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y - 1), 0).x);
-
-                    float chroma_est = decode_ire(texelFetch(InputChromaEstimate, ivec2(coord, gl_WorkGroupID.y), 0).x);
                     yuv = vec3(composite - chroma_est, c * chroma_est, s * chroma_est);
-                }
             }
             else
             {
@@ -438,17 +434,9 @@ void main()
     if (PassIndex == PASS_SEPARATION)
     {
         if (PAL)
-        {
-            // Do separation then write results to shared memory.
-            load_inputs();
-
-            // Bandpass both estimators and apply PAL modulation.
-            filter_pass_bandpass_pal_separator(ChromaBandpassPAL);
-        }
+            chroma_separation_pal();
         else
-        {
             chroma_separation_ntsc();
-        }
     }
     else
     {
@@ -463,7 +451,7 @@ void main()
             else if (PassIndex == PASS_DECODE)
             {
                 // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
-                if (SVIDEO || COMB)
+                if (SVIDEO)
                     filter_pass_decode_simple(LumaEncodePAL, ChromaDecodePAL);
                 else
                     filter_pass_decode_notch(LumaDecodePAL, ChromaDecodePAL);
@@ -480,7 +468,7 @@ void main()
             else if (PassIndex == PASS_DECODE)
             {
                 // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
-                if (SVIDEO || COMB)
+                if (SVIDEO)
                     filter_pass_decode_simple(LumaEncodeNTSC, ChromaDecodeNTSC);
                 else
                     filter_pass_decode_notch(LumaDecodeNTSC, ChromaDecodeNTSC);

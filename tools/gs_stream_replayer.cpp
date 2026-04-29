@@ -153,11 +153,9 @@ bool AnalogVideoFilter::init(Vulkan::Device &device_, const Options &options_)
 	encode_target = device->create_image(image_info);
 	device->set_name(*encode_target, "encode-target");
 
-	image_info.format = options.system == System::PAL ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16_SFLOAT;
 	bandpass_target = device->create_image(image_info);
 	device->set_name(*bandpass_target, "bandpass-target");
 
-	image_info.format = options.system == System::PAL ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16_SFLOAT;
 	chroma_estimate_target = device->create_image(image_info);
 	device->set_name(*chroma_estimate_target, "chroma-estimate");
 
@@ -326,7 +324,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	if (options.cable == Cable::Composite && filter_options.line_comb)
 	{
 		// PAL does a bandpass while NTSC does not, so shift accordingly.
-		push.input_offset = options.system == System::PAL ? -15 : 0;
+		push.input_offset = 0;
 		run_pass(PassSeparation, &encode_target->get_view(), &chroma_estimate_target->get_view());
 
 		push.input_offset = -15;
@@ -633,7 +631,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		mat3 conv = AnalogVideoFilter::generate_primary_conversion(
 			AnalogVideoFilter::get_primaries(AnalogVideoFilter::Primaries::BT2020),
-			AnalogVideoFilter::get_primaries(AnalogVideoFilter::Primaries::BT601_525));
+			AnalogVideoFilter::get_primaries(AnalogVideoFilter::Primaries::BT601_625));
 		float sdr_scale = SDRScale;
 
 		auto *primary_transform = cmd.allocate_typed_constant_data<vec4>(0, 1, 3);
@@ -843,7 +841,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		{
 			AnalogVideoFilter::Options dev_opts = {};
 			dev_opts.cable = AnalogVideoFilter::Cable::Composite;
-			dev_opts.system = AnalogVideoFilter::System::NTSC;
+			dev_opts.system = AnalogVideoFilter::System::PAL;
 			if (!filter.init(cmd->get_device(), dev_opts))
 				return;
 			AnalogVideoFilter::FilterOptions opts = {};
