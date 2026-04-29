@@ -95,6 +95,11 @@ public:
 
 		uint32_t phase = 0; // Interlacing phase.
 		bool line_comb = true;
+
+		// Where the final image will be consumed.
+		VkImageLayout dst_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+		VkPipelineStageFlags2 dst_stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+		VkAccessFlags2 dst_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
 	};
 
 	void run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &input, const FilterOptions &options);
@@ -248,8 +253,8 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		// which was designed to mitigate Hanover Bars (how phase shifts manifest in PAL).
 		push.subcarrier_phases_per_line = 283.75f + 1.0f / 625.0f;
 
-		// The pattern repeats after 1250 lines.
-		push.subcarrier_phase_offset = float(line_counter % 1250) * push.subcarrier_phases_per_line;
+		// The pattern repeats after 2500 lines (8 fields).
+		push.subcarrier_phase_offset = float(line_counter % 2500) * push.subcarrier_phases_per_line;
 	}
 
 	push.line_phase = int(line_counter & 1);
@@ -278,9 +283,10 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	{
 		if (img)
 		{
+			auto src_stage = img == decode_target.get() ? filter_options.dst_stage : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 			cmd.image_barrier(*img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-						  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
-						  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+			                  src_stage, 0,
+			                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 		}
 	}
 	cmd.end_barrier_batch();
@@ -346,7 +352,9 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	cmd.set_specialization_constant(3, filter_options.line_comb);
 	run_pass(PassDecode, &encode_target->get_view(), nullptr);
 
-	storage_to_sampled_barrier(cmd, *decode_target, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+	cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_GENERAL, filter_options.dst_layout,
+	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+	                  filter_options.dst_stage, filter_options.dst_access);
 }
 
 const Vulkan::ImageView &AnalogVideoFilter::get_output() const
