@@ -218,13 +218,17 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		device->set_name(*decode_target, "decode-target");
 	}
 
-	int normalized_input_width = int(float(input.get_view_width()) * (13.5f / filter_options.input_sampling_rate_mhz));
+	int normalized_input_width = int(float(input.get_view_width()) * (13.5f / filter_options.input_sampling_rate_mhz) + 0.5f);
 	// We need to center the image as best we can against the 720 pixel BT.601 container.
 
 	// During the filter process we have to shift the image by some pixels.
 	// Since the final output is at double BT.601 rate to make CRT filtering nicer,
 	// skip the / 2 since it gets cancelled out.
 	int horizontal_shift = int(BaseOutputResolution) - normalized_input_width;
+
+	// Out of spec. More than 720 active pixels per line is not allowed.
+	if (horizontal_shift < 0)
+		return;
 
 	struct
 	{
@@ -269,14 +273,15 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		{
 			// NTSC scanlines flip phase every scanline. Very easy to deal with.
 			push.subcarrier_phase_offset = (line_counter & 1) ? 0.5f : 0.0f;
-			push.subcarrier_phases_per_line = 227.5f;
+			push.subcarrier_phases_per_line = -0.5f /* 227.5f but wrapped to make FP math more accurate */;
 		}
 		else
 		{
 			// PAL is more ... complicated.
 			// Each scanline is 283.75f subcarrier cycles, but PAL adds a +25 Hz bias to the subcarrier
 			// which was designed to mitigate Hanover Bars (how phase shifts manifest in PAL).
-			push.subcarrier_phases_per_line = 283.75f + 1.0f / 625.0f;
+			// Prefer negative phase so that per-pixel offset creates values close-ish to 0.
+			push.subcarrier_phases_per_line = float(muglm::fract(283.75 + 1.0 / 625.0) - 1.0);
 
 			// The pattern repeats after 2500 lines (8 fields).
 			// Avoid terrible FP precision when phase gets very large near the end of the cycle.
