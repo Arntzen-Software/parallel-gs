@@ -19,7 +19,7 @@ layout(set = 0, binding = 2, std140) uniform Primary
     mat3 primary_transform;
 };
 
-const float VertFactor = 3.0;
+const float VertFactor = 5.0;
 
 layout(constant_id = 0) const bool HDR10 = false;
 
@@ -27,11 +27,13 @@ void accumulate(vec3 sampled, inout vec3 color, int y, float phase)
 {
     phase -= float(y);
 
-    float scanline_phase = abs(phase) * -VertFactor;
+    float scanline_phase = abs(phase) * VertFactor;
+
+    // For progressive scan, the lines need to be wider.
     if (registers.phase == 0.0)
         scanline_phase *= 0.5;
 
-    float vert_weight = exp2(scanline_phase);
+    float vert_weight = (VertFactor / 4.0) * cos((0.25 * 3.1415628) * min(scanline_phase, 2.0)) /* * exp2(scanline_phase)*/;
     color += sampled * vert_weight;
 }
 
@@ -49,6 +51,12 @@ vec3 sample_scan(vec2 coord)
     STEP(-1);
     STEP(+0);
     STEP(+1);
+
+    if (registers.phase == 0.0)
+    {
+        STEP(-2);
+        STEP(+2);
+    }
 
     return color;
 }
@@ -76,11 +84,11 @@ vec3 grille(vec3 color, vec2 pos)
     //pos.x = fract(pos.x / 3.0);
 
     if (pos.x < 0.333)
-        mask.r = 2.5;
+        mask.r = 1.5;
     else if (pos.x < 0.666)
-        mask.g = 2.5;
+        mask.g = 1.5;
     else
-        mask.b = 2.5;
+        mask.b = 1.5;
 
     return color * mask;
 }
@@ -102,7 +110,7 @@ vec2 warp(vec2 pos)
 void main()
 {
     LinearReference = sample_scan(warp(vUV));
-    LinearReference = grille(LinearReference, vUV * registers.output_size);
+    //LinearReference = grille(LinearReference, vUV * registers.output_size);
 
     if (registers.feedback > 0.0)
         LinearReference += registers.feedback * textureLod(uBack, vUV, 0.0).rgb;

@@ -63,7 +63,7 @@ static void FsrRcasCon(float *con, float sharpness)
 	con[3] = 0.0f;
 }
 
-static constexpr float SDRScale = 250.0f;
+static constexpr float SDRScale = 600.0f;
 
 class AnalogVideoFilter
 {
@@ -427,7 +427,7 @@ public:
 		VkAccessFlags2 dst_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
 
 		float hdr10_target_max_cll = 600.0f;
-		float hdr10_target_paper_white = 200.0f;
+		float hdr10_target_paper_white = 203.0f;
 	};
 
 	bool init(Vulkan::Device &device, const Options &options);
@@ -557,7 +557,7 @@ bool CRTFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &
 		get_primaries(filter_options.hdr10 ? Primaries::BT2020 : Primaries::BT709),
 		get_primaries(filter_options.phosphor_primaries));
 
-	float sdr_scale = filter_options.hdr10 ? filter_options.hdr10_target_paper_white : 2.0f;
+	float sdr_scale = filter_options.hdr10 ? filter_options.hdr10_target_paper_white : 1.0f;
 
 	auto *primary_transform = cmd.allocate_typed_constant_data<vec4>(0, 2, 3);
 	primary_transform[0] = vec4(sdr_scale * conv[0], 0.0f);
@@ -585,7 +585,7 @@ bool CRTFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &
 		1.0f / cmd.get_viewport().height);
 
 	push.phase = filter_options.progressive ? 0.0f : (0.25f - 0.5f * float(filter_options.phase));
-	push.feedback = back_is_valid ? 0.01f : 0.0f;
+	push.feedback = back_is_valid ? 0.05f : 0.0f;
 
 	cmd.push_constants(&push, 0, sizeof(push));
 
@@ -767,8 +767,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			request_shutdown();
 
 		CRTFilter::Options crt_opts = {};
-		crt_opts.width = 720 * 4;
-		crt_opts.height = 480 * 4;
+		crt_opts.width = 720 * 6;
+		crt_opts.height = 480 * 8;
 		if (!crt_filter.init(e.get_device(), crt_opts))
 			request_shutdown();
 	}
