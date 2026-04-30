@@ -200,7 +200,7 @@ static void storage_to_sampled_barrier(Vulkan::CommandBuffer &cmd, const Vulkan:
 void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &input,
                                    const FilterOptions &filter_options)
 {
-	// Out of spec.
+	// Out of spec. This is probably not an analog signal.
 	if (input.get_view_height() > 625)
 		return;
 
@@ -217,6 +217,14 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		decode_target = device->create_image(image_info);
 		device->set_name(*decode_target, "decode-target");
 	}
+
+	int normalized_input_width = int(float(input.get_view_width()) * (13.5f / filter_options.input_sampling_rate_mhz));
+	// We need to center the image as best we can against the 720 pixel BT.601 container.
+
+	// During the filter process we have to shift the image by some pixels.
+	// Since the final output is at double BT.601 rate to make CRT filtering nicer,
+	// skip the / 2 since it gets cancelled out.
+	int horizontal_shift = int(BaseOutputResolution) - normalized_input_width;
 
 	struct
 	{
@@ -237,8 +245,16 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	cmd.set_specialization_constant(2, 0);
 	cmd.set_specialization_constant(3, false);
 
+	enum
+	{
+		DownsamplingFilterOffset = 8, // 16-tap FIR
+		EncodeOffset = 15, // 31-tap FIR
+		DecodeOffset = 31, // 63-tap chroma
+		BandpassOffset = 15, // 31-tap FIR
+	};
+
 	// PS2 CRTC subpixel clock is 4x BT.601 it seems.
-	push.input_offset = -16;
+	push.input_offset = -DownsamplingFilterOffset;
 	push.input_horiz_scale = filter_options.input_sampling_rate_mhz / (13.5f * 4.0f);
 	push.height = int(input.get_view_height());
 	push.subcarrier_phases_per_pixel =
@@ -340,6 +356,12 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 
 	// Run downsampling filter to 2x BT.601 rate. It's a comfortable and convenient sampling rate to do DSP on.
 	run_pass(PassDownsample, nullptr, &downsample_target->get_view());
+
+	if (options.cable == Cable::Component)
+		push.input_offset = -EncodeOffset - horizontal_shift;
+	else
+		push.input_offset = -EncodeOffset;
+
 	run_pass(PassEncode, &downsample_target->get_view(),
 		options.cable == Cable::Component ? nullptr : &encode_target->get_view());
 
@@ -351,7 +373,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 			push.input_offset = 0;
 			run_pass(PassSeparation, &encode_target->get_view(), &chroma_estimate_target->get_view());
 
-			push.input_offset = -15;
+			push.input_offset = -BandpassOffset;
 			run_pass(PassBandpass, &chroma_estimate_target->get_view(), &bandpass_target->get_view());
 
 			cmd.set_texture(0, 4, bandpass_target->get_view());
@@ -362,8 +384,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 
 		// We have Y + modulated C. Generate output RGB.
 		// Shifts the output so that we end up being centered in a standard BT.601 720 pixel container.
-		// TODO: Compute proper values here.
-		push.input_offset = -81;
+		push.input_offset = -DecodeOffset - horizontal_shift;
 		cmd.set_specialization_constant(3, filter_options.line_comb);
 		cmd.set_specialization_constant(4, filter_options.skip_notch);
 		run_pass(PassDecode, &encode_target->get_view(), nullptr);
@@ -583,7 +604,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		sharpen_program = e.get_device().request_program(suite.sharpen_vert, suite.sharpen_frag);
 
 		AnalogVideoFilter::Options dev_opts = {};
-		dev_opts.cable = AnalogVideoFilter::Cable::Component;
+		dev_opts.cable = AnalogVideoFilter::Cable::Composite;
 		dev_opts.system = AnalogVideoFilter::System::PAL;
 		if (!filter.init(e.get_device(), dev_opts))
 			request_shutdown();

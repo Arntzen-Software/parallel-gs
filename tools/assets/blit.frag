@@ -82,8 +82,6 @@ vec2 warp(vec2 pos)
 {
     pos = pos * 2.0 - 1.0;
 
-    pos *= 0.9;
-
     const float warp_x = 0.02;
     const float warp_y = 0.02;
     pos *= vec2(1.0 + (pos.y * pos.y) * warp_x, 1.0 + (pos.x * pos.x) * warp_y);
