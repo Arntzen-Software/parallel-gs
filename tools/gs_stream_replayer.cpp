@@ -70,7 +70,7 @@ class AnalogVideoFilter
 public:
 	// Changes carrier frequency and modulation strategy.
 	enum class System { NTSC, PAL };
-	enum class Cable { Composite, SVideo };
+	enum class Cable { Composite = 0, SVideo = 1, Component = 2 };
 
 	struct Options
 	{
@@ -158,15 +158,18 @@ bool AnalogVideoFilter::init(Vulkan::Device &device_, const Options &options_)
 	downsample_target = device->create_image(image_info);
 	device->set_name(*downsample_target, "downsample-target");
 
-	image_info.format = options.cable == Cable::Composite ? VK_FORMAT_R16_SFLOAT : VK_FORMAT_R16G16_SFLOAT;
-	encode_target = device->create_image(image_info);
-	device->set_name(*encode_target, "encode-target");
+	if (options.cable != Cable::Component)
+	{
+		image_info.format = options.cable == Cable::SVideo ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16_SFLOAT;
+		encode_target = device->create_image(image_info);
+		device->set_name(*encode_target, "encode-target");
 
-	bandpass_target = device->create_image(image_info);
-	device->set_name(*bandpass_target, "bandpass-target");
+		bandpass_target = device->create_image(image_info);
+		device->set_name(*bandpass_target, "bandpass-target");
 
-	chroma_estimate_target = device->create_image(image_info);
-	device->set_name(*chroma_estimate_target, "chroma-estimate");
+		chroma_estimate_target = device->create_image(image_info);
+		device->set_name(*chroma_estimate_target, "chroma-estimate");
+	}
 
 	image_info.width = 1;
 	image_info.layers = 1;
@@ -231,7 +234,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	cmd.set_specialization_constant_mask(0x1f);
 	// Controls the filters. PAL has a bit more bandwidth.
 	cmd.set_specialization_constant(1, options.system == System::PAL);
-	cmd.set_specialization_constant(2, false);
+	cmd.set_specialization_constant(2, 0);
 	cmd.set_specialization_constant(3, false);
 
 	// PS2 CRTC subpixel clock is 4x BT.601 it seems.
@@ -244,22 +247,25 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 
 	auto line_counter = total_line_counter + filter_options.total_line_offset;
 
-	if (options.system == System::NTSC)
+	if (options.cable != Cable::Component)
 	{
-		// NTSC scanlines flip phase every scanline. Very easy to deal with.
-		push.subcarrier_phase_offset = (line_counter & 1) ? 0.5f : 0.0f;
-		push.subcarrier_phases_per_line = 227.5f;
-	}
-	else
-	{
-		// PAL is more ... complicated.
-		// Each scanline is 283.75f subcarrier cycles, but PAL adds a +25 Hz bias to the subcarrier
-		// which was designed to mitigate Hanover Bars (how phase shifts manifest in PAL).
-		push.subcarrier_phases_per_line = 283.75f + 1.0f / 625.0f;
+		if (options.system == System::NTSC)
+		{
+			// NTSC scanlines flip phase every scanline. Very easy to deal with.
+			push.subcarrier_phase_offset = (line_counter & 1) ? 0.5f : 0.0f;
+			push.subcarrier_phases_per_line = 227.5f;
+		}
+		else
+		{
+			// PAL is more ... complicated.
+			// Each scanline is 283.75f subcarrier cycles, but PAL adds a +25 Hz bias to the subcarrier
+			// which was designed to mitigate Hanover Bars (how phase shifts manifest in PAL).
+			push.subcarrier_phases_per_line = 283.75f + 1.0f / 625.0f;
 
-		// The pattern repeats after 2500 lines (8 fields).
-		// Avoid terrible FP precision when phase gets very large near the end of the cycle.
-		push.subcarrier_phase_offset = float(muglm::fract(double(line_counter % 2500) * push.subcarrier_phases_per_line));
+			// The pattern repeats after 2500 lines (8 fields).
+			// Avoid terrible FP precision when phase gets very large near the end of the cycle.
+			push.subcarrier_phase_offset = float(muglm::fract(double(line_counter % 2500) * push.subcarrier_phases_per_line));
+		}
 	}
 
 	push.line_phase = int(line_counter & 1);
@@ -330,37 +336,42 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 			storage_to_sampled_barrier(cmd, dst->get_image());
 	};
 
+	cmd.set_specialization_constant(2, int(options.cable));
+
 	// Run downsampling filter to 2x BT.601 rate. It's a comfortable and convenient sampling rate to do DSP on.
 	run_pass(PassDownsample, nullptr, &downsample_target->get_view());
-	run_pass(PassEncode, &downsample_target->get_view(), &encode_target->get_view());
+	run_pass(PassEncode, &downsample_target->get_view(),
+		options.cable == Cable::Component ? nullptr : &encode_target->get_view());
 
-	if (options.cable == Cable::Composite && filter_options.line_comb)
+	if (options.cable != Cable::Component)
 	{
-		// PAL does a bandpass while NTSC does not, so shift accordingly.
-		push.input_offset = 0;
-		run_pass(PassSeparation, &encode_target->get_view(), &chroma_estimate_target->get_view());
+		if (options.cable == Cable::Composite && filter_options.line_comb)
+		{
+			// PAL does a bandpass while NTSC does not, so shift accordingly.
+			push.input_offset = 0;
+			run_pass(PassSeparation, &encode_target->get_view(), &chroma_estimate_target->get_view());
 
-		push.input_offset = -15;
-		run_pass(PassBandpass, &chroma_estimate_target->get_view(), &bandpass_target->get_view());
+			push.input_offset = -15;
+			run_pass(PassBandpass, &chroma_estimate_target->get_view(), &bandpass_target->get_view());
 
-		cmd.set_texture(0, 4, bandpass_target->get_view());
+			cmd.set_texture(0, 4, bandpass_target->get_view());
+		}
+
+		// No need for further processing.
+		cmd.set_storage_texture(0, 2, dummy_1d_array->get_view());
+
+		// We have Y + modulated C. Generate output RGB.
+		// Shifts the output so that we end up being centered in a standard BT.601 720 pixel container.
+		// TODO: Compute proper values here.
+		push.input_offset = -81;
+		cmd.set_specialization_constant(3, filter_options.line_comb);
+		cmd.set_specialization_constant(4, filter_options.skip_notch);
+		run_pass(PassDecode, &encode_target->get_view(), nullptr);
+
+		cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_GENERAL, filter_options.dst_layout,
+						  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+						  filter_options.dst_stage, filter_options.dst_access);
 	}
-
-	// No need for further processing.
-	cmd.set_storage_texture(0, 2, dummy_1d_array->get_view());
-
-	// We have Y + modulated C. Generate output RGB.
-	// Shifts the output so that we end up being centered in a standard BT.601 720 pixel container.
-	// TODO: Compute proper values here.
-	push.input_offset = -81;
-	cmd.set_specialization_constant(2, options.cable == Cable::SVideo);
-	cmd.set_specialization_constant(3, filter_options.line_comb);
-	cmd.set_specialization_constant(4, filter_options.skip_notch);
-	run_pass(PassDecode, &encode_target->get_view(), nullptr);
-
-	cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_GENERAL, filter_options.dst_layout,
-	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-	                  filter_options.dst_stage, filter_options.dst_access);
 }
 
 const Vulkan::ImageView &AnalogVideoFilter::get_output() const
@@ -572,7 +583,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		sharpen_program = e.get_device().request_program(suite.sharpen_vert, suite.sharpen_frag);
 
 		AnalogVideoFilter::Options dev_opts = {};
-		dev_opts.cable = AnalogVideoFilter::Cable::Composite;
+		dev_opts.cable = AnalogVideoFilter::Cable::Component;
 		dev_opts.system = AnalogVideoFilter::System::PAL;
 		if (!filter.init(e.get_device(), dev_opts))
 			request_shutdown();
