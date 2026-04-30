@@ -28,11 +28,9 @@ layout(constant_id = 4) const bool SKIP_NOTCH = false;
 
 const int PaddingTaps = 64;
 const uint SharedInputSize = gl_WorkGroupSize.x + PaddingTaps;
-// Could make this more compact, but readability is more important than pure perf for this shader.
-shared vec3 shared_loaded_inputs[SharedInputSize];
-shared vec3 shared_loaded_inputs_odd[SharedInputSize];
-shared float shared_loaded_inputs_float_x[SharedInputSize];
-shared float shared_loaded_inputs_float_y[SharedInputSize];
+
+shared uint shared_loaded0[SharedInputSize];
+shared uint shared_loaded1[SharedInputSize];
 
 layout(push_constant) uniform Registers
 {
@@ -168,6 +166,17 @@ void chroma_separation_ntsc()
     imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), vec4(encode_ire(estimate)));
 }
 
+uint pack10_rgb(vec3 rgb)
+{
+    uvec3 scaled = uvec3(rgb * 1023.0 + 0.5);
+    return scaled.x | (scaled.y << 10) | (scaled.z << 20);
+}
+
+vec3 unpack10_rgb(uint v)
+{
+    return vec3((uvec3(v) >> uvec3(0, 10, 20)) & 0x3ffu) / 1023.0;
+}
+
 void load_inputs()
 {
     uint global_base_coord = gl_WorkGroupID.x * gl_WorkGroupSize.x;
@@ -181,8 +190,8 @@ void load_inputs()
             int coord_odd = scale_horiz_coord(2 * int(global_base_coord + i) + 1 + registers.input_offset);
             vec3 even = texelFetch(Inputs2D, ivec2(coord_even, gl_WorkGroupID.y), 0).rgb;
             vec3 odd = texelFetch(Inputs2D, ivec2(coord_odd, gl_WorkGroupID.y), 0).rgb;
-            shared_loaded_inputs[i] = even;
-            shared_loaded_inputs_odd[i] = odd;
+            shared_loaded0[i] = pack10_rgb(even);
+            shared_loaded1[i] = pack10_rgb(odd);
         }
     }
     else if (PassIndex == PASS_ENCODE)
@@ -192,7 +201,8 @@ void load_inputs()
             int coord = int(global_base_coord + i) + registers.input_offset;
             vec3 v = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).rgb;
             v = encode_yuv(v);
-            shared_loaded_inputs[i] = v;
+            shared_loaded0[i] = floatBitsToUint(v.x);
+            shared_loaded1[i] = packHalf2x16(v.yz);
         }
     }
     else if (PassIndex == PASS_BANDPASS)
@@ -200,12 +210,8 @@ void load_inputs()
         for (uint i = gl_LocalInvocationIndex; i < SharedInputSize; i += gl_WorkGroupSize.x)
         {
             int coord = int(global_base_coord + i) + registers.input_offset;
-            float v;
-            if (PAL)
-                v = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).y;
-            else
-                v = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x;
-            shared_loaded_inputs_float_x[i] = v;
+            float v = texelFetch(Inputs1D, ivec2(coord, gl_WorkGroupID.y), 0).x;
+            shared_loaded0[i] = floatBitsToUint(v);
         }
     }
     else if (PassIndex == PASS_DECODE)
@@ -259,7 +265,8 @@ void load_inputs()
                     yuv = vec3(composite, c * composite, s * composite);
             }
 
-            shared_loaded_inputs[i] = yuv;
+            shared_loaded0[i] = floatBitsToUint(yuv.x);
+            shared_loaded1[i] = packHalf2x16(yuv.yz);
         }
     }
 
@@ -276,8 +283,8 @@ void filter_pass_downsample(float kernel[16])
     [[unroll]]
     for (int i = 0; i < 8; i++)
     {
-        vec3 even = shared_loaded_inputs[local_index + i];
-        vec3 odd = shared_loaded_inputs_odd[local_index + i];
+        vec3 even = unpack10_rgb(shared_loaded0[local_index + i]);
+        vec3 odd = unpack10_rgb(shared_loaded1[local_index + i]);
         // Convolution happens in opposite order so array order is kinda flipped.
         // However, our kernels are symmetric, so it's whatever.
         filtered += kernel[2 * i + 1] * even;
@@ -296,20 +303,11 @@ void filter_pass_bandpass(float kernel[31])
     [[unroll]]
     for (int i = 0; i < 31; i++)
     {
-        float composite = shared_loaded_inputs_float_x[local_index + i];
+        float composite = uintBitsToFloat(shared_loaded0[local_index + i]);
         filtered += kernel[i] * composite;
     }
 
-    if (PAL)
-    {
-        float y = texelFetch(Inputs1D, ivec2(int(gl_GlobalInvocationID.x), gl_WorkGroupID.y), 0).x;
-        imageStore(Outputs1D, ivec2(int(gl_GlobalInvocationID.x) + registers.output_offset, gl_WorkGroupID.y),
-                vec2(y, filtered).xyxy);
-    }
-    else
-    {
-        imageStore(Outputs1D, ivec2(int(gl_GlobalInvocationID.x) + registers.output_offset, gl_WorkGroupID.y), vec4(filtered));
-    }
+    imageStore(Outputs1D, ivec2(int(gl_GlobalInvocationID.x) + registers.output_offset, gl_WorkGroupID.y), vec4(filtered));
 }
 
 // In 27 MHz domain. Easier this way.
@@ -322,7 +320,7 @@ void filter_pass_encode(float luma_kernel[31], float chroma_kernel[31])
     [[unroll]]
     for (int i = 0; i < 31; i++)
     {
-        vec3 yuv = shared_loaded_inputs[local_index + i];
+        vec3 yuv = vec3(uintBitsToFloat(shared_loaded0[local_index + i]), unpackHalf2x16(shared_loaded1[local_index + i]));
         filtered.x += luma_kernel[i] * yuv.x;
         filtered.yz += chroma_kernel[i] * yuv.yz;
     }
@@ -357,28 +355,22 @@ void filter_pass_decode_simple(float luma_kernel[31], float chroma_kernel[63])
     uint local_index = gl_LocalInvocationIndex;
     vec3 filtered = vec3(0.0);
 
-    // 31-tap FIR luma, 63-tap chroma.
+    // 31-tap FIR luma, 63-tap chroma. Only half the insanity.
     [[unroll]]
     for (int i = 0; i < 16; i++)
-    {
-        vec3 yuv = shared_loaded_inputs[local_index + i];
-        filtered.yz += (2.0 * chroma_kernel[i]) * yuv.yz;
-    }
+        filtered.yz += (2.0 * chroma_kernel[i]) * unpackHalf2x16(shared_loaded1[local_index + i]);
 
     [[unroll]]
     for (int i = 16; i < 31 + 16; i++)
     {
-        vec3 yuv = shared_loaded_inputs[local_index + i];
+        vec3 yuv = vec3(uintBitsToFloat(shared_loaded0[local_index + i]), unpackHalf2x16(shared_loaded1[local_index + i]));
         filtered.x += luma_kernel[i - 16] * yuv.x;
         filtered.yz += (2.0 * chroma_kernel[i]) * yuv.yz;
     }
 
     [[unroll]]
     for (int i = 31 + 16; i < 63; i++)
-    {
-        vec3 yuv = shared_loaded_inputs[local_index + i];
-        filtered.yz += (2.0 * chroma_kernel[i]) * yuv.yz;
-    }
+        filtered.yz += (2.0 * chroma_kernel[i]) * unpackHalf2x16(shared_loaded1[local_index + i]);
 
     filtered = decode_yuv(filtered);
     int coord = int(gl_GlobalInvocationID.x + registers.output_offset);
@@ -394,7 +386,7 @@ void filter_pass_decode_notch(float luma_kernel[63], float chroma_kernel[63])
     [[unroll]]
     for (int i = 0; i < 63; i++)
     {
-        vec3 yuv = shared_loaded_inputs[local_index + i];
+        vec3 yuv = vec3(uintBitsToFloat(shared_loaded0[local_index + i]), unpackHalf2x16(shared_loaded1[local_index + i]));
         filtered.x += luma_kernel[i] * yuv.x;
         filtered.yz += (2.0 * chroma_kernel[i]) * yuv.yz;
     }
