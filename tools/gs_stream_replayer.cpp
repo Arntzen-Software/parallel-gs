@@ -526,6 +526,8 @@ bool CRTFilter::init(Vulkan::Device &device, const Options &options_)
 
 bool CRTFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &view, const FilterOptions &filter_options)
 {
+	LOGI("Running CRT with input %u, %u\n", view.get_view_width(), view.get_view_height());
+
 	std::swap(phosphor_layer_front, phosphor_layer_back);
 	if (front_is_valid)
 		back_is_valid = true;

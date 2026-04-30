@@ -19,7 +19,7 @@ layout(set = 0, binding = 2, std140) uniform Primary
     mat3 primary_transform;
 };
 
-const float VertFactor = 5.0;
+const float VertFactor = 4.0;
 
 layout(constant_id = 0) const bool HDR10 = false;
 
@@ -27,13 +27,13 @@ void accumulate(vec3 sampled, inout vec3 color, int y, float phase)
 {
     phase -= float(y);
 
-    float scanline_phase = abs(phase) * VertFactor;
+    float scanline_phase = abs(phase) * -VertFactor;
 
     // For progressive scan, the lines need to be wider.
     if (registers.phase == 0.0)
         scanline_phase *= 0.5;
 
-    float vert_weight = (VertFactor / 4.0) * cos((0.25 * 3.1415628) * min(scanline_phase, 2.0)) /* * exp2(scanline_phase)*/;
+    float vert_weight = exp2(scanline_phase);
     color += sampled * vert_weight;
 }
 
