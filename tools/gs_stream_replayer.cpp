@@ -258,7 +258,8 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		push.subcarrier_phases_per_line = 283.75f + 1.0f / 625.0f;
 
 		// The pattern repeats after 2500 lines (8 fields).
-		push.subcarrier_phase_offset = float(line_counter % 2500) * push.subcarrier_phases_per_line;
+		// Avoid terrible FP precision when phase gets very large near the end of the cycle.
+		push.subcarrier_phase_offset = float(muglm::fract(double(line_counter % 2500) * push.subcarrier_phases_per_line));
 	}
 
 	push.line_phase = int(line_counter & 1);
@@ -868,7 +869,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			opts.phase = vsync.interlace_phase;
 			opts.input_sampling_rate_mhz = 13.5f * float(vsync.image->get_width()) / 640.0f;
 			opts.line_comb = true;
-			opts.skip_notch = false;
+			opts.skip_notch = true;
 			filter.run_filter(*cmd, vsync.image->get_view(), opts);
 		}
 
