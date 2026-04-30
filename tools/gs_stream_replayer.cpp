@@ -126,6 +126,8 @@ public:
 	static const Granite::Primaries &get_primaries(Primaries primaries);
 	static mat3 generate_primary_conversion(const Granite::Primaries &output, const Granite::Primaries &input);
 
+	const Options &get_options() const { return options; }
+
 private:
 	Vulkan::Device *device = nullptr;
 	Options options = {};
