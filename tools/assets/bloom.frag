@@ -35,6 +35,6 @@ void main()
         }
     }
 
-    Bloom *= 0.25;
+    Bloom *= 0.125;
     Bloom += texelFetch(uTex, base_coord, 0).rgb;
 }

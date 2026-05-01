@@ -581,6 +581,7 @@ bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOption
 		vec4 output_sizes;
 		vec2 range;
 		float bandwidth;
+		float max_cll;
 	} push = {};
 
 	push.input_sizes = vec4(
@@ -600,6 +601,7 @@ bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOption
 	// If we're downsampling, make sure we get a proper low-pass.
 	float effective_horiz_resolution = filter_options.input_rect.width * float(sinc_vert->get_width());
 	push.bandwidth = std::min(1.0f, 0.9f * push.output_sizes.x / effective_horiz_resolution);
+	push.max_cll = filter_options.hdr10_target_max_cll;
 
 	cmd.push_constants(&push, 0, sizeof(push));
 
@@ -1156,7 +1158,10 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 				is_eof = true;
 		}
 
-#if 0
+		if (mode == IterationMode::Pause)
+			frame_multiplier_phase = 0;
+
+#if 1
 		wsi.set_enable_timing_feedback(true);
 
 		RefreshRateInfo refresh_info;
@@ -1222,8 +1227,10 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 										  ? CRTFilter::Primaries::BT601_625
 										  : CRTFilter::Primaries::BT601_525;
 		crt_opts.progressive = !vsync.interlaced;
-		crt_opts.feedback = 0.03f;
+		crt_opts.feedback = 0.5f;
 		crt_opts.input_strength = frame_multiplier_phase == 0 ? 1.0f : 0.0f;
+		crt_opts.hdr10_target_max_cll = SDRScale;
+		crt_opts.hdr10_target_paper_white = 0.75f * SDRScale;
 
 		crt_opts.input_rect = { 0.1f, 0.05f, 0.8f, 0.9f };
 
@@ -1253,8 +1260,6 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		}
 
 		frame_multiplier_phase++;
-		if (frame_multiplier == 1)
-			frame_multiplier = 0;
 
 #if 1
 		flat_renderer.begin();

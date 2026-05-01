@@ -11,6 +11,7 @@ layout(push_constant) uniform Registers
     vec2 output_size, inv_output_size;
     vec2 range;
     float bw;
+    float max_cll;
 } registers;
 
 #if IS_HORIZ
@@ -75,6 +76,15 @@ void setup_filter(out ivec2 base_coord, out float phase)
 #endif
 }
 
+vec3 tonemap(vec3 color, float max_cll)
+{
+    // Hue-shifting tonemapper. We shouldn't be clipping the curve too hard in practice, probably fine *shrug*.
+    vec3 range = clamp(color / max_cll, vec3(0.0), vec3(2.0));
+    // Very basic. Can revisit later. Squeezes [0, 2] range into [0, 1].
+    vec3 parabola = range - 0.25 * range * range;
+    return max_cll * parabola;
+}
+
 void main()
 {
     vec3 filtered = vec3(0.0);
@@ -106,10 +116,15 @@ void main()
 
 #if IS_HORIZ
     // Color space conversions.
-    vec3 display_nits = clamp(primary_transform * Output, vec3(0.0), vec3(4000.0));
+    vec3 display_nits = clamp(primary_transform * Output, vec3(0.0), vec3(1000.0));
     if (HDR10)
-        Output = encode_pq(display_nits);
+    {
+        Output = encode_pq(tonemap(display_nits, registers.max_cll));
+    }
     else
-        Output = pow(clamp(display_nits, vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));
+    {
+        // SDR will get a bit overexposed by default.
+        Output = pow(clamp(tonemap(display_nits * 0.75, 1.0), vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));
+    }
 #endif
 }
