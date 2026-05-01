@@ -17,23 +17,24 @@ void main()
 {
     Bloom = vec3(0.0);
 
-    ivec2 base_coord = 2 * ivec2(gl_FragCoord.xy);
+    ivec2 base_coord = ivec2(gl_FragCoord.xy);
 
-    // Could be done better in compute or maybe separable bloom accumulation, but this is simple for now.
-    // It runs at half-pixel rate, so shouldn't be a real concern.
+    // Could be done better in compute or maybe separable bloom accumulation, but this is simple enough for now.
 
-    float w = 0.0;
-
-    for (int y = -5; y <= 6; y++)
+    for (int y = -4; y <= 4; y++)
     {
-        for (int x = -5; x <= 6; x++)
+        for (int x = -4; x <= 4; x++)
         {
-            vec2 dist = vec2(x, y) - 0.5;
-            float weight = exp2(-0.05 * dot(dist, dist));
-            w += weight;
+            // Supposed to consider scattering contributions from neighbors.
+            if (x == 0 && y == 0)
+                continue;
+
+            vec2 dist = vec2(x, y);
+            float weight = exp2(-0.25 * dot(dist, dist));
             Bloom += weight * texelFetch(uTex, base_coord + ivec2(x, y), 0).rgb;
         }
     }
 
-    Bloom /= w;
+    Bloom *= 0.25;
+    Bloom += texelFetch(uTex, base_coord, 0).rgb;
 }

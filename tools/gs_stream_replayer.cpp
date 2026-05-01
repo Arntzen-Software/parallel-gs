@@ -410,12 +410,6 @@ const Vulkan::ImageView &AnalogVideoFilter::get_output() const
 class CRTFilter
 {
 public:
-	struct Options
-	{
-		uint32_t width;
-		uint32_t height;
-	};
-
 	enum class Primaries
 	{
 		NTSC_Legacy, // Legacy saturated primaries from 1953
@@ -441,28 +435,28 @@ public:
 		float hdr10_target_paper_white = 203.0f;
 	};
 
-	bool init(Vulkan::Device &device, const Options &options);
-	bool run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &view, const FilterOptions &filter_options);
-	const Vulkan::ImageView &get_output() const;
-	const Options &get_options() const { return options; }
+	// Runs prepasses.
+	bool run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &view,
+	                        const FilterOptions &filter_options,
+	                        uint32_t output_width, uint32_t output_height);
+
+	// Renderpass must be active. Scales and encodes OETF straight to "backbuffer".
+	// UNORM type is expected. For SDR, assumes 2.2 gamma with BT709 primaries, otherwise PQ for HDR10 with BT2020.
+	bool run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOptions &filter_options);
 
 	static const Granite::Primaries &get_primaries(Primaries primaries);
 	static mat3 generate_primary_conversion(const Granite::Primaries &output, const Granite::Primaries &input);
 
 private:
-	Options options = {};
+	void init_buffers(Vulkan::Device &device, const Vulkan::ImageView &input_view, uint32_t output_width, uint32_t output_height);
+	uint32_t input_width = 0, input_height = 0;
 	Vulkan::ImageHandle phosphor_layer_front;
 	Vulkan::ImageHandle phosphor_layer_back;
-	Vulkan::ImageHandle bloom;
-	Vulkan::ImageHandle encoded;
+	Vulkan::ImageHandle bloomed;
+	Vulkan::ImageHandle sinc_vert;
 	bool back_is_valid = false;
 	bool front_is_valid = false;
 };
-
-const Vulkan::ImageView &CRTFilter::get_output() const
-{
-	return encoded->get_view();
-}
 
 mat3 CRTFilter::generate_primary_conversion(const Granite::Primaries &output, const Granite::Primaries &input)
 {
@@ -517,34 +511,105 @@ const Granite::Primaries &CRTFilter::get_primaries(Primaries primaries)
 	}
 }
 
-bool CRTFilter::init(Vulkan::Device &device, const Options &options_)
+void CRTFilter::init_buffers(Vulkan::Device &device,
+                             const Vulkan::ImageView &input_view,
+                             uint32_t, uint32_t output_height)
 {
-	options = options_;
+	VkImageFormatProperties2 props2 = { VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2 };
+	bool supports_rgb9e5 = device.get_image_format_properties(VK_FORMAT_E5B9G9R9_UFLOAT_PACK32, VK_IMAGE_TYPE_2D,
+	                                                          VK_IMAGE_TILING_OPTIMAL,
+	                                                          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+	                                                          VK_IMAGE_USAGE_SAMPLED_BIT,
+	                                                          0, nullptr, &props2);
 
-	auto info = Vulkan::ImageCreateInfo::render_target(options.width, options.height, VK_FORMAT_R16G16B16A16_SFLOAT);
-	info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
-	info.initial_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
-	phosphor_layer_front = device.create_image(info);
-	phosphor_layer_back = device.create_image(info);
-	device.set_name(*phosphor_layer_front, "phosphor-front");
-	device.set_name(*phosphor_layer_back, "phosphor-back");
+	auto fmt = supports_rgb9e5 ? VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 : VK_FORMAT_B10G11R11_UFLOAT_PACK32;
 
-	info.format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
-	info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-	encoded = device.create_image(info);
-	device.set_name(*encoded, "encoded");
+	if (input_width != input_view.get_view_width() || input_height != input_view.get_view_height())
+	{
+		input_width = input_view.get_view_width();
+		input_height = input_view.get_view_height();
 
-	info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
-	info.width /= 2;
-	info.height /= 2;
-	bloom = device.create_image(info);
-	device.set_name(*bloom, "bloom");
+		auto info = Vulkan::ImageCreateInfo::render_target(
+			BaseOutputResolution * 3, input_view.get_view_height(), fmt);
+
+		// Sample the scanlines at even multiple resolution to avoid pumping effects due to aliasing.
+		if (input_view.get_view_height() > 350)
+			info.height *= 4;
+		else
+			info.height *= 8;
+
+		info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+		info.initial_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+		phosphor_layer_front = device.create_image(info);
+		phosphor_layer_back = device.create_image(info);
+		bloomed = device.create_image(info);
+		device.set_name(*phosphor_layer_front, "phosphor-front");
+		device.set_name(*phosphor_layer_back, "phosphor-back");
+		device.set_name(*bloomed, "bloom");
+	}
+
+	if (!sinc_vert || sinc_vert->get_height() != output_height || sinc_vert->get_width() != bloomed->get_width())
+	{
+		auto info = Vulkan::ImageCreateInfo::render_target(bloomed->get_width(), output_height, fmt);
+		info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+		info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		sinc_vert = device.create_image(info);
+		device.set_name(*sinc_vert, "sinc-vert");
+	}
+}
+
+bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOptions &filter_options)
+{
+	if (!sinc_vert)
+		return false;
+
+	struct
+	{
+		vec4 input_sizes;
+		vec4 output_sizes;
+	} push = {};
+
+	push.input_sizes = vec4(
+		float(sinc_vert->get_width()),
+		float(sinc_vert->get_height()),
+		1.0f / float(sinc_vert->get_width()),
+		1.0f / float(sinc_vert->get_height()));
+
+	push.output_sizes = vec4(
+		cmd.get_viewport().width,
+		cmd.get_viewport().height,
+		1.0f / cmd.get_viewport().width,
+		1.0f / cmd.get_viewport().height);
+
+	cmd.push_constants(&push, 0, sizeof(push));
+
+	mat3 conv = generate_primary_conversion(
+		get_primaries(filter_options.hdr10 ? Primaries::BT2020 : Primaries::BT709),
+		get_primaries(filter_options.phosphor_primaries));
+
+	float sdr_scale = filter_options.hdr10 ? filter_options.hdr10_target_paper_white : 1.0f;
+
+	auto *primary_transform = cmd.allocate_typed_constant_data<vec4>(0, 2, 3);
+	primary_transform[0] = vec4(sdr_scale * conv[0], 0.0f);
+	primary_transform[1] = vec4(sdr_scale * conv[1], 0.0f);
+	primary_transform[2] = vec4(sdr_scale * conv[2], 0.0f);
+	cmd.set_opaque_sprite_state();
+	cmd.set_depth_test(false, false);
+	cmd.set_specialization_constant_mask(0x1);
+	cmd.set_specialization_constant(0, filter_options.hdr10);
+	cmd.set_program("assets://blit.vert", "assets://sinc.frag", {{ "IS_HORIZ", 1 }});
+	cmd.set_texture(0, 0, sinc_vert->get_view());
+	cmd.draw(3);
 
 	return true;
 }
 
-bool CRTFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &view, const FilterOptions &filter_options)
+bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &view,
+                                   const FilterOptions &filter_options,
+                                   uint32_t output_width, uint32_t output_height)
 {
+	init_buffers(cmd.get_device(), view, output_width, output_height);
+
 	std::swap(phosphor_layer_front, phosphor_layer_back);
 	if (front_is_valid)
 		back_is_valid = true;
@@ -558,31 +623,13 @@ bool CRTFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &
 	cmd.image_barrier(*phosphor_layer_front, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 	                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
 	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-	cmd.image_barrier(*bloom, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+	cmd.image_barrier(*bloomed, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 					  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
 					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-	cmd.image_barrier(*encoded, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-					  filter_options.dst_stage, 0,
+	cmd.image_barrier(*sinc_vert, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+					  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
 					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 	cmd.end_barrier_batch();
-
-	cmd.begin_region("crt-scan");
-	cmd.begin_render_pass(rp);
-	cmd.set_opaque_sprite_state();
-	cmd.set_program("assets://blit.vert", "assets://scan.frag");
-	cmd.set_texture(0, 0, view, StockSampler::LinearClamp);
-	cmd.set_texture(0, 1, phosphor_layer_back->get_view(), StockSampler::NearestClamp);
-
-	mat3 conv = generate_primary_conversion(
-		get_primaries(filter_options.hdr10 ? Primaries::BT2020 : Primaries::BT709),
-		get_primaries(filter_options.phosphor_primaries));
-
-	float sdr_scale = filter_options.hdr10 ? filter_options.hdr10_target_paper_white : 1.0f;
-
-	auto *primary_transform = cmd.allocate_typed_constant_data<vec4>(0, 2, 3);
-	primary_transform[0] = vec4(sdr_scale * conv[0], 0.0f);
-	primary_transform[1] = vec4(sdr_scale * conv[1], 0.0f);
-	primary_transform[2] = vec4(sdr_scale * conv[2], 0.0f);
 
 	struct
 	{
@@ -599,10 +646,10 @@ bool CRTFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &
 		1.0f / float(view.get_view_height()));
 
 	push.output_sizes = vec4(
-		cmd.get_viewport().width,
-		cmd.get_viewport().height,
-		1.0f / cmd.get_viewport().width,
-		1.0f / cmd.get_viewport().height);
+		float(phosphor_layer_back->get_width()),
+		float(phosphor_layer_back->get_height()),
+		1.0f / float(phosphor_layer_back->get_width()),
+		1.0f / float(phosphor_layer_back->get_height()));
 
 	push.phase = filter_options.progressive ? 0.0f : (0.25f - 0.5f * float(filter_options.phase));
 
@@ -610,47 +657,67 @@ bool CRTFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &
 	// perceptual deinterlacing effect.
 	push.feedback = back_is_valid ? 0.05f : 0.0f;
 
-	cmd.push_constants(&push, 0, sizeof(push));
+	cmd.begin_region("crt-scan");
+	{
+		cmd.begin_render_pass(rp);
+		cmd.set_opaque_sprite_state();
+		cmd.set_program("assets://blit.vert", "assets://scan.frag");
+		cmd.set_texture(0, 0, view, StockSampler::LinearClamp);
+		cmd.set_texture(0, 1, phosphor_layer_back->get_view(), StockSampler::NearestClamp);
 
-	cmd.draw(3);
-	cmd.end_render_pass();
+		cmd.push_constants(&push, 0, sizeof(push));
+
+		cmd.draw(3);
+		cmd.end_render_pass();
+	}
 	cmd.end_region();
 
 	cmd.image_barrier(*phosphor_layer_front, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
 	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 	                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
-	rp.color_attachments[0] = &bloom->get_view();
 	cmd.begin_region("crt-bloom");
-	cmd.begin_render_pass(rp);
-	cmd.set_opaque_sprite_state();
-	cmd.set_program("assets://blit.vert", "assets://bloom.frag");
-	cmd.set_texture(0, 0, phosphor_layer_front->get_view());
-	cmd.draw(3);
-	cmd.end_render_pass();
+	{
+		rp.color_attachments[0] = &bloomed->get_view();
+		cmd.begin_render_pass(rp);
+		cmd.set_opaque_sprite_state();
+		cmd.set_program("assets://blit.vert", "assets://bloom.frag");
+		cmd.set_texture(0, 0, phosphor_layer_front->get_view());
+		cmd.draw(3);
+		cmd.end_render_pass();
+	}
 	cmd.end_region();
 
-	cmd.image_barrier(*bloom, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+	cmd.image_barrier(*bloomed, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
 				  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 				  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
-	rp.color_attachments[0] = &encoded->get_view();
-	cmd.begin_region("crt-bloom");
-	cmd.begin_render_pass(rp);
-	cmd.set_opaque_sprite_state();
-	cmd.set_specialization_constant_mask(0x1);
-	cmd.set_specialization_constant(0, filter_options.hdr10);
-	cmd.set_program("assets://blit.vert", "assets://encode.frag");
-	cmd.set_texture(0, 0, phosphor_layer_front->get_view());
-	cmd.set_texture(0, 1, bloom->get_view(), Vulkan::StockSampler::LinearClamp);
-	cmd.draw(3);
-	cmd.end_render_pass();
+	cmd.begin_region("crt-sinc-vert");
+	{
+		push.input_sizes.x = float(bloomed->get_width());
+		push.input_sizes.y = float(bloomed->get_height());
+		push.input_sizes.z = 1.0f / push.input_sizes.x;
+		push.input_sizes.w = 1.0f / push.input_sizes.y;
+
+		push.output_sizes.x = float(sinc_vert->get_width());
+		push.output_sizes.y = float(sinc_vert->get_height());
+		push.output_sizes.z = 1.0f / push.output_sizes.x;
+		push.output_sizes.w = 1.0f / push.output_sizes.y;
+		cmd.push_constants(&push, 0, sizeof(push));
+
+		rp.color_attachments[0] = &sinc_vert->get_view();
+		cmd.begin_render_pass(rp);
+		cmd.set_opaque_sprite_state();
+		cmd.set_program("assets://blit.vert", "assets://sinc.frag", {{ "IS_HORIZ", 0 }});
+		cmd.set_texture(0, 0, bloomed->get_view());
+		cmd.draw(3);
+		cmd.end_render_pass();
+	}
 	cmd.end_region();
 
-	cmd.image_barrier(*encoded, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-	                  filter_options.dst_layout,
-	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-	                  filter_options.dst_stage, filter_options.dst_access);
+	cmd.image_barrier(*sinc_vert, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+				  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+				  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
 	front_is_valid = true;
 	return true;
@@ -811,12 +878,6 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		dev_opts.cable = AnalogVideoFilter::Cable::Component;
 		dev_opts.system = AnalogVideoFilter::System::PAL;
 		if (!filter.init(e.get_device(), dev_opts))
-			request_shutdown();
-
-		CRTFilter::Options crt_opts = {};
-		crt_opts.width = 720 * 3;
-		crt_opts.height = 240 * 8;
-		if (!crt_filter.init(e.get_device(), crt_opts))
 			request_shutdown();
 	}
 
@@ -1060,6 +1121,14 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		//if (vsync.image)
 		//	render_fsr(*cmd, vsync.image->get_view());
 
+		CRTFilter::FilterOptions crt_opts = {};
+		crt_opts.hdr10 = get_wsi().get_backbuffer_color_space() == VK_COLOR_SPACE_HDR10_ST2084_EXT;
+		crt_opts.phase = vsync.interlace_phase;
+		crt_opts.phosphor_primaries = filter.get_options().system == AnalogVideoFilter::System::PAL
+										  ? CRTFilter::Primaries::BT601_625
+										  : CRTFilter::Primaries::BT601_525;
+		crt_opts.progressive = !vsync.interlaced;
+
 		if (vsync.image)
 		{
 			AnalogVideoFilter::FilterOptions opts = {};
@@ -1069,14 +1138,9 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			opts.skip_notch = true;
 			filter.run_filter(*cmd, vsync.image->get_view(), opts);
 
-			CRTFilter::FilterOptions crt_opts = {};
-			crt_opts.hdr10 = get_wsi().get_backbuffer_color_space() == VK_COLOR_SPACE_HDR10_ST2084_EXT;
-			crt_opts.phase = opts.phase;
-			crt_opts.phosphor_primaries = filter.get_options().system == AnalogVideoFilter::System::PAL
-				                              ? CRTFilter::Primaries::BT601_625
-				                              : CRTFilter::Primaries::BT601_525;
-			crt_opts.progressive = !vsync.interlaced;
-			crt_filter.run_filter(*cmd, filter.get_output(), crt_opts);
+			crt_filter.run_filter_prepass(*cmd, filter.get_output(), crt_opts,
+			                              device.get_swapchain_view().get_view_width(),
+			                              device.get_swapchain_view().get_view_height());
 		}
 
 		cmd->begin_render_pass(device.get_swapchain_render_pass(SwapchainRenderPass::Depth));
@@ -1084,8 +1148,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		if (vsync.image)
 		{
 			//render_rcas(*cmd, fsr_render_target->get_view());
-			cmd->set_texture(0, 0, crt_filter.get_output(), StockSampler::LinearClamp);
-			CommandBufferUtil::draw_fullscreen_quad(*cmd, "builtin://shaders/quad.vert", "builtin://shaders/blit.frag");
+			crt_filter.run_filter_encode(*cmd, crt_opts);
 		}
 
 #if 1
