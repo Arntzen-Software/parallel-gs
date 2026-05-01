@@ -11,6 +11,7 @@ layout(push_constant) uniform Registers
     vec2 input_size, inv_input_size;
     vec2 output_size, inv_output_size;
     float phase; float feedback;
+    float input_strength;
 } registers;
 
 const float VertFactor = 3.0;
@@ -68,8 +69,15 @@ vec3 grille(vec3 color, vec2 pos)
 
 void main()
 {
-    LinearReference = sample_scan(vUV);
-    LinearReference = grille(LinearReference, vUV * registers.output_size);
+    if (registers.input_strength > 0.0)
+    {
+        LinearReference = registers.input_strength * sample_scan(vUV);
+        LinearReference = grille(LinearReference, vUV * registers.output_size);
+    }
+    else
+    {
+        LinearReference = vec3(0.0);
+    }
 
     if (registers.feedback > 0.0)
         LinearReference += registers.feedback * textureLod(uBack, vUV, 0.0).rgb;

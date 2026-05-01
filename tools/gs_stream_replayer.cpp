@@ -433,6 +433,9 @@ public:
 
 		float hdr10_target_max_cll = 600.0f;
 		float hdr10_target_paper_white = 203.0f;
+
+		float input_strength = 1.0f;
+		float feedback = 0.05f;
 	};
 
 	// Runs prepasses.
@@ -637,6 +640,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		vec4 output_sizes;
 		float phase;
 		float feedback;
+		float input_strength;
 	} push = {};
 
 	push.input_sizes = vec4(
@@ -655,7 +659,8 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 
 	// Simulate some kind of phosphor persistence. Should be very subtle but might aid
 	// perceptual deinterlacing effect.
-	push.feedback = back_is_valid ? 0.05f : 0.0f;
+	push.feedback = back_is_valid ? filter_options.feedback : 0.0f;
+	push.input_strength = filter_options.input_strength;
 
 	cmd.begin_region("crt-scan");
 	{
@@ -1066,6 +1071,9 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		}
 	}
 
+	uint32_t frame_multiplier = 1;
+	uint32_t frame_multiplier_phase = 1;
+
 	void render_frame(double, double)
 	{
 		if (!iface)
@@ -1090,7 +1098,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		bool empty_vsync = false;
 
-		if (mode != IterationMode::Pause && !is_eof)
+		if (frame_multiplier_phase >= frame_multiplier && mode != IterationMode::Pause && !is_eof)
 		{
 			if (parser.iterate_until_vsync(false, true))
 			{
@@ -1110,6 +1118,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 					empty_vsync = true;
 
 				vsync_index++;
+				frame_multiplier_phase = 0;
 			}
 			else
 				is_eof = true;
@@ -1129,16 +1138,32 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 			if (refresh_info.mode != RefreshMode::VRR)
 			{
-				uint64_t interval = refresh_info.refresh_interval != 0 ?
-					refresh_info.refresh_interval : refresh_info.refresh_duration;
+				uint64_t interval = refresh_info.refresh_duration;
 
 				// Try to align with monitor refresh rate if we're close enough.
 				// If we cannot snap to a specific cycle we have to assume free-flowing relative timing.
 				uint64_t alignment = target_period_ns % interval;
 				if (alignment + interval / 256 >= interval || alignment <= interval / 256)
-					target_period_ns = ((target_period_ns + interval / 2) / interval) * interval;
+				{
+					frame_multiplier = (target_period_ns + interval / 2) / interval;
+					target_period_ns = interval;
+				}
 				else
+				{
+					// If we know we have VRR we can go to town with high refresh rate framegen.
+					frame_multiplier = target_period_ns / refresh_info.refresh_duration;
+					// Every individual frame should be paced at a fraction of intended refresh.
+					target_period_ns = target_period_ns / frame_multiplier;
 					force_vrr = true;
+				}
+			}
+			else
+			{
+				// If we know we have VRR we can go to town with high refresh rate framegen.
+				frame_multiplier = target_period_ns / refresh_info.refresh_duration;
+
+				// Every individual frame should be paced at a fraction of intended refresh.
+				target_period_ns = target_period_ns / frame_multiplier;
 			}
 
 			wsi.set_target_presentation_time(0, target_period_ns, force_vrr);
@@ -1157,6 +1182,10 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 										  ? CRTFilter::Primaries::BT601_625
 										  : CRTFilter::Primaries::BT601_525;
 		crt_opts.progressive = !vsync.interlaced;
+		crt_opts.feedback = 0.3f;
+		crt_opts.input_strength = frame_multiplier_phase == 0 ? 1.0f : 0.0f;
+
+		LOGI("Frame multiplier phase %u / %u\n", frame_multiplier_phase, frame_multiplier);
 
 		if (vsync.image)
 		{
@@ -1179,6 +1208,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			//render_rcas(*cmd, fsr_render_target->get_view());
 			crt_filter.run_filter_encode(*cmd, crt_opts);
 		}
+
+		frame_multiplier_phase++;
 
 #if 1
 		flat_renderer.begin();
