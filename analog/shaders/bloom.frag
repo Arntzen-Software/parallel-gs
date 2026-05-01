@@ -1,4 +1,9 @@
 #version 450
+
+// SPDX-FileCopyrightText: 2026 Arntzen Software AS
+// SPDX-FileContributor: Hans-Kristian Arntzen
+// SPDX-License-Identifier: LGPL-3.0+
+
 #extension GL_EXT_samplerless_texture_functions : require
 
 layout(location = 0) in vec2 vUV;

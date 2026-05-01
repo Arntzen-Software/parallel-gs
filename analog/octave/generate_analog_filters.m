@@ -1,3 +1,7 @@
+% SPDX-FileCopyrightText: 2026 Arntzen Software AS
+% SPDX-FileContributor: Hans-Kristian Arntzen
+% SPDX-License-Identifier: LGPL-3.0+
+
 % Filter design for parallel-gs NTSC/PAL filtering.
 pkg load signal;
 

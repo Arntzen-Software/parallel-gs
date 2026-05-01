@@ -1,5 +1,9 @@
 #version 450
 
+// SPDX-FileCopyrightText: 2026 Arntzen Software AS
+// SPDX-FileContributor: Hans-Kristian Arntzen
+// SPDX-License-Identifier: LGPL-3.0+
+
 layout(location = 0) out vec2 vUV;
 
 void main()

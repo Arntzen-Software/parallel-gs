@@ -1,3 +1,7 @@
+% SPDX-FileCopyrightText: 2026 Arntzen Software AS
+% SPDX-FileContributor: Hans-Kristian Arntzen
+% SPDX-License-Identifier: LGPL-3.0+
+
 pkg load signal;
 
 luma_freq = 0;
