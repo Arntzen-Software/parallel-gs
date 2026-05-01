@@ -436,6 +436,15 @@ public:
 
 		float input_strength = 1.0f;
 		float feedback = 0.05f;
+
+		// Normalized. Use to only sample part of the input to remove e.g. overscan.
+		struct
+		{
+			float x = 0.0f;
+			float y = 0.0f;
+			float width = 1.0f;
+			float height = 1.0f;
+		} input_rect;
 	};
 
 	// Runs prepasses.
@@ -570,6 +579,8 @@ bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOption
 	{
 		vec4 input_sizes;
 		vec4 output_sizes;
+		vec2 range;
+		float bandwidth;
 	} push = {};
 
 	push.input_sizes = vec4(
@@ -583,6 +594,12 @@ bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOption
 		cmd.get_viewport().height,
 		1.0f / cmd.get_viewport().width,
 		1.0f / cmd.get_viewport().height);
+
+	push.range = vec2(filter_options.input_rect.x, filter_options.input_rect.width);
+
+	// If we're downsampling, make sure we get a proper low-pass.
+	float effective_horiz_resolution = filter_options.input_rect.width * float(sinc_vert->get_width());
+	push.bandwidth = std::min(1.0f, 0.9f * push.output_sizes.x / effective_horiz_resolution);
 
 	cmd.push_constants(&push, 0, sizeof(push));
 
@@ -699,16 +716,31 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 
 	cmd.begin_region("crt-sinc-vert");
 	{
-		push.input_sizes.x = float(bloomed->get_width());
-		push.input_sizes.y = float(bloomed->get_height());
-		push.input_sizes.z = 1.0f / push.input_sizes.x;
-		push.input_sizes.w = 1.0f / push.input_sizes.y;
+		struct
+		{
+			vec4 input_sizes;
+			vec4 output_sizes;
+			vec2 range;
+			float bandwidth;
+		} sinc_push = {};
 
-		push.output_sizes.x = float(sinc_vert->get_width());
-		push.output_sizes.y = float(sinc_vert->get_height());
-		push.output_sizes.z = 1.0f / push.output_sizes.x;
-		push.output_sizes.w = 1.0f / push.output_sizes.y;
-		cmd.push_constants(&push, 0, sizeof(push));
+		sinc_push.input_sizes.x = float(bloomed->get_width());
+		sinc_push.input_sizes.y = float(bloomed->get_height());
+		sinc_push.input_sizes.z = 1.0f / sinc_push.input_sizes.x;
+		sinc_push.input_sizes.w = 1.0f / sinc_push.input_sizes.y;
+
+		sinc_push.output_sizes.x = float(sinc_vert->get_width());
+		sinc_push.output_sizes.y = float(sinc_vert->get_height());
+		sinc_push.output_sizes.z = 1.0f / sinc_push.output_sizes.x;
+		sinc_push.output_sizes.w = 1.0f / sinc_push.output_sizes.y;
+
+		sinc_push.range = vec2(filter_options.input_rect.y, filter_options.input_rect.height);
+
+		// If we're downsampling, make sure we get a proper low-pass.
+		float effective_vert_resolution = filter_options.input_rect.height * float(bloomed->get_height());
+		sinc_push.bandwidth = std::min(1.0f, 0.9f * sinc_push.output_sizes.y / effective_vert_resolution);
+
+		cmd.push_constants(&sinc_push, 0, sizeof(sinc_push));
 
 		rp.color_attachments[0] = &sinc_vert->get_view();
 		cmd.begin_render_pass(rp);
@@ -1124,6 +1156,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 				is_eof = true;
 		}
 
+#if 0
 		wsi.set_enable_timing_feedback(true);
 
 		RefreshRateInfo refresh_info;
@@ -1174,6 +1207,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 			wsi.set_target_presentation_time(0, target_period_ns, force_vrr);
 		}
+#endif
 
 		//read_page_memory();
 
@@ -1188,8 +1222,10 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 										  ? CRTFilter::Primaries::BT601_625
 										  : CRTFilter::Primaries::BT601_525;
 		crt_opts.progressive = !vsync.interlaced;
-		crt_opts.feedback = 0.3f;
+		crt_opts.feedback = 0.03f;
 		crt_opts.input_strength = frame_multiplier_phase == 0 ? 1.0f : 0.0f;
+
+		crt_opts.input_rect = { 0.1f, 0.05f, 0.8f, 0.9f };
 
 		if (frame_multiplier_phase)
 			wsi.set_next_present_is_duplicated();
@@ -1217,6 +1253,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		}
 
 		frame_multiplier_phase++;
+		if (frame_multiplier == 1)
+			frame_multiplier = 0;
 
 #if 1
 		flat_renderer.begin();

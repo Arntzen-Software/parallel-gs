@@ -9,6 +9,8 @@ layout(push_constant) uniform Registers
 {
     vec2 input_size, inv_input_size;
     vec2 output_size, inv_output_size;
+    vec2 range;
+    float bw;
 } registers;
 
 #if IS_HORIZ
@@ -36,8 +38,6 @@ layout(set = 0, binding = 2) uniform UBO
 #endif
 
 const int LOBE = 16;
-const float BW = 0.8;
-
 const float PI = 3.1415628;
 
 float sinc(float phase)
@@ -50,22 +50,28 @@ float sinc(float phase)
         return sin(phase) / phase;
 }
 
-void setup_filter(out ivec2 base_coord, out float phase, out float bw)
+void setup_filter(out ivec2 base_coord, out float phase)
 {
-    vec2 input_coord = vUV * registers.input_size;
+    vec2 uv = vUV;
+
+#if IS_HORIZ
+    uv.x = uv.x * registers.range.y + registers.range.x;
+#else
+    uv.y = uv.y * registers.range.y + registers.range.x;
+#endif
+
+    vec2 input_coord = uv * registers.input_size;
 
 #if IS_HORIZ
     float coord_x = input_coord.x - 0.5;
     float floor_coord_x = floor(coord_x);
     phase = coord_x - floor_coord_x;
     base_coord = ivec2(floor_coord_x, input_coord.y);
-    bw = BW * min(1.0, registers.output_size.x * registers.inv_input_size.x);
 #else
     float coord_y = input_coord.y - 0.5;
     float floor_coord_y = floor(coord_y);
     phase = coord_y - floor_coord_y;
     base_coord = ivec2(input_coord.x, floor_coord_y);
-    bw = BW * min(1.0, registers.output_size.y * registers.inv_input_size.y);
 #endif
 }
 
@@ -74,8 +80,7 @@ void main()
     vec3 filtered = vec3(0.0);
     ivec2 base_coord;
     float phase;
-    float bw;
-    setup_filter(base_coord, phase, bw);
+    setup_filter(base_coord, phase);
 
     float w = 0.0;
 
@@ -85,7 +90,7 @@ void main()
         float window_phase = clamp(filter_phase / float(LOBE), -1.0, 1.0);
 
         // Basic windowed sinc approach.
-        float kernel = sinc(filter_phase * bw) * cos(0.5 * PI * window_phase);
+        float kernel = sinc(filter_phase * registers.bw) * cos(0.5 * PI * window_phase);
         w += kernel;
 
 #if IS_HORIZ
