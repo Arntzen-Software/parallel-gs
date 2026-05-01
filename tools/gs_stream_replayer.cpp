@@ -1166,6 +1166,12 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 				target_period_ns = target_period_ns / frame_multiplier;
 			}
 
+			if (frame_multiplier > 1)
+			{
+				wsi.set_frame_duplication_aware(true, 10);
+				wsi.set_present_wait_latency(2);
+			}
+
 			wsi.set_target_presentation_time(0, target_period_ns, force_vrr);
 		}
 
@@ -1185,7 +1191,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		crt_opts.feedback = 0.3f;
 		crt_opts.input_strength = frame_multiplier_phase == 0 ? 1.0f : 0.0f;
 
-		LOGI("Frame multiplier phase %u / %u\n", frame_multiplier_phase, frame_multiplier);
+		if (frame_multiplier_phase)
+			wsi.set_next_present_is_duplicated();
 
 		if (vsync.image)
 		{
