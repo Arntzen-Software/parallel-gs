@@ -1115,6 +1115,35 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 				is_eof = true;
 		}
 
+		wsi.set_enable_timing_feedback(true);
+
+		RefreshRateInfo refresh_info;
+		if (wsi.get_refresh_rate_info(refresh_info) && refresh_info.refresh_duration)
+		{
+			float fps = vsync.mode_height == 240 || vsync.mode_height == 480 ? 59.94f : 50.0f;
+
+			// If monitor is over 100 Hz it's probably VRR.
+			bool force_vrr = false;
+
+			uint64_t target_period_ns = 1000000000ull / fps;
+
+			if (refresh_info.mode != RefreshMode::VRR)
+			{
+				uint64_t interval = refresh_info.refresh_interval != 0 ?
+					refresh_info.refresh_interval : refresh_info.refresh_duration;
+
+				// Try to align with monitor refresh rate if we're close enough.
+				// If we cannot snap to a specific cycle we have to assume free-flowing relative timing.
+				uint64_t alignment = target_period_ns % interval;
+				if (alignment + interval / 256 >= interval || alignment <= interval / 256)
+					target_period_ns = ((target_period_ns + interval / 2) / interval) * interval;
+				else
+					force_vrr = true;
+			}
+
+			wsi.set_target_presentation_time(0, target_period_ns, force_vrr);
+		}
+
 		//read_page_memory();
 
 		auto cmd = device.request_command_buffer();
