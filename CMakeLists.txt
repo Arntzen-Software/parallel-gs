@@ -56,6 +56,7 @@ endif()
 add_subdirectory(Granite EXCLUDE_FROM_ALL)
 
 add_subdirectory(gs)
+add_subdirectory(analog)
 add_subdirectory(dump)
 add_subdirectory(sandbox)
 if (NOT PARALLEL_GS_STANDALONE)
