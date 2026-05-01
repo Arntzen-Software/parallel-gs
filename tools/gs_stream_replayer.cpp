@@ -875,7 +875,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		sharpen_program = e.get_device().request_program(suite.sharpen_vert, suite.sharpen_frag);
 
 		AnalogVideoFilter::Options dev_opts = {};
-		dev_opts.cable = AnalogVideoFilter::Cable::Component;
+		dev_opts.cable = AnalogVideoFilter::Cable::Composite;
 		dev_opts.system = AnalogVideoFilter::System::PAL;
 		if (!filter.init(e.get_device(), dev_opts))
 			request_shutdown();
@@ -1164,7 +1164,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			opts.phase = vsync.interlace_phase;
 			opts.input_sampling_rate_mhz = 13.5f * float(vsync.image->get_width()) / 640.0f;
 			opts.line_comb = true;
-			opts.skip_notch = true;
+			opts.skip_notch = false;
 			filter.run_filter(*cmd, vsync.image->get_view(), opts);
 
 			crt_filter.run_filter_prepass(*cmd, filter.get_output(), crt_opts,
