@@ -323,8 +323,17 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		PassSeparation
 	};
 
+	static const char *pass_to_str[] = {
+		"analog-downsample",
+		"analog-encode",
+		"analog-decode",
+		"analog-bandpass",
+		"analog-separation",
+	};
+
 	const auto run_pass = [&](Pass pass, const Vulkan::ImageView *src, const Vulkan::ImageView *dst)
 	{
+		cmd.begin_region(pass_to_str[pass]);
 		cmd.push_constants(&push, 0, sizeof(push));
 
 		if (src)
@@ -339,6 +348,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		}
 		else
 		{
+			cmd.set_storage_texture(0, 2, dummy_1d_array->get_view());
 			groups_x = (get_output().get_view_width() + 255) / 256;
 		}
 
@@ -346,6 +356,7 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		cmd.dispatch(groups_x, input.get_view_height(), 1);
 		if (dst)
 			storage_to_sampled_barrier(cmd, dst->get_image());
+		cmd.end_region();
 	};
 
 	cmd.set_specialization_constant(2, int(options.cable));
@@ -384,11 +395,11 @@ void AnalogVideoFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		cmd.set_specialization_constant(3, filter_options.line_comb);
 		cmd.set_specialization_constant(4, filter_options.skip_notch);
 		run_pass(PassDecode, &encode_target->get_view(), nullptr);
-
-		cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_GENERAL, filter_options.dst_layout,
-						  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-						  filter_options.dst_stage, filter_options.dst_access);
 	}
+
+	cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_GENERAL, filter_options.dst_layout,
+					  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+					  filter_options.dst_stage, filter_options.dst_access);
 }
 
 const Vulkan::ImageView &AnalogVideoFilter::get_output() const
@@ -442,6 +453,7 @@ private:
 	Options options = {};
 	Vulkan::ImageHandle phosphor_layer_front;
 	Vulkan::ImageHandle phosphor_layer_back;
+	Vulkan::ImageHandle bloom;
 	Vulkan::ImageHandle encoded;
 	bool back_is_valid = false;
 	bool front_is_valid = false;
@@ -521,37 +533,43 @@ bool CRTFilter::init(Vulkan::Device &device, const Options &options_)
 	info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 	encoded = device.create_image(info);
 	device.set_name(*encoded, "encoded");
+
+	info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+	info.width /= 2;
+	info.height /= 2;
+	bloom = device.create_image(info);
+	device.set_name(*bloom, "bloom");
+
 	return true;
 }
 
 bool CRTFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &view, const FilterOptions &filter_options)
 {
-	LOGI("Running CRT with input %u, %u\n", view.get_view_width(), view.get_view_height());
-
 	std::swap(phosphor_layer_front, phosphor_layer_back);
 	if (front_is_valid)
 		back_is_valid = true;
 
 	RenderPassInfo rp = {};
-	rp.num_color_attachments = 2;
-	rp.color_attachments[0] = &encoded->get_view();
-	rp.color_attachments[1] = &phosphor_layer_front->get_view();
-	rp.store_attachments = 0x3;
+	rp.num_color_attachments = 1;
+	rp.color_attachments[0] = &phosphor_layer_front->get_view();
+	rp.store_attachments = 0x1;
 
 	cmd.begin_barrier_batch();
 	cmd.image_barrier(*phosphor_layer_front, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 	                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
 	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+	cmd.image_barrier(*bloom, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+					  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
+					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 	cmd.image_barrier(*encoded, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 					  filter_options.dst_stage, 0,
 					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 	cmd.end_barrier_batch();
 
+	cmd.begin_region("crt-scan");
 	cmd.begin_render_pass(rp);
 	cmd.set_opaque_sprite_state();
-	cmd.set_program("assets://blit.vert", "assets://blit.frag");
-	cmd.set_specialization_constant_mask(0x1);
-	cmd.set_specialization_constant(0, filter_options.hdr10);
+	cmd.set_program("assets://blit.vert", "assets://scan.frag");
 	cmd.set_texture(0, 0, view, StockSampler::LinearClamp);
 	cmd.set_texture(0, 1, phosphor_layer_back->get_view(), StockSampler::NearestClamp);
 
@@ -587,25 +605,52 @@ bool CRTFilter::run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &
 		1.0f / cmd.get_viewport().height);
 
 	push.phase = filter_options.progressive ? 0.0f : (0.25f - 0.5f * float(filter_options.phase));
+
+	// Simulate some kind of phosphor persistence. Should be very subtle but might aid
+	// perceptual deinterlacing effect.
 	push.feedback = back_is_valid ? 0.05f : 0.0f;
 
 	cmd.push_constants(&push, 0, sizeof(push));
 
 	cmd.draw(3);
 	cmd.end_render_pass();
+	cmd.end_region();
 
-	cmd.begin_barrier_batch();
-	cmd.image_barrier(*phosphor_layer_front, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-				  filter_options.dst_layout,
-				  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-				  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-				  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	cmd.image_barrier(*phosphor_layer_front, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+	                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+	rp.color_attachments[0] = &bloom->get_view();
+	cmd.begin_region("crt-bloom");
+	cmd.begin_render_pass(rp);
+	cmd.set_opaque_sprite_state();
+	cmd.set_program("assets://blit.vert", "assets://bloom.frag");
+	cmd.set_texture(0, 0, phosphor_layer_front->get_view());
+	cmd.draw(3);
+	cmd.end_render_pass();
+	cmd.end_region();
+
+	cmd.image_barrier(*bloom, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+				  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+				  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+	rp.color_attachments[0] = &encoded->get_view();
+	cmd.begin_region("crt-bloom");
+	cmd.begin_render_pass(rp);
+	cmd.set_opaque_sprite_state();
+	cmd.set_specialization_constant_mask(0x1);
+	cmd.set_specialization_constant(0, filter_options.hdr10);
+	cmd.set_program("assets://blit.vert", "assets://encode.frag");
+	cmd.set_texture(0, 0, phosphor_layer_front->get_view());
+	cmd.set_texture(0, 1, bloom->get_view(), Vulkan::StockSampler::LinearClamp);
+	cmd.draw(3);
+	cmd.end_render_pass();
+	cmd.end_region();
+
 	cmd.image_barrier(*encoded, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 	                  filter_options.dst_layout,
 	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-	                  filter_options.dst_stage,
-	                  filter_options.dst_access);
-	cmd.end_barrier_batch();
+	                  filter_options.dst_stage, filter_options.dst_access);
 
 	front_is_valid = true;
 	return true;
@@ -763,14 +808,14 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		sharpen_program = e.get_device().request_program(suite.sharpen_vert, suite.sharpen_frag);
 
 		AnalogVideoFilter::Options dev_opts = {};
-		dev_opts.cable = AnalogVideoFilter::Cable::Composite;
+		dev_opts.cable = AnalogVideoFilter::Cable::Component;
 		dev_opts.system = AnalogVideoFilter::System::PAL;
 		if (!filter.init(e.get_device(), dev_opts))
 			request_shutdown();
 
 		CRTFilter::Options crt_opts = {};
-		crt_opts.width = 720 * 6;
-		crt_opts.height = 480 * 8;
+		crt_opts.width = 720 * 3;
+		crt_opts.height = 240 * 8;
 		if (!crt_filter.init(e.get_device(), crt_opts))
 			request_shutdown();
 	}
