@@ -1,0 +1,29 @@
+{
+	"include": [ "../../Granite/assets/shaders/inc" ],
+	"shaders": [
+		{
+			"name": "composite",
+			"path": "composite.comp",
+			"compute": true
+		},
+		{
+			"name": "blit",
+			"path": "blit.vert"
+		},
+		{
+			"name": "bloom",
+			"path": "bloom.frag"
+		},
+		{
+			"name": "scan",
+			"path": "scan.frag"
+		},
+		{
+			"name": "sinc",
+			"path": "sinc.frag",
+			"variants": [
+				{ "define": "IS_HORIZ", "count": 2, "resolve": false }
+			]
+		}
+	]
+}

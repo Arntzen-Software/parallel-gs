@@ -222,6 +222,8 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		dev_opts.system = AnalogVideoFilter::System::PAL;
 		if (!filter.init(e.get_device(), dev_opts))
 			request_shutdown();
+		if (!crt_filter.init(e.get_device()))
+			request_shutdown();
 	}
 
 	void on_device_destroyed(const DeviceCreatedEvent &)

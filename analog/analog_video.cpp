@@ -5,6 +5,7 @@
 #include "analog_video.hpp"
 #include "muglm/matrix_helper.hpp"
 #include "muglm/muglm_impl.hpp"
+#include "shaders/slangmosh.hpp"
 
 namespace ParallelGS
 {
@@ -52,6 +53,9 @@ bool AnalogVideoFilter::init(Device &device_, const Options &options_)
 	image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 	dummy_1d_array = device->create_image(image_info);
 	device->set_name(*dummy_1d_array, "dummy-1d-array");
+
+	ResourceLayout layout;
+	shaders = Analog::Shaders<>(*device, layout, 0);
 
 	// Encode output on-demand.
 	return true;
@@ -115,7 +119,7 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 		int32_t height; // For chroma reconstruction filter.
 	} push = {};
 
-	cmd.set_program("assets://composite.comp");
+	cmd.set_program(shaders.composite);
 	cmd.set_specialization_constant_mask(0x1f);
 	// Controls the filters. PAL has a bit more bandwidth.
 	cmd.set_specialization_constant(1, options.system == System::PAL);
@@ -289,6 +293,19 @@ const ImageView &AnalogVideoFilter::get_output() const
 	return decode_target->get_view();
 }
 
+bool CRTFilter::init(Vulkan::Device &device)
+{
+	ResourceLayout layout;
+	Analog::Shaders<> shaders(device, layout, 0);
+
+	scan = device.request_program(shaders.blit, shaders.scan);
+	bloom = device.request_program(shaders.blit, shaders.bloom);
+	sinc[0] = device.request_program(shaders.blit, shaders.sinc[0]);
+	sinc[1] = device.request_program(shaders.blit, shaders.sinc[1]);
+
+	return true;
+}
+
 mat3 CRTFilter::generate_primary_conversion(const Granite::Primaries &output, const Granite::Primaries &input)
 {
 	return inverse(compute_xyz_matrix(output)) * compute_xyz_matrix(input);
@@ -438,9 +455,12 @@ bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOption
 	cmd.set_depth_test(false, false);
 	cmd.set_specialization_constant_mask(0x1);
 	cmd.set_specialization_constant(0, filter_options.hdr10);
-	cmd.set_program("assets://blit.vert", "assets://sinc.frag", {{ "IS_HORIZ", 1 }});
+	cmd.set_program(sinc[1]);
 	cmd.set_texture(0, 0, sinc_vert->get_view());
+
+	cmd.begin_region("sinc-output");
 	cmd.draw(3);
+	cmd.end_region();
 
 	return true;
 }
@@ -504,7 +524,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	{
 		cmd.begin_render_pass(rp);
 		cmd.set_opaque_sprite_state();
-		cmd.set_program("assets://blit.vert", "assets://scan.frag");
+		cmd.set_program(scan);
 		cmd.set_texture(0, 0, view, StockSampler::LinearClamp);
 		cmd.set_texture(0, 1, phosphor_layer_back->get_view(), StockSampler::NearestClamp);
 
@@ -524,7 +544,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		rp.color_attachments[0] = &bloomed->get_view();
 		cmd.begin_render_pass(rp);
 		cmd.set_opaque_sprite_state();
-		cmd.set_program("assets://blit.vert", "assets://bloom.frag");
+		cmd.set_program(bloom);
 		cmd.set_texture(0, 0, phosphor_layer_front->get_view());
 		cmd.draw(3);
 		cmd.end_render_pass();
@@ -566,7 +586,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		rp.color_attachments[0] = &sinc_vert->get_view();
 		cmd.begin_render_pass(rp);
 		cmd.set_opaque_sprite_state();
-		cmd.set_program("assets://blit.vert", "assets://sinc.frag", {{ "IS_HORIZ", 0 }});
+		cmd.set_program(sinc[0]);
 		cmd.set_texture(0, 0, bloomed->get_view());
 		cmd.draw(3);
 		cmd.end_render_pass();

@@ -9,6 +9,7 @@
 #include "transforms.hpp"
 #include "math.hpp"
 #include <stdint.h>
+#include "shaders/slangmosh_iface.hpp"
 
 namespace ParallelGS
 {
@@ -74,11 +75,14 @@ private:
 	Vulkan::ImageHandle bandpass_target;
 	Vulkan::ImageHandle chroma_estimate_target;
 	uint64_t total_line_counter = 0;
+	Analog::Shaders<> shaders;
 };
 
 class CRTFilter
 {
 public:
+	bool init(Vulkan::Device &device);
+
 	enum class Primaries
 	{
 		NTSC_Legacy, // Legacy saturated primaries from 1953
@@ -137,6 +141,9 @@ private:
 	Vulkan::ImageHandle sinc_vert;
 	bool back_is_valid = false;
 	bool front_is_valid = false;
+	Vulkan::Program *scan = nullptr;
+	Vulkan::Program *bloom = nullptr;
+	Vulkan::Program *sinc[2] = {};
 };
 
 }
