@@ -67,6 +67,7 @@ source=(
     git+https://github.com/Arntzen-Software/parallel-gs.git
     git+https://github.com/PCSX2/pcsx2_patches.git
     0001-Early-integration-of-parallel-GS.patch
+    0002-Add-new-analog-video-options.patch
 )
 
 prepare() 
@@ -78,6 +79,7 @@ prepare()
     git config user.name "local"
     git config user.email "local@local"
     git am "${srcdir}/0001-Early-integration-of-parallel-GS.patch"
+    git am "${srcdir}/0002-Add-new-analog-video-options.patch"
 
     echo "Linking in parallel-gs."
     cd pcsx2/GS
