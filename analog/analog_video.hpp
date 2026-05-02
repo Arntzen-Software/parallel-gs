@@ -57,6 +57,7 @@ public:
 	void run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &input, const FilterOptions &options);
 
 	void reset_line_counter(uint64_t value);
+	uint64_t get_line_counter() const { return total_line_counter; }
 
 	// Y resolution is the same as input resolution.
 	// X resolution is standard 720 horizontal active pixels, but doubled to bandlimited 1440 pixels.
@@ -106,6 +107,8 @@ public:
 		float feedback = 0.05f;
 
 		float gamma = 2.4f;
+		float bloom_strength = 0.125f;
+		bool aperture_grille = true;
 
 		// Normalized. Use to only sample part of the input to remove e.g. overscan.
 		struct

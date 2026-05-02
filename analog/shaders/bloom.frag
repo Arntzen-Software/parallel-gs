@@ -16,6 +16,8 @@ layout(push_constant) uniform Registers
     vec2 input_size, inv_input_size;
     vec2 output_size, inv_output_size;
     float phase; float feedback;
+    float input_strength;
+    float gamma; float bloom_strength;
 } registers;
 
 void main()
@@ -40,6 +42,6 @@ void main()
         }
     }
 
-    Bloom *= 0.125;
+    Bloom *= registers.bloom_strength;
     Bloom += texelFetch(uTex, base_coord, 0).rgb;
 }

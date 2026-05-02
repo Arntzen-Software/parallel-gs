@@ -73,12 +73,18 @@ vec3 grille(vec3 color, vec2 pos)
     return color * mask;
 }
 
+layout(constant_id = 0) const bool APERTURE_GRILLE = false;
+
 void main()
 {
     if (registers.input_strength > 0.0)
     {
         LinearReference = registers.input_strength * sample_scan(vUV);
-        LinearReference = grille(LinearReference, vUV * registers.output_size);
+
+        if (APERTURE_GRILLE)
+            LinearReference = grille(LinearReference, vUV * registers.output_size);
+        else
+            LinearReference *= 0.5;
     }
     else
     {

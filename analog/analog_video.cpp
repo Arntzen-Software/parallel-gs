@@ -169,9 +169,9 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 	push.line_phase = int(line_counter & 1);
 
 	// The exact specifics shouldn't matter too much, just need some way to nudge the carrier phase.
-	auto odd_lines = options.system == System::NTSC ? 263 : 262;
-	auto even_lines = options.system == System::NTSC ? 313 : 312;
-	total_line_counter += (filter_options.phase & 1) ? odd_lines : even_lines;
+	auto odd_lines = options.system == System::NTSC ? 263 : 313;
+	auto even_lines = options.system == System::NTSC ? 262 : 312;
+	total_line_counter += (filter_options.phase & 1) ? even_lines : odd_lines;
 
 	cmd.set_unorm_texture(0, 0, input);
 	cmd.set_texture(0, 1, dummy_1d_array->get_view());
@@ -500,6 +500,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		float feedback;
 		float input_strength;
 		float gamma;
+		float bloom_strength;
 	} push = {};
 
 	push.input_sizes = vec4(
@@ -521,6 +522,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	push.feedback = back_is_valid ? filter_options.feedback : 0.0f;
 	push.input_strength = filter_options.input_strength;
 	push.gamma = filter_options.gamma;
+	push.bloom_strength = filter_options.bloom_strength;
 
 	cmd.begin_region("crt-scan");
 	{
@@ -531,6 +533,9 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		cmd.set_texture(0, 1, phosphor_layer_back->get_view(), StockSampler::NearestClamp);
 
 		cmd.push_constants(&push, 0, sizeof(push));
+
+		cmd.set_specialization_constant_mask(1);
+		cmd.set_specialization_constant(0, filter_options.aperture_grille);
 
 		cmd.draw(3);
 		cmd.end_render_pass();
