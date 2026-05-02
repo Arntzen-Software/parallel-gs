@@ -17,6 +17,7 @@ layout(push_constant) uniform Registers
     vec2 output_size, inv_output_size;
     float phase; float feedback;
     float input_strength;
+    float gamma;
 } registers;
 
 const float VertFactor = 3.0;
@@ -47,7 +48,7 @@ vec3 sample_scan(vec2 coord)
     vec3 sampled;
     vec3 color = vec3(0.0);
 
-#define STEP(y) sampled = pow(textureLodOffset(uSampler, coord, 0, ivec2(0, y)).rgb, vec3(2.4)); accumulate(sampled, color, y, phase)
+#define STEP(y) sampled = pow(textureLodOffset(uSampler, coord, 0, ivec2(0, y)).rgb, vec3(registers.gamma)); accumulate(sampled, color, y, phase)
     STEP(-2);
     STEP(-1);
     STEP(+0);

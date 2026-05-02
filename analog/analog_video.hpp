@@ -99,16 +99,13 @@ public:
 		uint32_t phase = 0; // 0 = top, 1 = bottom. Irrelevant for progressive.
 		Primaries phosphor_primaries = Primaries::BT709;
 
-		// Where the final image will be consumed.
-		VkImageLayout dst_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
-		VkPipelineStageFlags2 dst_stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-		VkAccessFlags2 dst_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-
 		float hdr10_target_max_cll = 600.0f;
 		float hdr10_target_paper_white = 203.0f;
 
 		float input_strength = 1.0f;
 		float feedback = 0.05f;
+
+		float gamma = 2.4f;
 
 		// Normalized. Use to only sample part of the input to remove e.g. overscan.
 		struct

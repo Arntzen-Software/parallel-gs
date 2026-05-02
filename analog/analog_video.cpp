@@ -499,6 +499,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		float phase;
 		float feedback;
 		float input_strength;
+		float gamma;
 	} push = {};
 
 	push.input_sizes = vec4(
@@ -519,6 +520,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	// perceptual deinterlacing effect.
 	push.feedback = back_is_valid ? filter_options.feedback : 0.0f;
 	push.input_strength = filter_options.input_strength;
+	push.gamma = filter_options.gamma;
 
 	cmd.begin_region("crt-scan");
 	{

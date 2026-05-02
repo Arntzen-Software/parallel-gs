@@ -63,7 +63,7 @@ conflicts=(pcsx2 pcsx2-git)
 options=(!lto)
 
 source=(
-    git+https://github.com/PCSX2/pcsx2.git#tag=v2.7.246
+    git+https://github.com/PCSX2/pcsx2.git#tag=v2.7.309
     git+https://github.com/Arntzen-Software/parallel-gs.git
     git+https://github.com/PCSX2/pcsx2_patches.git
     0001-Early-integration-of-parallel-GS.patch
