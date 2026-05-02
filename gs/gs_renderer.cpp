@@ -5034,7 +5034,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	}
 
 	result.image = std::move(merged);
-	result.interlaced = info.skip_deinterlace && should_deinterlace;
+	result.interlaced = should_deinterlace;
 	result.interlace_phase = info.phase;
 
 	flush_submit(0);

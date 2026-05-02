@@ -36,7 +36,8 @@ struct ScanoutResult
 	// Set to true if we scanned out at a higher resolution.
 	bool high_resolution_scanout;
 
-	// If the result is interlaced (and vsync was asked to skip any deinterlacing).
+	// If the result was interlaced.
+	// The result may already be deinterlaced automatically unless it was skipped.
 	bool interlaced;
 
 	// If interlaced, top (0) or bottom (1).
