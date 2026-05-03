@@ -1,4 +1,4 @@
-From 343f297d996b56c28fc793c18c637022739230fd Mon Sep 17 00:00:00 2001
+From 278690d9e01e4e38be6aa1dba5c6432e85a8e8e2 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sat, 2 May 2026 15:34:15 +0200
 Subject: [PATCH 2/2] Add new analog video options.
@@ -8,10 +8,10 @@ Subject: [PATCH 2/2] Add new analog video options.
  pcsx2-qt/Settings/GraphicsSettingsWidget.cpp  |  69 +++
  pcsx2/CMakeLists.txt                          |   2 +-
  pcsx2/Config.h                                |  14 +
- .../Renderers/parallel-gs/GSRendererPGS.cpp   | 513 +++++++++++++---
+ .../Renderers/parallel-gs/GSRendererPGS.cpp   | 522 +++++++++++++---
  .../GS/Renderers/parallel-gs/GSRendererPGS.h  |   4 +
  pcsx2/Pcsx2Config.cpp                         |  30 +-
- 7 files changed, 1028 insertions(+), 160 deletions(-)
+ 7 files changed, 1037 insertions(+), 160 deletions(-)
 
 diff --git a/pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui b/pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui
 index 3b8499cb1..3cca11893 100644
@@ -749,7 +749,7 @@ index fcbf78a11..95fe49f58 100644
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
-index c6885cb56..43b347690 100644
+index c6885cb56..e05357d08 100644
 --- a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 @@ -213,7 +213,10 @@ bool GSRendererPGS::Init()
@@ -804,7 +804,7 @@ index c6885cb56..43b347690 100644
  void GSRendererPGS::UpdateConfig()
  {
  	auto parsed = parse_super_sampling_options(GSConfig.PGSSuperSampling);
-@@ -277,6 +306,20 @@ void GSRendererPGS::UpdateConfig()
+@@ -277,6 +306,29 @@ void GSRendererPGS::UpdateConfig()
  	hacks.backbuffer_promotion = GSConfig.PGSSharpBackbuffer != 0;
  	hacks.allow_blend_demote = GSConfig.PGSBlendDemotion != 0;
  	iface.set_hacks(hacks);
@@ -818,14 +818,23 @@ index c6885cb56..43b347690 100644
 +	if (meta.maxContentLightLevel >= 10000.0f)
 +		meta.maxContentLightLevel = 0.0f;
 +
-+	// NV workaround. It is out of spec and does not sanitize HDR metadata.
-+	meta.maxLuminance = meta.maxContentLightLevel;
++	if (wsi.get_device().get_device_features().driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
++	{
++		// NV workaround. It is out of spec and does not sanitize HDR metadata.
++		meta.maxLuminance = meta.maxContentLightLevel;
++
++		if (meta.maxLuminance == 0.0f)
++		{
++			meta.maxLuminance = 1000.0f;
++			meta.maxContentLightLevel = 1000.0f;
++		}
++	}
 +
 +	wsi.set_hdr_metadata(meta);
  }
  
  int GSRendererPGS::GetSaveStateSize(int version)
-@@ -485,6 +528,44 @@ int GSRendererPGS::Defrost(freezeData* data)
+@@ -485,6 +537,44 @@ int GSRendererPGS::Defrost(freezeData* data)
  	return 0;
  }
  
@@ -870,7 +879,7 @@ index c6885cb56..43b347690 100644
  void GSRendererPGS::VSync(u32 field, bool registers_written)
  {
  	if (dump)
-@@ -508,20 +589,42 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
+@@ -508,20 +598,42 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
  	if (GSConfig.InterlaceMode != GSInterlaceMode::Automatic)
  		info.phase ^= (static_cast<int>(GSConfig.InterlaceMode) - 2) & 1;
  
@@ -923,7 +932,7 @@ index c6885cb56..43b347690 100644
  
  	// Don't waste GPU time scanning out the same thing twice.
  	if (!frame_is_duped || !vsync.image)
-@@ -552,73 +655,256 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
+@@ -552,73 +664,256 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
  		}
  	}
  
@@ -1053,33 +1062,33 @@ index c6885cb56..43b347690 100644
 +
 +		uint32_t output_width = wsi.get_device().get_swapchain_view().get_view_width();
 +		uint32_t output_height = wsi.get_device().get_swapchain_view().get_view_height();
++
++		if (frame_index != 0)
++			wsi.set_next_present_is_duplicated();
++
++		auto &dev = wsi.get_device();
  
 -		float display_aspect = float(fsr_width) / float(fsr_height);
 -		float game_aspect = GetCurrentAspectRatioFloat(priv->smode1.CMOD == 0);
-+		if (frame_index != 0)
-+			wsi.set_next_present_is_duplicated();
- 
--		float horizontal_scanout_ratio = float(vsync.internal_width) / float(vsync.mode_width);
--		float vertical_scanout_ratio = float(vsync.internal_height) / float(vsync.mode_height);
--		game_aspect *= horizontal_scanout_ratio / vertical_scanout_ratio;
-+		auto &dev = wsi.get_device();
- 
--		if (display_aspect > game_aspect)
--			new_width = uint32_t(std::round(float(fsr_height) * game_aspect));
--		else
--			new_height = uint32_t(std::round(float(fsr_width) / game_aspect));
 +		float vp_offset_x = 0.0f;
 +		float vp_offset_y = 0.0f;
 +		float vp_width = 0.0f;
 +		float vp_height = 0.0f;
  
--		// This won't preserve the aspect ratio necessarily, but eh.
--		if (GSConfig.IntegerScaling)
+-		float horizontal_scanout_ratio = float(vsync.internal_width) / float(vsync.mode_width);
+-		float vertical_scanout_ratio = float(vsync.internal_height) / float(vsync.mode_height);
+-		game_aspect *= horizontal_scanout_ratio / vertical_scanout_ratio;
 +		if (GSConfig.PGSPhosphorPrimaries != PGS_CRT_NONE || GSConfig.LinearPresent != GSPostBilinearMode::BilinearSharp || !vsync.image)
 +			fsr_render_target.reset();
-+
+ 
+-		if (display_aspect > game_aspect)
+-			new_width = uint32_t(std::round(float(fsr_height) * game_aspect));
+-		else
+-			new_height = uint32_t(std::round(float(fsr_width) / game_aspect));
 +		bool fsr_render_is_valid = frame_is_duped && bool(fsr_render_target);
-+
+ 
+-		// This won't preserve the aspect ratio necessarily, but eh.
+-		if (GSConfig.IntegerScaling)
 +		// Only run analog emulation if game is emitting an analog signal.
 +		// Some games can emit VGA which obviously skips all this stuff ...
 +		if (frame_index == 0 && GSConfig.PGSTVEmulation != PGS_TV_EMULATION_NONE && priv->smode1.LC == SMODE1Bits::LC_ANALOG)
@@ -1178,17 +1187,19 @@ index c6885cb56..43b347690 100644
 +				output_width = 1;
 +			if (!output_height)
 +				output_height = 1;
- 
--		vp_width = float(fsr_width);
--		vp_height = float(fsr_height);
++
 +			vp_width = float(output_width);
 +			vp_height = float(output_height);
 +		}
-+
+ 
+-		vp_width = float(fsr_width);
+-		vp_height = float(fsr_height);
 +		auto cmd = dev.request_command_buffer();
-+
+ 
+-		if (GSConfig.LinearPresent == GSPostBilinearMode::BilinearSharp)
 +		if (frame_index == 0 && vsync.image && GSConfig.PGSTVEmulation != PGS_TV_EMULATION_NONE && priv->smode1.LC == SMODE1Bits::LC_ANALOG)
-+		{
+ 		{
+-			if (!fsr_render_target || fsr_render_target->get_width() != fsr_width || fsr_render_target->get_height() != fsr_height)
 +			AnalogVideoFilter::FilterOptions filter_options = {};
 +			filter_options.dst_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
 +			filter_options.dst_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
@@ -1196,7 +1207,8 @@ index c6885cb56..43b347690 100644
 +			filter_options.phase = vsync.interlaced ? vsync.interlace_phase : 0;
 +
 +			switch (GSConfig.PGSCompositeDecode)
-+			{
+ 			{
+-				auto fsr_info = ImageCreateInfo::render_target(fsr_width, fsr_height, VK_FORMAT_R8G8B8A8_UNORM);
 +				case PGS_COMPOSITE_COMB:
 +					filter_options.line_comb = true;
 +					filter_options.skip_notch = true;
@@ -1212,23 +1224,20 @@ index c6885cb56..43b347690 100644
 +					filter_options.skip_notch = false;
 +					break;
 +			}
- 
--		if (GSConfig.LinearPresent == GSPostBilinearMode::BilinearSharp)
++
 +			filter_options.input_sampling_rate_mhz = 13.5f * float(vsync.image->get_width()) / 640.0f;
 +			analog_filter.run_filter(*cmd, vsync.image->get_view(), filter_options);
 +			analog_output_is_valid = true;
 +		}
 +		else if (vsync.image && GSConfig.LinearPresent == GSPostBilinearMode::BilinearSharp)
- 		{
--			if (!fsr_render_target || fsr_render_target->get_width() != fsr_width || fsr_render_target->get_height() != fsr_height)
++		{
 +			if (!fsr_render_target || fsr_render_target->get_width() != output_width || fsr_render_target->get_height() != output_height)
- 			{
--				auto fsr_info = ImageCreateInfo::render_target(fsr_width, fsr_height, VK_FORMAT_R8G8B8A8_UNORM);
++			{
 +				auto fsr_info = ImageCreateInfo::render_target(output_width, output_height, VK_FORMAT_R8G8B8A8_UNORM);
  				fsr_info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
  				fsr_info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
  				fsr_info.misc |= IMAGE_MISC_MUTABLE_SRGB_BIT;
-@@ -626,26 +912,101 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
+@@ -626,26 +921,101 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
  				fsr_render_is_valid = false;
  			}
  		}
