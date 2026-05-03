@@ -38,7 +38,7 @@ layout(constant_id = 4) const bool SKIP_NOTCH = false;
 const bool SVIDEO = CABLE == CABLE_SVIDEO;
 const bool YPBPR = CABLE == CABLE_COMPONENT;
 
-const int PaddingTaps = 64;
+const int PaddingTaps = 32;
 const uint SharedInputSize = gl_WorkGroupSize.x + PaddingTaps;
 
 shared uint shared_loaded0[SharedInputSize];
@@ -370,27 +370,18 @@ void filter_pass_encode(float luma_kernel[31], float chroma_kernel[31])
     }
 }
 
-void filter_pass_decode(float luma_kernel[31], float chroma_kernel[63])
+void filter_pass_decode(float luma_kernel[31], float chroma_kernel[31])
 {
     uint local_index = gl_LocalInvocationIndex;
     vec3 filtered = vec3(0.0);
 
-    // 31-tap FIR luma, 63-tap chroma. Only half the insanity.
     [[unroll]]
-    for (int i = 0; i < 16; i++)
-        filtered.yz += (2.0 * chroma_kernel[i]) * unpackHalf2x16(shared_loaded1[local_index + i]);
-
-    [[unroll]]
-    for (int i = 16; i < 31 + 16; i++)
+    for (int i = 0; i < 31; i++)
     {
         vec3 yuv = vec3(uintBitsToFloat(shared_loaded0[local_index + i]), unpackHalf2x16(shared_loaded1[local_index + i]));
-        filtered.x += luma_kernel[i - 16] * yuv.x;
+        filtered.x += luma_kernel[i] * yuv.x;
         filtered.yz += (2.0 * chroma_kernel[i]) * yuv.yz;
     }
-
-    [[unroll]]
-    for (int i = 31 + 16; i < 63; i++)
-        filtered.yz += (2.0 * chroma_kernel[i]) * unpackHalf2x16(shared_loaded1[local_index + i]);
 
     filtered = decode_yuv(filtered);
     int coord = int(gl_GlobalInvocationID.x + registers.output_offset);

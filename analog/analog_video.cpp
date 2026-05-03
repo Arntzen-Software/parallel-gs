@@ -130,7 +130,7 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 	{
 		DownsamplingFilterOffset = 8, // 16-tap FIR
 		EncodeOffset = 15, // 31-tap FIR
-		DecodeOffset = 31, // 63-tap chroma
+		DecodeOffset = 15, // 31-tap FIR
 		BandpassOffset = 15, // 31-tap FIR
 	};
 

@@ -19,13 +19,13 @@ pal_subcarrier = 4.43361875e6;
 % so it looks plausible that PS2 would ship something similar.
 ntsc_luma_bw = 4.2e6;
 ntsc_luma_stop = 6.75e6;
-ntsc_chroma_bw = 0.8e6;
-ntsc_chroma_stop = 1.5e6;
+ntsc_chroma_bw = 1.3e6;
+ntsc_chroma_stop = 2.0e6;
 
 % PAL-B which was used in Norway.
 pal_luma_bw = 5e6;
 pal_luma_stop = 6.75e6;
-pal_chroma_bw = 1.0e6;
+pal_chroma_bw = 1.3e6;
 pal_chroma_stop = 2.0e6;
 
 % BT.1358 calls for 11.0 MHz until falloff start, but that's for progressive scan which scales everything up.
@@ -50,17 +50,16 @@ ntsc_downsampling_filter = firls(14, [0, ntsc_luma_bw * 1.1, subpixel_nyquist * 
 pal_downsampling_filter = firls(14, [0, pal_luma_bw * 1.1, subpixel_nyquist * 0.7, subpixel_nyquist] / subpixel_nyquist, [1 1 0 0]);
 
 % Encode filters at 27 MHz. Pure low-pass.
-%luma_lp_encode = fir1(30, 0.3689, 'low', kaiser(31, 8.0))'
 ntsc_luma_lp_encode = firls(30, [0, ntsc_luma_bw, ntsc_luma_stop, bt601_rate] / bt601_rate, [1 1 0 0]);
 ntsc_chroma_lp_encode = firls(30, [0, ntsc_chroma_bw, ntsc_chroma_stop, bt601_rate] / bt601_rate, [1 1 0 0]);
-pal_luma_lp_encode = firls(30, [0, pal_luma_bw, ntsc_luma_stop, bt601_rate] / bt601_rate, [1 1 0 0]);
-pal_chroma_lp_encode = firls(30, [0, pal_chroma_bw, ntsc_chroma_stop, bt601_rate] / bt601_rate, [1 1 0 0]);
+pal_luma_lp_encode = firls(30, [0, pal_luma_bw, pal_luma_stop, bt601_rate] / bt601_rate, [1 1 0 0]);
+pal_chroma_lp_encode = firls(30, [0, pal_chroma_bw, pal_chroma_stop, bt601_rate] / bt601_rate, [1 1 0 0]);
 
 % Decoding composite is much harder.
 
 % NTSC decode
 % Suppress the luma DC which ends up at subcarrier freq after demodulating.
-ntsc_chroma_lp_decode = firls(64 - 6, [0, ntsc_chroma_bw, ntsc_chroma_stop, bt601_rate] / bt601_rate, [1 1 0 0])';
+ntsc_chroma_lp_decode = exp(-0.02 * (-14 : 14) .* (-14 : 14));
 
 ntsc_subcarrier_w = ntsc_subcarrier / (2 * bt601_rate);
 subcarrier_zero = exp(2 * pi * j * ntsc_subcarrier_w);
@@ -68,23 +67,15 @@ subcarrier_notch = real(conv([1, -subcarrier_zero], [1, -conj(subcarrier_zero)])
 subcarrier_notch = subcarrier_notch' / sum(subcarrier_notch);
 ntsc_chroma_lp_decode = conv(ntsc_chroma_lp_decode, subcarrier_notch);
 
-% Suppress the carrier when decoding luma. This leads to less detail in luma. IIR would likely be better, but that's a massive pain on GPUs.
+% Suppress the carrier when decoding luma. This leads to less detail in luma.
 
-% Declaring vectors in Octave is super annoying :(
+% Declaring vectors in Octave is super annoying. Multi-line is a matrix :(
 ntsc_bands = [0, ntsc_subcarrier - 1.3e6, ntsc_subcarrier - 0.1e6, ntsc_subcarrier + 0.1e6, ntsc_subcarrier + 1.3e6, bt601_rate];
-% Don't suppress to zero since it rings a lot
 ntsc_luma_lp_decode = firls(30, ntsc_bands / bt601_rate, [1, 1, 0.25, 0.25, 1, 1]);
-
-% Suppress harmonics of subcarrier which arise when demodulating.
-ntsc_subcarrier_w = 2.0 * ntsc_subcarrier / (2 * bt601_rate);
-subcarrier_zero = exp(2 * pi * j * ntsc_subcarrier_w);
-subcarrier_notch = real(conv([1, -subcarrier_zero], [1, -conj(subcarrier_zero)]));
-subcarrier_notch = subcarrier_notch' / sum(subcarrier_notch);
-ntsc_chroma_lp_decode = conv(ntsc_chroma_lp_decode, subcarrier_notch)';
 
 % PAL decode
 % Just use different carrier freqs.
-pal_chroma_lp_decode = firls(64 - 6, [0, pal_chroma_bw, pal_chroma_stop, bt601_rate] / bt601_rate, [1 1 0 0])';
+pal_chroma_lp_decode = exp(-0.02 * (-14 : 14) .* (-14 : 14));
 
 pal_subcarrier_w = pal_subcarrier / (2 * bt601_rate);
 subcarrier_zero = exp(2 * pi * j * pal_subcarrier_w);
@@ -93,18 +84,7 @@ subcarrier_notch = subcarrier_notch' / sum(subcarrier_notch);
 pal_chroma_lp_decode = conv(pal_chroma_lp_decode, subcarrier_notch);
 
 pal_bands = [0, pal_subcarrier - 1.3e6, pal_subcarrier - 0.1e6, pal_subcarrier + 0.1e6, pal_subcarrier + 1.3e6, bt601_rate];
-
-pal_luma_lp_decode = firls(64 - 4, [0, pal_luma_bw * 1.1, pal_luma_stop * 1.1, bt601_rate] / bt601_rate, [1 1 0 0]);
-subcarrier_notch = real(conv([1, -subcarrier_zero], [1, -conj(subcarrier_zero)]));
-subcarrier_notch = subcarrier_notch' / sum(subcarrier_notch);
 pal_luma_lp_decode = firls(30, pal_bands / bt601_rate, [1 1 0.25 0.25 1 1]);
-
-% Suppress harmonics of subcarrier which arise when demodulating.
-pal_subcarrier_w = 2.0 * pal_subcarrier / (2 * bt601_rate);
-subcarrier_zero = exp(2 * pi * j * pal_subcarrier_w);
-subcarrier_notch = real(conv([1, -subcarrier_zero], [1, -conj(subcarrier_zero)]));
-subcarrier_notch = subcarrier_notch' / sum(subcarrier_notch);
-pal_chroma_lp_decode = conv(pal_chroma_lp_decode, subcarrier_notch)';
 
 ntsc_luma_lp_decode = ntsc_luma_lp_decode / sum(ntsc_luma_lp_decode);
 pal_luma_lp_decode = pal_luma_lp_decode / sum(pal_luma_lp_decode);
@@ -155,9 +135,9 @@ h = figure();
 set(h, 'Name', 'NTSC Y decode filter @ 27 MHz');
 freqz(ntsc_luma_lp_decode);
 
-%h = figure();
-%set(h, 'Name', 'NTSC UV decode filter @ 27 MHz');
-%freqz(ntsc_chroma_lp_decode);
+h = figure();
+set(h, 'Name', 'NTSC UV decode filter @ 27 MHz');
+freqz(ntsc_chroma_lp_decode);
 
 %h = figure();
 %set(h, 'Name', 'PAL downsample filter @ 27 MHz');
@@ -175,9 +155,9 @@ h = figure();
 set(h, 'Name', 'PAL Y decode filter @ 27 MHz');
 freqz(pal_luma_lp_decode);
 
-%h = figure();
-%set(h, 'Name', 'PAL UV decode filter @ 27 MHz');
-%freqz(pal_chroma_lp_decode);
+h = figure();
+set(h, 'Name', 'PAL UV decode filter @ 27 MHz');
+freqz(pal_chroma_lp_decode);
 
 ypbpr_downsampling_filter = firls(14, [0, ypbpr_luma_bw, subpixel_nyquist * 0.6, subpixel_nyquist] / subpixel_nyquist, [1 1 0 0]);
 ypbpr_luma_filter = firls(30, [0, ypbpr_luma_bw, ypbpr_luma_stop, bt601_rate] / bt601_rate, [1 1 0 0]);
@@ -200,14 +180,14 @@ assert(length(ntsc_downsampling_filter) == 15, "Length must be 15");
 assert(length(ntsc_luma_lp_encode) == 31, "Length must be 31");
 assert(length(ntsc_chroma_lp_encode) == 31, "Length must be 31");
 assert(length(ntsc_luma_lp_decode) == 31, "Length must be 31");
-assert(length(ntsc_chroma_lp_decode) == 63, "Length must be 63");
+assert(length(ntsc_chroma_lp_decode) == 31, "Length must be 31");
 assert(length(ntsc_chroma_bandpass) == 31, "Length must be 31");
 
 assert(length(pal_downsampling_filter) == 15, "Length must be 15");
 assert(length(pal_luma_lp_encode) == 31, "Length must be 31");
 assert(length(pal_chroma_lp_encode) == 31, "Length must be 31");
 assert(length(pal_luma_lp_decode) == 31, "Length must be 63");
-assert(length(pal_chroma_lp_decode) == 63, "Length must be 31");
+assert(length(pal_chroma_lp_decode) == 31, "Length must be 31");
 assert(length(pal_chroma_bandpass) == 31, "Length must be 31");
 
 assert(length(ypbpr_downsampling_filter) == 15, "Length must be 15");
@@ -232,9 +212,9 @@ printf("const float LumaDecodeNTSC[31] = float[](\n");
 printf("    %.10f,\n", ntsc_luma_lp_decode(1:30));
 printf("    %.10f);\n", ntsc_luma_lp_decode(31));
 printf("\n");
-printf("const float ChromaDecodeNTSC[63] = float[](\n");
-printf("    %.10f,\n", ntsc_chroma_lp_decode(1:62));
-printf("    %.10f);\n", ntsc_chroma_lp_decode(63));
+printf("const float ChromaDecodeNTSC[31] = float[](\n");
+printf("    %.10f,\n", ntsc_chroma_lp_decode(1:30));
+printf("    %.10f);\n", ntsc_chroma_lp_decode(31));
 printf("\n");
 printf("const float DownsamplingKernelPAL[16] = float[](\n");
 printf("    0.0,\n");
@@ -253,9 +233,9 @@ printf("const float LumaDecodePAL[31] = float[](\n");
 printf("    %.8f,\n", pal_luma_lp_decode(1:30));
 printf("    %.8f);\n", pal_luma_lp_decode(31));
 printf("\n");
-printf("const float ChromaDecodePAL[63] = float[](\n");
-printf("    %.8f,\n", pal_chroma_lp_decode(1:62));
-printf("    %.8f);\n", pal_chroma_lp_decode(63));
+printf("const float ChromaDecodePAL[31] = float[](\n");
+printf("    %.8f,\n", pal_chroma_lp_decode(1:30));
+printf("    %.8f);\n", pal_chroma_lp_decode(31));
 printf("\n");
 printf("const float ChromaBandpassNTSC[31] = float[](\n");
 printf("    %.10f,\n", ntsc_chroma_bandpass(1:30));
