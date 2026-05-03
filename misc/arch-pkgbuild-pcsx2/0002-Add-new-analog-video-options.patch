@@ -1,4 +1,4 @@
-From 0840676c21c0d1d670e7671d4b2f8b36a21ea642 Mon Sep 17 00:00:00 2001
+From 913b28766ada4996dafad3842f08b7c8ae3db9fe Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sat, 2 May 2026 15:34:15 +0200
 Subject: [PATCH 2/2] Add new analog video options.
@@ -8,10 +8,10 @@ Subject: [PATCH 2/2] Add new analog video options.
  pcsx2-qt/Settings/GraphicsSettingsWidget.cpp  |  69 +++
  pcsx2/CMakeLists.txt                          |   2 +-
  pcsx2/Config.h                                |  14 +
- .../Renderers/parallel-gs/GSRendererPGS.cpp   | 507 +++++++++++++---
+ .../Renderers/parallel-gs/GSRendererPGS.cpp   | 509 +++++++++++++---
  .../GS/Renderers/parallel-gs/GSRendererPGS.h  |   4 +
  pcsx2/Pcsx2Config.cpp                         |  30 +-
- 7 files changed, 1022 insertions(+), 160 deletions(-)
+ 7 files changed, 1024 insertions(+), 160 deletions(-)
 
 diff --git a/pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui b/pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui
 index 3b8499cb1..3cca11893 100644
@@ -749,7 +749,7 @@ index fcbf78a11..95fe49f58 100644
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
-index c6885cb56..6b6e24c96 100644
+index c6885cb56..0bfb0274f 100644
 --- a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 @@ -213,7 +213,10 @@ bool GSRendererPGS::Init()
@@ -1224,7 +1224,7 @@ index c6885cb56..6b6e24c96 100644
  				fsr_info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
  				fsr_info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
  				fsr_info.misc |= IMAGE_MISC_MUTABLE_SRGB_BIT;
-@@ -626,26 +908,99 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
+@@ -626,26 +908,101 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
  				fsr_render_is_valid = false;
  			}
  		}
@@ -1263,6 +1263,8 @@ index c6885cb56..6b6e24c96 100644
 +			// Compensate for BT.601 720-pix container and overscan.
 +			if (analog_output_is_valid)
 +				crt_filter_options.input_rect = { 0.1f, 0.04f, 0.8f, 0.92f };
++			else
++				crt_filter_options.input_rect = { 0.05f, 0.04f, 0.9f, 0.92f };
 +
 +			switch (GSConfig.PGSPhosphorPrimaries)
 +			{
