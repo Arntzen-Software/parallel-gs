@@ -406,6 +406,9 @@ void CRTFilter::init_buffers(Vulkan::Device &device,
 	}
 }
 
+// The extra aliasing doesn't seem to be a major concern. Keep full bandwidth.
+static constexpr float SincBandwidth = 1.0f;
+
 bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOptions &filter_options)
 {
 	if (!sinc_vert)
@@ -436,7 +439,7 @@ bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOption
 
 	// If we're downsampling, make sure we get a proper low-pass.
 	float effective_horiz_resolution = filter_options.input_rect.width * float(sinc_vert->get_width());
-	push.bandwidth = std::min(1.0f, 0.9f * push.output_sizes.x / effective_horiz_resolution);
+	push.bandwidth = std::min(1.0f, SincBandwidth * push.output_sizes.x / effective_horiz_resolution);
 	push.max_cll = filter_options.hdr10_target_max_cll;
 
 	cmd.push_constants(&push, 0, sizeof(push));
@@ -586,7 +589,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 
 		// If we're downsampling, make sure we get a proper low-pass.
 		float effective_vert_resolution = filter_options.input_rect.height * float(bloomed->get_height());
-		sinc_push.bandwidth = std::min(1.0f, 0.9f * sinc_push.output_sizes.y / effective_vert_resolution);
+		sinc_push.bandwidth = std::min(1.0f, SincBandwidth * sinc_push.output_sizes.y / effective_vert_resolution);
 
 		cmd.push_constants(&sinc_push, 0, sizeof(sinc_push));
 
