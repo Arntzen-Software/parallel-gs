@@ -370,7 +370,7 @@ void filter_pass_encode(float luma_kernel[31], float chroma_kernel[31])
     }
 }
 
-void filter_pass_decode_simple(float luma_kernel[31], float chroma_kernel[63])
+void filter_pass_decode(float luma_kernel[31], float chroma_kernel[63])
 {
     uint local_index = gl_LocalInvocationIndex;
     vec3 filtered = vec3(0.0);
@@ -391,25 +391,6 @@ void filter_pass_decode_simple(float luma_kernel[31], float chroma_kernel[63])
     [[unroll]]
     for (int i = 31 + 16; i < 63; i++)
         filtered.yz += (2.0 * chroma_kernel[i]) * unpackHalf2x16(shared_loaded1[local_index + i]);
-
-    filtered = decode_yuv(filtered);
-    int coord = int(gl_GlobalInvocationID.x + registers.output_offset);
-    imageStore(Outputs2D, ivec2(coord, gl_WorkGroupID.y), vec4(filtered, 0.0));
-}
-
-void filter_pass_decode_notch(float luma_kernel[63], float chroma_kernel[63])
-{
-    uint local_index = gl_LocalInvocationIndex;
-    vec3 filtered = vec3(0.0);
-
-    // 63-tap FIR. Maximum tomfoolery.
-    [[unroll]]
-    for (int i = 0; i < 63; i++)
-    {
-        vec3 yuv = vec3(uintBitsToFloat(shared_loaded0[local_index + i]), unpackHalf2x16(shared_loaded1[local_index + i]));
-        filtered.x += luma_kernel[i] * yuv.x;
-        filtered.yz += (2.0 * chroma_kernel[i]) * yuv.yz;
-    }
 
     filtered = decode_yuv(filtered);
     int coord = int(gl_GlobalInvocationID.x + registers.output_offset);
@@ -448,9 +429,9 @@ void main()
             {
                 // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
                 if (SVIDEO || SKIP_NOTCH)
-                    filter_pass_decode_simple(LumaEncodePAL, ChromaDecodePAL);
+                    filter_pass_decode(LumaEncodePAL, ChromaDecodePAL);
                 else
-                    filter_pass_decode_notch(LumaDecodePAL, ChromaDecodePAL);
+                    filter_pass_decode(LumaDecodePAL, ChromaDecodePAL);
             }
             else if (PassIndex == PASS_BANDPASS)
                 filter_pass_bandpass(ChromaBandpassPAL);
@@ -465,9 +446,9 @@ void main()
             {
                 // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
                 if (SVIDEO || SKIP_NOTCH)
-                    filter_pass_decode_simple(LumaEncodeNTSC, ChromaDecodeNTSC);
+                    filter_pass_decode(LumaEncodeNTSC, ChromaDecodeNTSC);
                 else
-                    filter_pass_decode_notch(LumaDecodeNTSC, ChromaDecodeNTSC);
+                    filter_pass_decode(LumaDecodeNTSC, ChromaDecodeNTSC);
             }
             else if (PassIndex == PASS_BANDPASS)
                 filter_pass_bandpass(ChromaBandpassNTSC);

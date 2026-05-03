@@ -330,45 +330,69 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		auto cmd = device.request_command_buffer();
 
-		auto info = ImageCreateInfo::immutable_2d_image(1, 16, VK_FORMAT_R8G8B8A8_UNORM);
-		const u8vec4 data[16] = {
-#if 0
-			// 75% and 100% tests as prescribed.
-			u8vec4(191, 191, 191, 0),
-			u8vec4(191, 191, 0, 0),
-			u8vec4(0, 191, 191, 0),
-			u8vec4(0, 191, 0, 0),
-			u8vec4(191, 0, 191, 0),
-			u8vec4(191, 0, 0, 0),
-			u8vec4(0, 0, 191, 0),
-			u8vec4(0, 0, 0, 0),
-			u8vec4(255, 255, 255, 0),
-			u8vec4(255, 255, 0, 0),
-			u8vec4(0, 255, 255, 0),
-			u8vec4(0, 255, 0, 0),
-			u8vec4(255, 0, 255, 0),
-			u8vec4(255, 0, 0, 0),
-			u8vec4(0, 0, 255, 0),
-			u8vec4(0, 0, 0, 0),
-#endif
-			u8vec4(0, 0, 191, 0),
-			u8vec4(0, 0, 191, 0),
-			u8vec4(0, 0, 191, 0),
-			u8vec4(0, 0, 191, 0),
-			u8vec4(0, 0, 191, 0),
-			u8vec4(0, 0, 191, 0),
-			u8vec4(0, 0, 191, 0),
-			u8vec4(0, 0, 191, 0),
-			u8vec4(191, 0, 0, 0),
-			u8vec4(191, 0, 0, 0),
-			u8vec4(191, 0, 0, 0),
-			u8vec4(191, 0, 0, 0),
-			u8vec4(191, 0, 0, 0),
-			u8vec4(191, 0, 0, 0),
-			u8vec4(191, 0, 0, 0),
-			u8vec4(191, 0, 0, 0),
-		};
-		ImageInitialData initial = { data, 0, 0 };
+		constexpr int Width = 720;
+		constexpr int Height = 600;
+		std::vector<u8vec4> pixels(Width * Height);
+
+		auto info = ImageCreateInfo::immutable_2d_image(Width, Height, VK_FORMAT_R8G8B8A8_UNORM);
+		ImageInitialData initial = { pixels.data(), 0, 0 };
+
+		float last_line_horiz_freq = -1.0f;
+
+		for (int y = 0; y < Height; y++)
+		{
+			int vertical_bar = y - 100;
+			float pct_of_nyquist = float(vertical_bar) / 400.0f; // Nyquist at 6.75 MHz.
+			float horiz_freq = pct_of_nyquist * 6.75f;
+			bool delimit_line = muglm::floor(horiz_freq) != muglm::floor(last_line_horiz_freq);
+			last_line_horiz_freq = horiz_freq;
+
+			for (int x = 0; x < Width; x++)
+			{
+				int pix = y * Width + x;
+
+				u8vec4 value;
+
+				if (y < 100 || (y < 500 && delimit_line))
+				{
+					static const u8vec4 color_bars[9] = {
+						u8vec4(191, 191, 191, 0),
+						u8vec4(191, 191, 0, 0),
+						u8vec4(0, 191, 191, 0),
+						u8vec4(0, 191, 0, 0),
+						u8vec4(191, 0, 191, 0),
+						u8vec4(191, 0, 0, 0),
+						u8vec4(0, 0, 191, 0),
+						u8vec4(0, 0, 0, 0),
+						u8vec4(191, 191, 191, 0),
+					};
+					value = color_bars[x / 80];
+				}
+				else if (y < 500)
+				{
+					float s = muglm::sin(muglm::pi<float>() * pct_of_nyquist * float(x));
+
+					if (x % 100 < 90)
+						value = u8vec4(uint8_t(255.0f * (0.5f + 0.5f * s) + 0.5f));
+					else
+						value = u8vec4(0);
+				}
+				else
+				{
+					int horiz_bar = x / 50;
+					pct_of_nyquist = float(horiz_bar) / 14.0f; // Nyquist at 6.75 MHz.
+					float s = muglm::sin(muglm::pi<float>() * pct_of_nyquist * float(x));
+
+					if (x % 50 < 5)
+						value = u8vec4(128);
+					else
+						value = u8vec4(uint8_t(255.0f * (0.5f + 0.5f * s) + 0.5f));
+				}
+
+				pixels[pix] = value;
+			}
+		}
+
 		auto test_image = device.create_image(info, &initial);
 
 		static const struct
@@ -377,6 +401,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			AnalogVideoFilter::Cable cable;
 			AnalogVideoFilter::System system;
 			bool comb;
+			bool skip_notch;
 		} tests[] = {
 			{ "PAL composite", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::PAL },
 			{ "PAL svideo", AnalogVideoFilter::Cable::SVideo, AnalogVideoFilter::System::PAL },
@@ -384,6 +409,9 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			{ "NTSC svideo", AnalogVideoFilter::Cable::SVideo, AnalogVideoFilter::System::NTSC },
 			{ "NTSC composite + comb", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::NTSC, true },
 			{ "PAL composite + comb", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::PAL, true },
+			{ "NTSC composite + comb + skip notch", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::NTSC, true, true },
+			{ "PAL composite + comb + skip notch", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::PAL, true, true },
+			{ "Component", AnalogVideoFilter::Cable::Component, AnalogVideoFilter::System::PAL },
 		};
 
 		for (auto &test : tests)
@@ -395,8 +423,9 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			dev_opts.system = test.system;
 			test_filter.init(device, dev_opts);
 			AnalogVideoFilter::FilterOptions opts = {};
-			opts.input_sampling_rate_mhz = 0.0f;
+			opts.input_sampling_rate_mhz = 13.5f;
 			opts.line_comb = test.comb;
+			opts.skip_notch = test.skip_notch;
 			test_filter.run_filter(*cmd, test_image->get_view(), opts);
 			cmd->end_region();
 		}
@@ -424,7 +453,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		auto &wsi = get_wsi();
 		auto &device = wsi.get_device();
 
-		//test_filter();
+		test_filter();
 
 		if (capture_count == NumCaptureFrames && has_renderdoc_capture)
 		{
