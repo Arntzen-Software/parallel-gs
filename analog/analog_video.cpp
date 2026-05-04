@@ -504,6 +504,8 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		float input_strength;
 		float gamma;
 		float bloom_strength;
+		float scan_factor_narrow;
+		float scan_factor_wide;
 	} push = {};
 
 	push.input_sizes = vec4(
@@ -526,6 +528,8 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	push.input_strength = filter_options.input_strength;
 	push.gamma = filter_options.gamma;
 	push.bloom_strength = filter_options.bloom_strength;
+	push.scan_factor_narrow = filter_options.scan_factor_narrow;
+	push.scan_factor_wide = filter_options.scan_factor_wide;
 
 	cmd.begin_region("crt-scan");
 	{

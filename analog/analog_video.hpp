@@ -110,6 +110,10 @@ public:
 		float bloom_strength = 0.125f;
 		bool aperture_grille = true;
 
+		// Inverse std-deviation.
+		float scan_factor_narrow = 20.0f;
+		float scan_factor_wide = 10.0f;
+
 		// Normalized. Use to only sample part of the input to remove e.g. overscan.
 		struct
 		{

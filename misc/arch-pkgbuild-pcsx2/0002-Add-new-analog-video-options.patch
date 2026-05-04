@@ -1,23 +1,23 @@
-From 278690d9e01e4e38be6aa1dba5c6432e85a8e8e2 Mon Sep 17 00:00:00 2001
+From 71f0fa9ae976c354d5451403788c5628bea16c95 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sat, 2 May 2026 15:34:15 +0200
 Subject: [PATCH 2/2] Add new analog video options.
 
 ---
- .../GraphicsPGSRenderingSettingsTab.ui        | 556 +++++++++++++++---
- pcsx2-qt/Settings/GraphicsSettingsWidget.cpp  |  69 +++
+ .../GraphicsPGSRenderingSettingsTab.ui        | 602 +++++++++++++++---
+ pcsx2-qt/Settings/GraphicsSettingsWidget.cpp  |  77 +++
  pcsx2/CMakeLists.txt                          |   2 +-
- pcsx2/Config.h                                |  14 +
- .../Renderers/parallel-gs/GSRendererPGS.cpp   | 522 +++++++++++++---
+ pcsx2/Config.h                                |  16 +
+ .../Renderers/parallel-gs/GSRendererPGS.cpp   | 522 ++++++++++++---
  .../GS/Renderers/parallel-gs/GSRendererPGS.h  |   4 +
- pcsx2/Pcsx2Config.cpp                         |  30 +-
- 7 files changed, 1037 insertions(+), 160 deletions(-)
+ pcsx2/Pcsx2Config.cpp                         |  34 +-
+ 7 files changed, 1097 insertions(+), 160 deletions(-)
 
 diff --git a/pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui b/pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui
-index 3b8499cb1..3cca11893 100644
+index 3b8499cb1..c1b4b1443 100644
 --- a/pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui
 +++ b/pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui
-@@ -6,124 +6,516 @@
+@@ -6,124 +6,562 @@
     <rect>
      <x>0</x>
      <y>0</y>
@@ -388,8 +388,7 @@ index 3b8499cb1..3cca11893 100644
 -    <spacer name="verticalSpacer">
 +   <item row="7" column="1">
 +    <spacer name="pgsHorizSpacer">
-      <property name="orientation">
--      <enum>Qt::Vertical</enum>
++     <property name="orientation">
 +      <enum>Qt::Orientation::Horizontal</enum>
 +     </property>
 +     <property name="sizeHint" stdset="0">
@@ -402,7 +401,8 @@ index 3b8499cb1..3cca11893 100644
 +   </item>
 +   <item row="20" column="0">
 +    <spacer name="pgsVerticalSpacer">
-+     <property name="orientation">
+      <property name="orientation">
+-      <enum>Qt::Vertical</enum>
 +      <enum>Qt::Orientation::Vertical</enum>
       </property>
       <property name="sizeHint" stdset="0">
@@ -428,59 +428,10 @@ index 3b8499cb1..3cca11893 100644
 +     <property name="bottomMargin">
 +      <number>10</number>
 +     </property>
-+     <item row="0" column="1">
-+      <widget class="QComboBox" name="pgsPhosphorPrimaries">
-+       <item>
-+        <property name="text">
-+         <string>No CRT emulation</string>
-+        </property>
-+       </item>
-+       <item>
-+        <property name="text">
-+         <string>Auto</string>
-+        </property>
-+       </item>
-+       <item>
-+        <property name="text">
-+         <string>NTSC (BT.601 / 525 line)</string>
-+        </property>
-+       </item>
-+       <item>
-+        <property name="text">
-+         <string>PAL (BT.601 / 625 line)</string>
-+        </property>
-+       </item>
-+       <item>
-+        <property name="text">
-+         <string>NTSC (legacy 1953, high saturation)</string>
-+        </property>
-+       </item>
-+      </widget>
-+     </item>
-+     <item row="4" column="1">
-+      <widget class="QSpinBox" name="pgsPhosphorBloom">
-+       <property name="suffix">
-+        <string> %</string>
-+       </property>
-+       <property name="maximum">
-+        <number>200</number>
-+       </property>
-+       <property name="value">
-+        <number>100</number>
-+       </property>
-+      </widget>
-+     </item>
-+     <item row="4" column="0">
-+      <widget class="QLabel" name="pgsPhosphorBloomLabel">
++     <item row="0" column="0">
++      <widget class="QLabel" name="pgsPhosphorPrimariesLabel">
 +       <property name="text">
-+        <string>Phosphor bloom strength:</string>
-+       </property>
-+      </widget>
-+     </item>
-+     <item row="3" column="0">
-+      <widget class="QLabel" name="pgsPaperWhiteLabel">
-+       <property name="text">
-+        <string>Paper white (HDR):</string>
++        <string>Phosphor color primaries:</string>
 +       </property>
 +      </widget>
 +     </item>
@@ -513,36 +464,81 @@ index 3b8499cb1..3cca11893 100644
 +       </item>
 +      </widget>
 +     </item>
-+     <item row="0" column="0">
-+      <widget class="QLabel" name="pgsPhosphorPrimariesLabel">
++     <item row="3" column="0">
++      <widget class="QLabel" name="pgsPaperWhiteLabel">
 +       <property name="text">
-+        <string>Phosphor color primaries:</string>
++        <string>Paper white (HDR):</string>
 +       </property>
 +      </widget>
 +     </item>
-+     <item row="6" column="0">
++     <item row="4" column="0">
++      <widget class="QLabel" name="pgsPhosphorBloomLabel">
++       <property name="text">
++        <string>Phosphor bloom strength:</string>
++       </property>
++      </widget>
++     </item>
++     <item row="0" column="1">
++      <widget class="QComboBox" name="pgsPhosphorPrimaries">
++       <item>
++        <property name="text">
++         <string>No CRT emulation</string>
++        </property>
++       </item>
++       <item>
++        <property name="text">
++         <string>Auto</string>
++        </property>
++       </item>
++       <item>
++        <property name="text">
++         <string>NTSC (BT.601 / 525 line)</string>
++        </property>
++       </item>
++       <item>
++        <property name="text">
++         <string>PAL (BT.601 / 625 line)</string>
++        </property>
++       </item>
++       <item>
++        <property name="text">
++         <string>NTSC (legacy 1953, high saturation)</string>
++        </property>
++       </item>
++      </widget>
++     </item>
++     <item row="8" column="0">
 +      <widget class="QCheckBox" name="pgsHighRefreshInsertion">
 +       <property name="text">
 +        <string>High-refresh rate insertion</string>
 +       </property>
 +      </widget>
 +     </item>
-+     <item row="3" column="1">
-+      <widget class="QSpinBox" name="pgsPaperWhite">
-+       <property name="suffix">
-+        <string> nits</string>
++     <item row="5" column="0">
++      <widget class="QLabel" name="pgsExposureLabel">
++       <property name="text">
++        <string>Exposure:</string>
 +       </property>
-+       <property name="minimum">
-+        <number>100</number>
++      </widget>
++     </item>
++     <item row="1" column="0">
++      <widget class="QLabel" name="pgsPhosphorGammaLabel">
++       <property name="text">
++        <string>Phosphor gamma:</string>
 +       </property>
-+       <property name="maximum">
-+        <number>1000</number>
++      </widget>
++     </item>
++     <item row="2" column="0">
++      <widget class="QLabel" name="pgsDisplayCalibrationLabel">
++       <property name="text">
++        <string>Display calibration:</string>
 +       </property>
-+       <property name="singleStep">
-+        <number>100</number>
-+       </property>
-+       <property name="value">
-+        <number>200</number>
++      </widget>
++     </item>
++     <item row="6" column="0">
++      <widget class="QLabel" name="pgsScanlineSharpnessLabel">
++       <property name="text">
++        <string>Scanline Sharpness:</string>
 +       </property>
 +      </widget>
 +     </item>
@@ -565,47 +561,97 @@ index 3b8499cb1..3cca11893 100644
 +       </item>
 +      </widget>
 +     </item>
-+     <item row="6" column="1">
++     <item row="8" column="1">
 +      <widget class="QCheckBox" name="pgsApertureGrille">
 +       <property name="text">
 +        <string>Aperture grille</string>
 +       </property>
-+      </widget>
-+     </item>
-+     <item row="2" column="0">
-+      <widget class="QLabel" name="pgsDisplayCalibrationLabel">
-+       <property name="text">
-+        <string>Display calibration:</string>
++       <property name="checked">
++        <bool>true</bool>
++       </property>
++       <property name="tristate">
++        <bool>false</bool>
 +       </property>
 +      </widget>
 +     </item>
-+     <item row="1" column="0">
-+      <widget class="QLabel" name="pgsPhosphorGammaLabel">
-+       <property name="text">
-+        <string>Phosphor gamma:</string>
++     <item row="3" column="1">
++      <widget class="QSpinBox" name="pgsPaperWhite">
++       <property name="suffix">
++        <string> nits</string>
++       </property>
++       <property name="minimum">
++        <number>100</number>
++       </property>
++       <property name="maximum">
++        <number>1000</number>
++       </property>
++       <property name="singleStep">
++        <number>100</number>
++       </property>
++       <property name="value">
++        <number>200</number>
 +       </property>
 +      </widget>
 +     </item>
-+     <item row="5" column="0">
-+      <widget class="QLabel" name="pgsExposureLabel">
++     <item row="6" column="1">
++      <widget class="QSlider" name="pgsScanlineSharpness">
++       <property name="maximum">
++        <number>100</number>
++       </property>
++       <property name="sliderPosition">
++        <number>50</number>
++       </property>
++       <property name="orientation">
++        <enum>Qt::Orientation::Horizontal</enum>
++       </property>
++      </widget>
++     </item>
++     <item row="7" column="0">
++      <widget class="QLabel" name="pgsScanlineBreathingLabel">
 +       <property name="text">
-+        <string>Exposure:</string>
++        <string>Scanline Breathing:</string>
++       </property>
++      </widget>
++     </item>
++     <item row="7" column="1">
++      <widget class="QSlider" name="pgsScanlineBreathing">
++       <property name="maximum">
++        <number>100</number>
++       </property>
++       <property name="sliderPosition">
++        <number>50</number>
++       </property>
++       <property name="orientation">
++        <enum>Qt::Orientation::Horizontal</enum>
++       </property>
++      </widget>
++     </item>
++     <item row="4" column="1">
++      <widget class="QSlider" name="pgsPhosphorBloom">
++       <property name="maximum">
++        <number>200</number>
++       </property>
++       <property name="value">
++        <number>100</number>
++       </property>
++       <property name="orientation">
++        <enum>Qt::Orientation::Horizontal</enum>
 +       </property>
 +      </widget>
 +     </item>
 +     <item row="5" column="1">
-+      <widget class="QSpinBox" name="pgsExposure">
-+       <property name="suffix">
-+        <string> %</string>
-+       </property>
++      <widget class="QSlider" name="pgsExposure">
 +       <property name="minimum">
-+        <number>25</number>
++        <number>0</number>
 +       </property>
 +       <property name="maximum">
 +        <number>200</number>
 +       </property>
 +       <property name="value">
 +        <number>100</number>
++       </property>
++       <property name="orientation">
++        <enum>Qt::Orientation::Horizontal</enum>
 +       </property>
 +      </widget>
 +     </item>
@@ -617,10 +663,10 @@ index 3b8499cb1..3cca11893 100644
 + <connections/>
  </ui>
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
-index ef2c32715..9e6726618 100644
+index ef2c32715..50bf4b5b6 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
-@@ -256,6 +256,19 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
+@@ -256,6 +256,21 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
  	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsDisableReadbackSync, "EmuCore/GS", "pgsDisableReadbackSync", 0);
  	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsSharpBackbuffer, "EmuCore/GS", "pgsSharpBackbuffer", 0);
  	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsBlendDemotion, "EmuCore/GS", "pgsBlendDemotion", 0);
@@ -637,10 +683,12 @@ index ef2c32715..9e6726618 100644
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsApertureGrille, "EmuCore/GS", "pgsApertureGrille", 0);
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsPhosphorBloom, "EmuCore/GS", "pgsPhosphorBloom", 100);
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsExposure, "EmuCore/GS", "pgsExposure", 100);
++	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsScanlineSharpness, "EmuCore/GS", "pgsScanlineSharpness", 50);
++	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsScanlineBreathing, "EmuCore/GS", "pgsScanlineBreathing", 50);
  
  	//////////////////////////////////////////////////////////////////////////
  	// Non-trivial settings
-@@ -608,6 +621,62 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
+@@ -608,6 +623,68 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
  
  		dialog()->registerWidgetHelp(m_pgs.pgsDisableReadbackSync, tr("Disable readback sync"), tr("Unchecked"),
  			tr("Disables sync for readbacks. Eliminates stalls, but will probably break things. Used for perf debug."));
@@ -700,6 +748,12 @@ index ef2c32715..9e6726618 100644
 +
 +		dialog()->registerWidgetHelp(m_pgs.pgsExposure, tr("Exposure"), tr("Up to taste"),
 +			tr("Tunes the exposure."));
++
++		dialog()->registerWidgetHelp(m_pgs.pgsScanlineSharpness, tr("Gaussian scanline sharpness"), tr("Up to taste"),
++			tr("Tunes how focused the electron guns are."));
++
++		dialog()->registerWidgetHelp(m_pgs.pgsScanlineBreathing, tr("Scanline breathing"), tr("Up to taste"),
++			tr("Simulates behavior where intense scanlines become less focused."));
  	}
  
  	// Hardware Fixes tab
@@ -717,7 +771,7 @@ index b9e8164f6..e7a46f837 100644
  	list(APPEND pcsx2GSSources GS/Renderers/parallel-gs/GSRendererPGS.cpp)
  	list(APPEND pcsx2GSHeaders GS/Renderers/parallel-gs/GSRendererPGS.h)
 diff --git a/pcsx2/Config.h b/pcsx2/Config.h
-index fcbf78a11..95fe49f58 100644
+index fcbf78a11..f06e4f37e 100644
 --- a/pcsx2/Config.h
 +++ b/pcsx2/Config.h
 @@ -898,6 +898,7 @@ struct Pcsx2Config
@@ -728,7 +782,7 @@ index fcbf78a11..95fe49f58 100644
  		u8 PGSSuperSampling = 0;
  		u8 PGSHighResScanout = 0;
  		u8 PGSDisableMipmaps = 0;
-@@ -905,6 +906,19 @@ struct Pcsx2Config
+@@ -905,6 +906,21 @@ struct Pcsx2Config
  		u8 PGSSuperSampleTextures = 0;
  		u8 PGSSharpBackbuffer = 0;
  		u8 PGSBlendDemotion = 0;
@@ -742,14 +796,16 @@ index fcbf78a11..95fe49f58 100644
 +		u8 PGSDisplayCalibration = 0;
 +		u16 PGSPaperWhite = 0;
 +		u8 PGSHighRefreshInsertion = 0;
-+		u8 PGSApertureGrille = 0;
-+		u8 PGSPhosphorBloom = 0;
-+		u8 PGSExposure = 0;
++		u8 PGSApertureGrille = 1;
++		u8 PGSPhosphorBloom = 100;
++		u8 PGSExposure = 100;
++		u8 PGSScanlineSharpness = 50;
++		u8 PGSScanlineBreathing = 50;
  
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
-index c6885cb56..e05357d08 100644
+index c6885cb56..d50cee163 100644
 --- a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 @@ -213,7 +213,10 @@ bool GSRendererPGS::Init()
@@ -1265,10 +1321,6 @@ index c6885cb56..e05357d08 100644
 +
 +			crt_filter_options.input_strength = float(GSConfig.PGSExposure) / 100.0f;
 +
-+			// Normalize the average luminance.
-+			if (!vsync.interlaced)
-+				crt_filter_options.input_strength *= 0.5f;
-+
 +			// High refresh rate decay.
 +			if (frame_index != 0)
 +				crt_filter_options.input_strength = 0.0f;
@@ -1278,6 +1330,10 @@ index c6885cb56..e05357d08 100644
 +				crt_filter_options.input_rect = { 0.1f, 0.04f, 0.8f, 0.92f };
 +			else
 +				crt_filter_options.input_rect = { 0.05f, 0.04f, 0.9f, 0.92f };
++
++			crt_filter_options.scan_factor_narrow = 4.0f + 36.0f * float(GSConfig.PGSScanlineSharpness) / 100.0f;
++			float breathe = float(GSConfig.PGSScanlineBreathing) / 100.0f;
++			crt_filter_options.scan_factor_wide = crt_filter_options.scan_factor_narrow * (1.0f - 0.75f * breathe);
 +
 +			switch (GSConfig.PGSPhosphorPrimaries)
 +			{
@@ -1377,10 +1433,10 @@ index 0a4eb3558..8fba63757 100644
 +	ParallelGS::CRTFilter crt_filter;
  };
 diff --git a/pcsx2/Pcsx2Config.cpp b/pcsx2/Pcsx2Config.cpp
-index 8aa768e5a..d26101aeb 100644
+index 8aa768e5a..432372890 100644
 --- a/pcsx2/Pcsx2Config.cpp
 +++ b/pcsx2/Pcsx2Config.cpp
-@@ -898,7 +898,20 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
+@@ -898,7 +898,22 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
  		OpEqu(PGSDisableMipmaps) &&
  		OpEqu(PGSDisableReadbackSync) &&
  		OpEqu(PGSSharpBackbuffer) &&
@@ -1398,11 +1454,13 @@ index 8aa768e5a..d26101aeb 100644
 +		OpEqu(PGSHighRefreshInsertion) &&
 +		OpEqu(PGSApertureGrille) &&
 +		OpEqu(PGSPhosphorBloom) &&
-+		OpEqu(PGSExposure);
++		OpEqu(PGSExposure) &&
++		OpEqu(PGSScanlineSharpness) &&
++		OpEqu(PGSScanlineBreathing);
  }
  
  bool Pcsx2Config::GSOptions::operator!=(const GSOptions& right) const
-@@ -988,6 +1001,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
+@@ -988,6 +1003,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
  	SettingsWrapBitBool(HWSpinCPUForReadbacks);
  	SettingsWrapBitBoolEx(GPUPaletteConversion, "paltex");
  	SettingsWrapBitBoolEx(AutoFlushSW, "autoflush_sw");
@@ -1410,7 +1468,7 @@ index 8aa768e5a..d26101aeb 100644
  	SettingsWrapIntEnumEx(PGSSuperSampling, "pgsSuperSampling");
  	SettingsWrapBitBoolEx(PGSHighResScanout, "pgsHighResScanout");
  	SettingsWrapBitBoolEx(PGSSuperSampleTextures, "pgsSuperSampleTextures");
-@@ -995,6 +1009,20 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
+@@ -995,6 +1011,22 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
  	SettingsWrapBitBoolEx(PGSDisableReadbackSync, "pgsDisableReadbackSync");
  	SettingsWrapBitBoolEx(PGSSharpBackbuffer, "pgsSharpBackbuffer");
  	SettingsWrapBitBoolEx(PGSBlendDemotion, "pgsBlendDemotion");
@@ -1427,6 +1485,8 @@ index 8aa768e5a..d26101aeb 100644
 +	SettingsWrapBitBoolEx(PGSApertureGrille, "pgsApertureGrille");
 +	SettingsWrapIntEnumEx(PGSPhosphorBloom, "pgsPhosphorBloom");
 +	SettingsWrapIntEnumEx(PGSExposure, "pgsExposure");
++	SettingsWrapIntEnumEx(PGSScanlineSharpness, "pgsScanlineSharpness");
++	SettingsWrapIntEnumEx(PGSScanlineBreathing, "pgsScanlineBreathing");
 +
  	SettingsWrapBitBoolEx(PreloadFrameWithGSData, "preload_frame_with_gs_data");
  	SettingsWrapBitBoolEx(Mipmap, "mipmap");

@@ -28,17 +28,20 @@ void main()
 
     // Could be done better in compute or maybe separable bloom accumulation, but this is simple enough for now.
 
-    for (int y = -4; y <= 4; y++)
+    if (registers.bloom_strength > 0.0)
     {
-        for (int x = -4; x <= 4; x++)
+        for (int y = -4; y <= 4; y++)
         {
-            // Supposed to consider scattering contributions from neighbors.
-            if (x == 0 && y == 0)
+            for (int x = -4; x <= 4; x++)
+            {
+                // Supposed to consider scattering contributions from neighbors.
+                if (x == 0 && y == 0)
                 continue;
 
-            vec2 dist = vec2(x, y);
-            float weight = exp2(-0.25 * dot(dist, dist));
-            Bloom += weight * texelFetch(uTex, base_coord + ivec2(x, y), 0).rgb;
+                vec2 dist = vec2(x, y);
+                float weight = exp2(-0.25 * dot(dist, dist));
+                Bloom += weight * texelFetch(uTex, base_coord + ivec2(x, y), 0).rgb;
+            }
         }
     }
 
