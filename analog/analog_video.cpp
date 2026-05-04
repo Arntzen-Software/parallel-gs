@@ -43,6 +43,13 @@ bool AnalogVideoFilter::init(Device &device_, const Options &options_)
 
 		chroma_estimate_target = device->create_image(image_info);
 		device->set_name(*chroma_estimate_target, "chroma-estimate");
+
+		if (options.system == System::PAL)
+		{
+			image_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+			yuv_target = device->create_image(image_info);
+			device->set_name(*yuv_target, "yuv-target");
+		}
 	}
 
 	image_info.width = 1;
@@ -182,6 +189,7 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 	const Image *images[] = {
 		downsample_target.get(),
 		encode_target.get(),
+		yuv_target.get(),
 		decode_target.get(),
 		bandpass_target.get(),
 		chroma_estimate_target.get(),
@@ -206,7 +214,8 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 		PassEncode,
 		PassDecode,
 		PassBandpass,
-		PassSeparation
+		PassSeparation,
+		PassHannoverBarFilter
 	};
 
 	static const char *pass_to_str[] = {
@@ -215,6 +224,7 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 		"analog-decode",
 		"analog-bandpass",
 		"analog-separation",
+		"analog-hannover",
 	};
 
 	const auto run_pass = [&](Pass pass, const ImageView *src, const ImageView *dst)
@@ -258,6 +268,8 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 	run_pass(PassEncode, &downsample_target->get_view(),
 		options.cable == Cable::Component ? nullptr : &encode_target->get_view());
 
+	push.subcarrier_phase_offset += filter_options.phase_error;
+
 	if (options.cable != Cable::Component)
 	{
 		if (options.cable == Cable::Composite && filter_options.line_comb)
@@ -280,7 +292,15 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 		push.input_offset = -DecodeOffset - horizontal_shift;
 		cmd.set_specialization_constant(3, filter_options.line_comb);
 		cmd.set_specialization_constant(4, filter_options.skip_notch);
-		run_pass(PassDecode, &encode_target->get_view(), nullptr);
+
+		run_pass(PassDecode, &encode_target->get_view(),
+			options.system == System::PAL ? &yuv_target->get_view() : nullptr);
+
+		if (options.system == System::PAL)
+		{
+			push.input_offset = 0;
+			run_pass(PassHannoverBarFilter, &yuv_target->get_view(), nullptr);
+		}
 	}
 
 	cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_GENERAL, filter_options.dst_layout,
@@ -613,5 +633,122 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 
 	front_is_valid = true;
 	return true;
+}
+
+void AnalogVideoFilter::execute_color_bar_self_test(Vulkan::Device &device)
+{
+	auto cmd = device.request_command_buffer();
+
+	constexpr int Width = 720;
+	constexpr int Height = 600;
+	std::vector<u8vec4> pixels(Width * Height);
+
+	auto info = ImageCreateInfo::immutable_2d_image(Width, Height, VK_FORMAT_R8G8B8A8_UNORM);
+	ImageInitialData initial = {pixels.data(), 0, 0};
+
+	float last_line_horiz_freq = -1.0f;
+
+	for (int y = 0; y < Height; y++)
+	{
+		int vertical_bar = y - 100;
+		float pct_of_nyquist = float(vertical_bar) / 400.0f; // Nyquist at 6.75 MHz.
+		float horiz_freq = pct_of_nyquist * 6.75f;
+		bool delimit_line = muglm::floor(horiz_freq) != muglm::floor(last_line_horiz_freq);
+		last_line_horiz_freq = horiz_freq;
+
+		for (int x = 0; x < Width; x++)
+		{
+			int pix = y * Width + x;
+
+			u8vec4 value;
+
+			if (y < 100 || (y < 500 && delimit_line))
+			{
+				static const u8vec4 color_bars[9] = {
+					u8vec4(191, 191, 191, 0),
+					u8vec4(191, 191, 0, 0),
+					u8vec4(0, 191, 191, 0),
+					u8vec4(0, 191, 0, 0),
+					u8vec4(191, 0, 191, 0),
+					u8vec4(191, 0, 0, 0),
+					u8vec4(0, 0, 191, 0),
+					u8vec4(0, 0, 0, 0),
+					u8vec4(191, 191, 191, 0),
+				};
+				value = color_bars[x / 80];
+			}
+			else if (y < 500)
+			{
+				float s = muglm::sin(muglm::pi<float>() * pct_of_nyquist * float(x));
+
+				if (x % 100 < 90)
+					value = u8vec4(uint8_t(255.0f * (0.5f + 0.5f * s) + 0.5f));
+				else
+					value = u8vec4(0);
+			}
+			else
+			{
+				int horiz_bar = x / 50;
+				pct_of_nyquist = float(horiz_bar) / 14.0f; // Nyquist at 6.75 MHz.
+				float s = muglm::sin(muglm::pi<float>() * pct_of_nyquist * float(x));
+
+				if (x % 50 < 5)
+					value = u8vec4(128);
+				else
+					value = u8vec4(uint8_t(255.0f * (0.5f + 0.5f * s) + 0.5f));
+			}
+
+			pixels[pix] = value;
+		}
+	}
+
+	auto test_image = device.create_image(info, &initial);
+
+	static const struct
+	{
+		const char *tag;
+		AnalogVideoFilter::Cable cable;
+		AnalogVideoFilter::System system;
+		bool comb;
+		bool skip_notch;
+		float phase_error;
+	} tests[] = {
+		{"PAL composite", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::PAL},
+		{"PAL svideo", AnalogVideoFilter::Cable::SVideo, AnalogVideoFilter::System::PAL},
+		{"NTSC composite", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::NTSC},
+		{"NTSC svideo", AnalogVideoFilter::Cable::SVideo, AnalogVideoFilter::System::NTSC},
+		{"NTSC composite + comb", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::NTSC, true},
+		{"PAL composite + comb", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::PAL, true},
+		{"NTSC composite + comb + phase error", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::NTSC, true, false, 0.05f },
+		{"PAL composite + comb + phase error", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::PAL, true, false, 0.05f },
+		{
+			"NTSC composite + comb + skip notch", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::NTSC,
+			true, true
+		},
+		{
+			"PAL composite + comb + skip notch", AnalogVideoFilter::Cable::Composite, AnalogVideoFilter::System::PAL,
+			true, true
+		},
+		{"Component", AnalogVideoFilter::Cable::Component, AnalogVideoFilter::System::PAL},
+	};
+
+	for (auto &test : tests)
+	{
+		cmd->begin_region(test.tag);
+		AnalogVideoFilter test_filter;
+		AnalogVideoFilter::Options dev_opts = {};
+		dev_opts.cable = test.cable;
+		dev_opts.system = test.system;
+		test_filter.init(device, dev_opts);
+		AnalogVideoFilter::FilterOptions opts = {};
+		opts.input_sampling_rate_mhz = 13.5f;
+		opts.line_comb = test.comb;
+		opts.skip_notch = test.skip_notch;
+		opts.phase_error = test.phase_error;
+		test_filter.run_filter(*cmd, test_image->get_view(), opts);
+		cmd->end_region();
+	}
+
+	device.submit(cmd);
 }
 }

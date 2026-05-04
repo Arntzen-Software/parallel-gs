@@ -52,6 +52,10 @@ public:
 		VkImageLayout dst_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
 		VkPipelineStageFlags2 dst_stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
 		VkAccessFlags2 dst_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+
+		// 1.0f = 360 degrees.
+		// Simulate behavior when chroma carrier is not aligned. For demonstration purposes.
+		float phase_error = 0.0f;
 	};
 
 	void run_filter(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &input, const FilterOptions &options);
@@ -66,6 +70,8 @@ public:
 
 	const Options &get_options() const { return options; }
 
+	static void execute_color_bar_self_test(Vulkan::Device &device);
+
 private:
 	Vulkan::Device *device = nullptr;
 	Options options = {};
@@ -75,6 +81,7 @@ private:
 	Vulkan::ImageHandle decode_target;
 	Vulkan::ImageHandle bandpass_target;
 	Vulkan::ImageHandle chroma_estimate_target;
+	Vulkan::ImageHandle yuv_target;
 	uint64_t total_line_counter = 0;
 	Analog::Shaders<> shaders;
 };
