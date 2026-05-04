@@ -35,6 +35,8 @@ void accumulate(vec3 sampled, inout vec3 color, int y, float phase)
     if (registers.phase == 0.0)
         inv_stddev *= 0.5;
 
+    vec3 inv_variance = inv_stddev * inv_stddev;
+
     // Basic gaussian, assume normal distribution for where electrons hit the phosphor.
     // For wider beams, compensate to ensure the integral remains fixed.
 
@@ -44,9 +46,11 @@ void accumulate(vec3 sampled, inout vec3 color, int y, float phase)
     for (int samples = 0; samples < 4; samples++)
     {
         float biased_phase = phase - 0.0625 + 0.125 * float(samples) / 3.0;
-        gaussian += exp(-0.5 * inv_stddev * biased_phase * biased_phase);
+        gaussian += exp(-0.5 * inv_variance * biased_phase * biased_phase);
     }
-    gaussian *= 0.3989422 * inv_stddev * 0.25;
+
+    const float one_over_sqrt_two_pi = 0.3989422;
+    gaussian *= one_over_sqrt_two_pi * inv_stddev * 0.25;
 
     // A little unclear if we should do gamma before or after. Before makes a little more sense I think.
     color += pow(sampled, vec3(registers.gamma)) * gaussian;

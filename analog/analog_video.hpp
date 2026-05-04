@@ -118,8 +118,8 @@ public:
 		bool aperture_grille = true;
 
 		// Inverse std-deviation.
-		float scan_factor_narrow = 20.0f;
-		float scan_factor_wide = 10.0f;
+		float scan_factor_narrow = 4.5f;
+		float scan_factor_wide = 3.5f;
 
 		// Normalized. Use to only sample part of the input to remove e.g. overscan.
 		struct
