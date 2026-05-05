@@ -368,10 +368,11 @@ private:
 
 		struct TextureStateToLocalIndex : Util::IntrusiveHashMapEnabled<TextureStateToLocalIndex>
 		{
-			TextureStateToLocalIndex(uint32_t index_, uint64_t valid_at_texflush_)
-				: valid_at_texflush(valid_at_texflush_), index(index_) {}
+			TextureStateToLocalIndex(uint32_t index_, uint64_t valid_at_texflush_, bool long_term_)
+				: valid_at_texflush(valid_at_texflush_), index(index_), long_term(long_term_) {}
 			uint64_t valid_at_texflush = 0;
 			uint32_t index;
+			bool long_term;
 			bool valid = true;
 		};
 

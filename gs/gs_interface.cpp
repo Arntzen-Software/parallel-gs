@@ -1630,6 +1630,13 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 
 		// The render pass might have been flushed, have to requery.
 		cached_index = render_pass.texture_map.find(hasher.get());
+
+		// We started long-term, but now we're rendering on top of it in sliced mode, cannot use this reference.
+		if (cached_index && cached_index->valid && cached_index->long_term && !long_term_cache_texture)
+		{
+			texture_page_rects_read_full();
+			cached_index = render_pass.texture_map.find(hasher.get());
+		}
 	}
 
 	if (!long_term_cache_texture)
@@ -1727,7 +1734,10 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 			cached_index->valid = true;
 		}
 		else
-			render_pass.texture_map.emplace_replace(hasher.get(), texture_index, state_tracker.texflush_counter);
+		{
+			render_pass.texture_map.emplace_replace(hasher.get(), texture_index,
+				state_tracker.texflush_counter, long_term_cache_texture);
+		}
 
 		TextureInfo info = {};
 		info.view = &image->get_view();
