@@ -42,6 +42,9 @@ struct ScanoutResult
 
 	// If interlaced, top (0) or bottom (1).
 	uint32_t interlace_phase;
+
+	// Pixel clock rate. Generally 13.5 MHz for interlaced 640x480 video and 27 MHz for progressive 640x480.
+	float sampling_rate_mhz;
 };
 
 struct FlushStats

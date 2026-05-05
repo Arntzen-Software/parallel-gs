@@ -4681,6 +4681,10 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	}
 
 	uint32_t real_mode_width = mode_width;
+	float sampling_rate_mhz = 54.0f / float(clock_divider);
+
+	if (clock_divider == SMODE1Bits::CLOCK_DIVIDER_COMPOSITE && !is_interlaced)
+		sampling_rate_mhz *= 2.0f;
 
 	if (info.adapt_to_internal_horizontal_resolution)
 	{
@@ -4694,19 +4698,31 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			horiz_resolution1 >>= 1;
 		}
 
+		uint32_t magh1 = priv.display1.MAGH + 1;
+		uint32_t magh2 = priv.display2.MAGH + 1;
+
 		if (horiz_resolution0 == 0)
+		{
 			horiz_resolution0 = horiz_resolution1;
+			magh1 = magh2;
+		}
+
 		if (horiz_resolution1 == 0)
+		{
 			horiz_resolution1 = horiz_resolution0;
+			magh2 = magh1;
+		}
 
 		if (horiz_resolution0 && horiz_resolution0 == horiz_resolution1)
 		{
-			float width_scaling = float(horiz_resolution0) / float(mode_width);
+			float width_scaling = float(clock_divider) / float(magh1);
+			sampling_rate_mhz *= width_scaling;
+
 			crtc_rects[0].offset.x = int32_t(std::round(float(crtc_rects[0].offset.x) * width_scaling));
 			crtc_rects[1].offset.x = int32_t(std::round(float(crtc_rects[1].offset.x) * width_scaling));
 			crtc_rects[0].extent.width = uint32_t(std::round(float(crtc_rects[0].extent.width) * width_scaling));
 			crtc_rects[1].extent.width = uint32_t(std::round(float(crtc_rects[1].extent.width) * width_scaling));
-			mode_width = horiz_resolution0;
+			mode_width = uint32_t(std::round(float(mode_width) * width_scaling));
 		}
 	}
 
@@ -4714,6 +4730,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	result.mode_width = mode_width;
 	result.mode_height = mode_height;
 	result.high_resolution_scanout = high_resolution_scanout;
+	result.sampling_rate_mhz = sampling_rate_mhz;
 
 	if (info.raw_circuit_scanout &&
 	    !info.crtc_offsets && !info.overscan &&
