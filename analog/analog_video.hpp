@@ -35,6 +35,8 @@ public:
 		// Normal 640 width output from parallel-gs is assumed to be standard BT.601 13.5 MHz.
 		// For best results, should be 56 MHz divided by an integer.
 		// input_sampling_rate_mhz = 56 / (MAGH + 1) for PS2.
+		// The sampling rate assumes interlaced video mode, so e.g. 480p should not double to 27 MHz here
+		// even if it is technically more correct.
 		float input_sampling_rate_mhz = 13.5f;
 
 		// Adds a temporary offset to line counter. Useful for testing.

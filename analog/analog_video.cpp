@@ -44,7 +44,7 @@ bool AnalogVideoFilter::init(Device &device_, const Options &options_)
 		chroma_estimate_target = device->create_image(image_info);
 		device->set_name(*chroma_estimate_target, "chroma-estimate");
 
-		if (options.system == System::PAL)
+		if (options.system == System::PAL && options.cable == Cable::Composite)
 		{
 			image_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
 			yuv_target = device->create_image(image_info);
@@ -293,10 +293,10 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 		cmd.set_specialization_constant(3, filter_options.line_comb);
 		cmd.set_specialization_constant(4, filter_options.skip_notch);
 
-		run_pass(PassDecode, &encode_target->get_view(),
-			options.system == System::PAL ? &yuv_target->get_view() : nullptr);
+		bool hannover_filter = options.system == System::PAL && options.cable == Cable::Composite;
+		run_pass(PassDecode, &encode_target->get_view(), hannover_filter ? &yuv_target->get_view() : nullptr);
 
-		if (options.system == System::PAL)
+		if (hannover_filter)
 		{
 			push.input_offset = 0;
 			run_pass(PassHannoverBarFilter, &yuv_target->get_view(), nullptr);

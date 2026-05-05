@@ -397,7 +397,7 @@ void filter_pass_decode(float luma_kernel[31], float chroma_kernel[31])
 
     int coord = int(gl_GlobalInvocationID.x + registers.output_offset);
     // Defer this to Hannover Filter.
-    if (!PAL)
+    if (!PAL || CABLE != CABLE_COMPOSITE)
     {
         filtered = decode_yuv(filtered);
         imageStore(Outputs2D, ivec2(coord, gl_WorkGroupID.y), vec4(filtered, 0.0));
