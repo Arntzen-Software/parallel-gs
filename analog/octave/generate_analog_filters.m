@@ -68,7 +68,7 @@ subcarrier_notch = subcarrier_notch' / sum(subcarrier_notch);
 ntsc_chroma_lp_decode = conv(ntsc_chroma_lp_decode, subcarrier_notch);
 
 ntsc_bands = [0, ntsc_luma_bw, ntsc_luma_stop, bt601_rate];
-ntsc_luma_lp_decode = firls(30 - 2, ntsc_bands / bt601_rate, [1 1 0 0]);
+ntsc_luma_lp_decode = firls(30 - 2, ntsc_bands / bt601_rate, [1 1.15 0 0]);
 ntsc_luma_lp_decode = conv(ntsc_luma_lp_decode, subcarrier_notch);
 
 % PAL decode
@@ -82,7 +82,7 @@ subcarrier_notch = subcarrier_notch' / sum(subcarrier_notch);
 pal_chroma_lp_decode = conv(pal_chroma_lp_decode, subcarrier_notch);
 
 pal_bands = [0, pal_luma_bw, pal_luma_stop, bt601_rate];
-pal_luma_lp_decode = firls(30 - 2, pal_bands / bt601_rate, [1 1 0 0]);
+pal_luma_lp_decode = firls(30 - 2, pal_bands / bt601_rate, [1 2.5 0 0]);
 pal_luma_lp_decode = conv(pal_luma_lp_decode, subcarrier_notch);
 
 ntsc_luma_lp_decode = ntsc_luma_lp_decode / sum(ntsc_luma_lp_decode);
