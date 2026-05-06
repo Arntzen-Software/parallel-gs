@@ -88,6 +88,11 @@ void allocate_block(IndirectDispatch dispatch_va, WorkGroupBuffer workgroup_va, 
 
 spirv_instruction(set = "GLSL.std.450", id = 81) vec2 spvNClamp(vec2, vec2, vec2);
 
+bool q_is_annoying(float q)
+{
+    return q == 0.0 || isnan(q);
+}
+
 bool compute_tex_index_and_damage_region(uint index, out uint tex_index, out ivec2 lo, out ivec2 hi, out TextureAnalysis analysis)
 {
     if (index >= registers.num_primitives)
@@ -161,6 +166,14 @@ bool compute_tex_index_and_damage_region(uint index, out uint tex_index, out ive
     {
         uv_lo -= 0.5;
         uv_hi += 0.5;
+    }
+
+    // The results will be complete bogus, so we need to be conservative.
+    if (q_is_annoying(stq00.z) || q_is_annoying(stq01.z) ||
+        q_is_annoying(stq10.z) || q_is_annoying(stq11.z))
+    {
+        uv_lo = vec2(-2047.0);
+        uv_hi = vec2(+2047.0);
     }
 
     lo = ivec2(floor(uv_lo));
