@@ -218,7 +218,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		sharpen_program = e.get_device().request_program(suite.sharpen_vert, suite.sharpen_frag);
 
 		AnalogVideoFilter::Options dev_opts = {};
-		dev_opts.cable = AnalogVideoFilter::Cable::Composite;
+		dev_opts.cable = AnalogVideoFilter::Cable::Component;
 		dev_opts.system = AnalogVideoFilter::System::PAL;
 		if (!filter.init(e.get_device(), dev_opts))
 			request_shutdown();
@@ -332,6 +332,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		auto &wsi = get_wsi();
 		auto &device = wsi.get_device();
 
+#if 0
 		if (Device::init_renderdoc_capture())
 		{
 			device.begin_renderdoc_capture();
@@ -339,6 +340,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			device.end_renderdoc_capture();
 			request_shutdown();
 		}
+#endif
 
 		if (capture_count == NumCaptureFrames && has_renderdoc_capture)
 		{
@@ -380,59 +382,6 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		if (mode == IterationMode::Pause)
 			frame_multiplier_phase = 0;
-
-#if 1
-		wsi.set_enable_timing_feedback(true);
-
-		RefreshRateInfo refresh_info;
-		if (wsi.get_refresh_rate_info(refresh_info) && refresh_info.refresh_duration)
-		{
-			float fps = vsync.mode_height == 240 || vsync.mode_height == 480 ? 59.94f : 50.0f;
-
-			// If monitor is over 100 Hz it's probably VRR.
-			bool force_vrr = false;
-
-			uint64_t target_period_ns = 1000000000ull / fps;
-
-			if (refresh_info.mode != RefreshMode::VRR)
-			{
-				uint64_t interval = refresh_info.refresh_duration;
-
-				// Try to align with monitor refresh rate if we're close enough.
-				// If we cannot snap to a specific cycle we have to assume free-flowing relative timing.
-				uint64_t alignment = target_period_ns % interval;
-				if (alignment + interval / 256 >= interval || alignment <= interval / 256)
-				{
-					frame_multiplier = (target_period_ns + interval / 2) / interval;
-					target_period_ns = interval;
-				}
-				else
-				{
-					// If we know we have VRR we can go to town with high refresh rate framegen.
-					frame_multiplier = target_period_ns / refresh_info.refresh_duration;
-					// Every individual frame should be paced at a fraction of intended refresh.
-					target_period_ns = target_period_ns / frame_multiplier;
-					force_vrr = true;
-				}
-			}
-			else
-			{
-				// If we know we have VRR we can go to town with high refresh rate framegen.
-				frame_multiplier = target_period_ns / refresh_info.refresh_duration;
-
-				// Every individual frame should be paced at a fraction of intended refresh.
-				target_period_ns = target_period_ns / frame_multiplier;
-			}
-
-			if (frame_multiplier > 1)
-			{
-				wsi.set_frame_duplication_aware(true, 10);
-				wsi.set_present_wait_latency(2);
-			}
-
-			wsi.set_target_presentation_time(0, target_period_ns, force_vrr);
-		}
-#endif
 
 		//read_page_memory();
 

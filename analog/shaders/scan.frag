@@ -18,7 +18,6 @@ layout(push_constant) uniform Registers
     float phase; float feedback;
     float input_strength;
     float gamma;
-    float bloom_strength;
     float scan_factor_narrow;
     float scan_factor_wide;
 } registers;

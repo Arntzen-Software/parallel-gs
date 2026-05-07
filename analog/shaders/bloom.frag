@@ -4,12 +4,12 @@
 // SPDX-FileContributor: Hans-Kristian Arntzen
 // SPDX-License-Identifier: LGPL-3.0+
 
-#extension GL_EXT_samplerless_texture_functions : require
+#extension GL_EXT_control_flow_attributes : require
 
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec3 Bloom;
 
-layout(set = 0, binding = 0) uniform texture2D uTex;
+layout(set = 0, binding = 0) uniform sampler2D uTex;
 
 layout(push_constant) uniform Registers
 {
@@ -17,34 +17,56 @@ layout(push_constant) uniform Registers
     vec2 output_size, inv_output_size;
     float phase; float feedback;
     float input_strength;
-    float gamma; float bloom_strength;
 } registers;
+
+layout(set = 0, binding = 1) uniform BlurKernel
+{
+    vec4 weights;
+    vec4 offsets;
+} kernel;
+
+layout(constant_id = 0) const bool APPLY = false;
+
+vec3 tap(float weight, float off_x, float off_y)
+{
+    return weight * textureLod(uTex, vUV + registers.inv_output_size * vec2(off_x, off_y), 0.0).rgb;
+}
 
 void main()
 {
-    Bloom = vec3(0.0);
-
-    ivec2 base_coord = ivec2(gl_FragCoord.xy);
-
-    // Could be done better in compute or maybe separable bloom accumulation, but this is simple enough for now.
-
-    if (registers.bloom_strength > 0.0)
+    if (APPLY)
     {
-        for (int y = -4; y <= 4; y++)
-        {
-            for (int x = -4; x <= 4; x++)
-            {
-                // Supposed to consider scattering contributions from neighbors.
-                if (x == 0 && y == 0)
-                continue;
+        // Blending.
+        Bloom = vec3(0.0);
+        Bloom += textureLod(uTex, vUV + vec2(-0.5, -0.5) * registers.inv_output_size, 0.0).rgb;
+        Bloom += textureLod(uTex, vUV + vec2(+0.5, -0.5) * registers.inv_output_size, 0.0).rgb;
+        Bloom += textureLod(uTex, vUV + vec2(-0.5, +0.5) * registers.inv_output_size, 0.0).rgb;
+        Bloom += textureLod(uTex, vUV + vec2(+0.5, +0.5) * registers.inv_output_size, 0.0).rgb;
+        Bloom *= 0.25;
+    }
+    else
+    {
+        Bloom = vec3(0.0);
 
-                vec2 dist = vec2(x, y);
-                float weight = exp2(-0.25 * dot(dist, dist));
-                Bloom += weight * texelFetch(uTex, base_coord + ivec2(x, y), 0).rgb;
+        vec4 weights = kernel.weights;
+        vec4 offsets = kernel.offsets;
+
+        [[unroll]]
+        for (int y = -2; y <= 2; y++)
+        {
+            [[unroll]]
+            for (int x = -2; x <= 2; x++)
+            {
+                Bloom += tap(weights[abs(x)] * weights[abs(y)],
+                    sign(float(x)) * offsets[abs(x)],
+                    sign(float(y)) * offsets[abs(y)]);
             }
         }
-    }
 
-    Bloom *= registers.bloom_strength;
-    Bloom += texelFetch(uTex, base_coord, 0).rgb;
+        float edge_weights = weights.x * weights.w;
+        Bloom += tap(edge_weights, -offsets.w, 0.0);
+        Bloom += tap(edge_weights, +offsets.w, 0.0);
+        Bloom += tap(edge_weights, 0.0, -offsets.w);
+        Bloom += tap(edge_weights, 0.0, +offsets.w);
+    }
 }

@@ -410,15 +410,18 @@ void CRTFilter::init_buffers(Vulkan::Device &device,
 		info.initial_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
 		phosphor_layer_front = device.create_image(info);
 		phosphor_layer_back = device.create_image(info);
-		bloomed = device.create_image(info);
 		device.set_name(*phosphor_layer_front, "phosphor-front");
 		device.set_name(*phosphor_layer_back, "phosphor-back");
-		device.set_name(*bloomed, "bloom");
+
+		info.width /= 2;
+		info.height /= 2;
+		bloomed_half = device.create_image(info);
+		device.set_name(*bloomed_half, "bloom");
 	}
 
-	if (!sinc_vert || sinc_vert->get_height() != output_height || sinc_vert->get_width() != bloomed->get_width())
+	if (!sinc_vert || sinc_vert->get_height() != output_height || sinc_vert->get_width() != phosphor_layer_front->get_width())
 	{
-		auto info = Vulkan::ImageCreateInfo::render_target(bloomed->get_width(), output_height, fmt);
+		auto info = Vulkan::ImageCreateInfo::render_target(phosphor_layer_front->get_width(), output_height, fmt);
 		info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
 		info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		sinc_vert = device.create_image(info);
@@ -488,6 +491,39 @@ bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOption
 	return true;
 }
 
+void CRTFilter::allocate_gaussian_bloom_kernel(Vulkan::CommandBuffer &cmd, uint32_t desc_set, uint32_t binding, float intensity)
+{
+    constexpr float one_over_sqrt_two_pi = 0.3989422f;
+	float gauss[8];
+
+	float stddev = 0.5f + 1.5f * intensity;
+	float inv_stddev = 1.0f / stddev;
+	float inv_variance = inv_stddev * inv_stddev;
+
+	for (int i = 0; i < 8; i++)
+	{
+		float phase = 0.5f - float(i);
+		gauss[i] = muglm::sqrt(intensity) * one_over_sqrt_two_pi * inv_stddev * muglm::exp(-0.5f * phase * phase * inv_variance);
+	}
+
+	vec4 weights;
+	vec4 offsets;
+
+	for (int i = 0; i < 4; i++)
+	{
+		float tap0 = gauss[2 * i + 0];
+		float tap1 = gauss[2 * i + 1];
+
+		float l = tap1 / (tap0 + tap1);
+		offsets[i] = -0.5f + 2.0f * float(i) + l;
+		weights[i] = tap0 + tap1;
+	}
+
+	vec4 *kernel = cmd.allocate_typed_constant_data<vec4>(desc_set, binding, 2);
+	kernel[0] = weights;
+	kernel[1] = offsets;
+}
+
 bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &view,
                                    const FilterOptions &filter_options,
                                    uint32_t output_width, uint32_t output_height)
@@ -507,7 +543,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	cmd.image_barrier(*phosphor_layer_front, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 	                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
 	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-	cmd.image_barrier(*bloomed, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+	cmd.image_barrier(*bloomed_half, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 					  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
 					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 	cmd.image_barrier(*sinc_vert, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
@@ -523,7 +559,6 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		float feedback;
 		float input_strength;
 		float gamma;
-		float bloom_strength;
 		float scan_factor_narrow;
 		float scan_factor_wide;
 	} push = {};
@@ -547,7 +582,6 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	push.feedback = back_is_valid ? filter_options.feedback : 0.0f;
 	push.input_strength = filter_options.input_strength;
 	push.gamma = filter_options.gamma;
-	push.bloom_strength = filter_options.bloom_strength;
 	push.scan_factor_narrow = filter_options.scan_factor_narrow;
 	push.scan_factor_wide = filter_options.scan_factor_wide;
 
@@ -575,19 +609,52 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 
 	cmd.begin_region("crt-bloom");
 	{
-		rp.color_attachments[0] = &bloomed->get_view();
+		rp.color_attachments[0] = &bloomed_half->get_view();
 		cmd.begin_render_pass(rp);
 		cmd.set_opaque_sprite_state();
 		cmd.set_program(bloom);
-		cmd.set_texture(0, 0, phosphor_layer_front->get_view());
+		cmd.set_specialization_constant(0, false);
+		cmd.set_texture(0, 0, phosphor_layer_front->get_view(), StockSampler::LinearClamp);
+		allocate_gaussian_bloom_kernel(cmd, 0, 1, filter_options.bloom_strength);
 		cmd.draw(3);
 		cmd.end_render_pass();
 	}
 	cmd.end_region();
 
-	cmd.image_barrier(*bloomed, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
-				  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-				  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	cmd.begin_barrier_batch();
+	cmd.image_barrier(*bloomed_half, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+	                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	cmd.image_barrier(*phosphor_layer_front,
+	                  VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+	                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+	                  VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+	cmd.end_barrier_batch();
+
+	cmd.begin_region("crt-apply-bloom");
+	{
+		rp.color_attachments[0] = &phosphor_layer_front->get_view();
+		rp.load_attachments = 0x1;
+		cmd.begin_render_pass(rp);
+		cmd.set_opaque_sprite_state();
+		cmd.set_program(bloom);
+		cmd.set_texture(0, 0, bloomed_half->get_view(), StockSampler::LinearClamp);
+		cmd.set_specialization_constant_mask(1);
+		cmd.set_specialization_constant(0, true);
+		cmd.set_blend_enable(true);
+		cmd.set_blend_op(VK_BLEND_OP_ADD);
+		cmd.set_blend_factors(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE);
+		cmd.draw(3);
+		cmd.set_blend_enable(false);
+		cmd.end_render_pass();
+		rp.load_attachments = 0;
+	}
+	cmd.end_region();
+
+	cmd.image_barrier(*phosphor_layer_front, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+					  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
 	cmd.begin_region("crt-sinc-vert");
 	{
@@ -599,8 +666,8 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 			float bandwidth;
 		} sinc_push = {};
 
-		sinc_push.input_sizes.x = float(bloomed->get_width());
-		sinc_push.input_sizes.y = float(bloomed->get_height());
+		sinc_push.input_sizes.x = float(phosphor_layer_front->get_width());
+		sinc_push.input_sizes.y = float(phosphor_layer_front->get_height());
 		sinc_push.input_sizes.z = 1.0f / sinc_push.input_sizes.x;
 		sinc_push.input_sizes.w = 1.0f / sinc_push.input_sizes.y;
 
@@ -612,7 +679,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		sinc_push.range = vec2(filter_options.input_rect.y, filter_options.input_rect.height);
 
 		// If we're downsampling, make sure we get a proper low-pass.
-		float effective_vert_resolution = filter_options.input_rect.height * float(bloomed->get_height());
+		float effective_vert_resolution = filter_options.input_rect.height * float(phosphor_layer_front->get_height());
 		sinc_push.bandwidth = std::min(1.0f, SincBandwidth * sinc_push.output_sizes.y / effective_vert_resolution);
 
 		cmd.push_constants(&sinc_push, 0, sizeof(sinc_push));
@@ -621,7 +688,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		cmd.begin_render_pass(rp);
 		cmd.set_opaque_sprite_state();
 		cmd.set_program(sinc[0]);
-		cmd.set_texture(0, 0, bloomed->get_view());
+		cmd.set_texture(0, 0, phosphor_layer_front->get_view());
 		cmd.draw(3);
 		cmd.end_render_pass();
 	}

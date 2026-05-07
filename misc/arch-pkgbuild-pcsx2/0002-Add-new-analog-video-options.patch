@@ -1,4 +1,4 @@
-From b35c8b593097101de81253b2f1ffeb2107e44638 Mon Sep 17 00:00:00 2001
+From ce6b70c479fe2183da53f65bd1a9969e235e6169 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sat, 2 May 2026 15:34:15 +0200
 Subject: [PATCH 2/2] Add new analog video options.
@@ -805,7 +805,7 @@ index fcbf78a11..f06e4f37e 100644
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
-index c6885cb56..5b3965226 100644
+index c6885cb56..e7b8c5cfe 100644
 --- a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 @@ -213,7 +213,10 @@ bool GSRendererPGS::Init()
@@ -1372,7 +1372,7 @@ index c6885cb56..5b3965226 100644
 +			}
 +
 +			crt_filter_options.aperture_grille = GSConfig.PGSApertureGrille != 0;
-+			crt_filter_options.bloom_strength = 0.05f * float(GSConfig.PGSPhosphorBloom) / 100.0f;
++			crt_filter_options.bloom_strength = 0.99f * float(GSConfig.PGSPhosphorBloom) / 100.0f;
 +
 +			crt_filter.run_filter_prepass(*cmd,
 +				analog_output_is_valid ? analog_filter.get_output() : vsync.image->get_view(),
