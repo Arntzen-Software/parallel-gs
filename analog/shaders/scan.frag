@@ -104,7 +104,7 @@ void main()
     }
 
     if (registers.feedback > 0.0)
-        LinearReference += registers.feedback * textureLod(uBack, vUV, 0.0).rgb;
+        LinearReference += registers.feedback * clamp(textureLod(uBack, vUV, 0.0).rgb, vec3(0.0), vec3(1.0));
 
     // Safety clamp
     LinearReference = clamp(LinearReference, vec3(0.0), vec3(4000.0));

@@ -442,7 +442,6 @@ bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOption
 		vec4 input_sizes;
 		vec4 output_sizes;
 		vec2 range;
-		float bandwidth;
 		float max_cll;
 	} push = {};
 
@@ -459,10 +458,6 @@ bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOption
 		1.0f / cmd.get_viewport().height);
 
 	push.range = vec2(filter_options.input_rect.x, filter_options.input_rect.width);
-
-	// If we're downsampling, make sure we get a proper low-pass.
-	float effective_horiz_resolution = filter_options.input_rect.width * float(sinc_vert->get_width());
-	push.bandwidth = std::min(1.0f, SincBandwidth * push.output_sizes.x / effective_horiz_resolution);
 	push.max_cll = filter_options.hdr10_target_max_cll;
 
 	cmd.push_constants(&push, 0, sizeof(push));
@@ -483,6 +478,7 @@ bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOption
 	cmd.set_specialization_constant(0, filter_options.hdr10);
 	cmd.set_program(sinc[1]);
 	cmd.set_texture(0, 0, sinc_vert->get_view());
+	cmd.set_storage_buffer(0, 3, *horiz_sinc_lut);
 
 	cmd.begin_region("sinc-output");
 	cmd.draw(3);
@@ -496,7 +492,7 @@ void CRTFilter::allocate_gaussian_bloom_kernel(Vulkan::CommandBuffer &cmd, uint3
     constexpr float one_over_sqrt_two_pi = 0.3989422f;
 	float gauss[8];
 
-	float stddev = 0.5f + 1.5f * intensity;
+	float stddev = 0.5f + 1.0f * intensity;
 	float inv_stddev = 1.0f / stddev;
 	float inv_variance = inv_stddev * inv_stddev;
 
@@ -524,6 +520,61 @@ void CRTFilter::allocate_gaussian_bloom_kernel(Vulkan::CommandBuffer &cmd, uint3
 	kernel[1] = offsets;
 }
 
+static float kernel_sinc(float v)
+{
+	v *= muglm::pi<float>();
+	if (muglm::abs(v) < 0.0001f)
+		return 1.0f;
+	else
+		return muglm::sin(v) / v;
+}
+
+static float kernel_hann(float v)
+{
+	// Raised cosine.
+	assert(v >= -1.0f && v <= 1.0f);
+	v = muglm::cos(0.5f * v * muglm::pi<float>());
+	return v * v;
+}
+
+void CRTFilter::update_sinc_kernel(Vulkan::CommandBuffer &cmd, Vulkan::BufferHandle &handle, float bw)
+{
+	constexpr int Phases = 256;
+	constexpr int Taps = 16;
+	float weights_data[Phases][Taps] = {};
+
+	for (int phase = 0; phase < Phases; phase++)
+	{
+		float total = 0.0f;
+
+		for (int tap = 0; tap < Taps; tap++)
+		{
+			constexpr int HalfTaps = Taps / 2;
+			constexpr int TapOffset = HalfTaps - 1;
+			float l = float(tap - TapOffset) - float(phase) / float(Phases);
+			float w = kernel_hann(l / float(HalfTaps)) * kernel_sinc(bw * l);
+			total += w;
+			weights_data[phase][tap] = w;
+		}
+
+		for (auto &w : weights_data[phase])
+			w /= total;
+	}
+
+	if (!handle)
+	{
+		BufferCreateInfo bufinfo = {};
+		bufinfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		bufinfo.domain = BufferDomain::Device;
+		bufinfo.size = sizeof(weights_data);
+		handle = cmd.get_device().create_buffer(bufinfo);
+	}
+
+	memcpy(cmd.update_buffer(*handle, 0, sizeof(weights_data)), weights_data, sizeof(weights_data));
+	cmd.barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+}
+
 bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &view,
                                    const FilterOptions &filter_options,
                                    uint32_t output_width, uint32_t output_height)
@@ -549,6 +600,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	cmd.image_barrier(*sinc_vert, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 					  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
 					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+	cmd.barrier(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COPY_BIT, 0);
 	cmd.end_barrier_batch();
 
 	struct
@@ -663,7 +715,6 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 			vec4 input_sizes;
 			vec4 output_sizes;
 			vec2 range;
-			float bandwidth;
 		} sinc_push = {};
 
 		sinc_push.input_sizes.x = float(phosphor_layer_front->get_width());
@@ -679,16 +730,23 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		sinc_push.range = vec2(filter_options.input_rect.y, filter_options.input_rect.height);
 
 		// If we're downsampling, make sure we get a proper low-pass.
+		float effective_horiz_resolution = filter_options.input_rect.width * float(sinc_vert->get_width());
+		float horiz_bandwidth = std::min(1.0f, SincBandwidth * float(output_width) / effective_horiz_resolution);
+		update_sinc_kernel(cmd, horiz_sinc_lut, horiz_bandwidth);
+
+		// If we're downsampling, make sure we get a proper low-pass.
 		float effective_vert_resolution = filter_options.input_rect.height * float(phosphor_layer_front->get_height());
-		sinc_push.bandwidth = std::min(1.0f, SincBandwidth * sinc_push.output_sizes.y / effective_vert_resolution);
+		float vert_bandwidth = std::min(1.0f, SincBandwidth * sinc_push.output_sizes.y / effective_vert_resolution);
 
 		cmd.push_constants(&sinc_push, 0, sizeof(sinc_push));
+		update_sinc_kernel(cmd, vert_sinc_lut, vert_bandwidth);
 
 		rp.color_attachments[0] = &sinc_vert->get_view();
 		cmd.begin_render_pass(rp);
 		cmd.set_opaque_sprite_state();
 		cmd.set_program(sinc[0]);
 		cmd.set_texture(0, 0, phosphor_layer_front->get_view());
+		cmd.set_storage_buffer(0, 3, *vert_sinc_lut);
 		cmd.draw(3);
 		cmd.end_render_pass();
 	}

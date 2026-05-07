@@ -117,8 +117,8 @@ public:
 
 		float gamma = 2.4f;
 
-		// Must not go close to 1 or above, or there will be uncontrolled feedback in the system.
-		float bloom_strength = 0.75f;
+		// Must not go too high, or there will be uncontrolled feedback in the system, especially if feedback is large.
+		float bloom_strength = 0.6f;
 		bool aperture_grille = true;
 
 		// Inverse std-deviation.
@@ -154,6 +154,8 @@ private:
 	Vulkan::ImageHandle phosphor_layer_back;
 	Vulkan::ImageHandle bloomed_half;
 	Vulkan::ImageHandle sinc_vert;
+	Vulkan::BufferHandle vert_sinc_lut;
+	Vulkan::BufferHandle horiz_sinc_lut;
 	bool back_is_valid = false;
 	bool front_is_valid = false;
 	Vulkan::Program *scan = nullptr;
@@ -161,6 +163,7 @@ private:
 	Vulkan::Program *sinc[2] = {};
 
 	void allocate_gaussian_bloom_kernel(Vulkan::CommandBuffer &cmd, uint32_t desc_set, uint32_t binding, float intensity);
+	void update_sinc_kernel(Vulkan::CommandBuffer &cmd, Vulkan::BufferHandle &handle, float bw);
 };
 
 }

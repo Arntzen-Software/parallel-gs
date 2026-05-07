@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: LGPL-3.0+
 
 #extension GL_EXT_samplerless_texture_functions : require
+#extension GL_EXT_control_flow_attributes : require
 
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec3 Output;
@@ -15,7 +16,6 @@ layout(push_constant) uniform Registers
     vec2 input_size, inv_input_size;
     vec2 output_size, inv_output_size;
     vec2 range;
-    float bw;
     float max_cll;
 } registers;
 
@@ -43,18 +43,20 @@ layout(set = 0, binding = 2) uniform UBO
 };
 #endif
 
-const int LOBE = 16;
+const int PHASES = 256;
+const int TAPS = 16;
+const int LOBE = TAPS / 2;
 const float PI = 3.1415628;
 
-float sinc(float phase)
+struct WeightLUT
 {
-    phase *= PI;
+    float weights[TAPS];
+};
 
-    if (abs(phase) < 0.0001)
-        return 1.0;
-    else
-        return sin(phase) / phase;
-}
+layout(set = 0, binding = 3) readonly buffer Weights
+{
+    WeightLUT weights[PHASES];
+};
 
 void setup_filter(out ivec2 base_coord, out float phase)
 {
@@ -97,26 +99,21 @@ void main()
     float phase;
     setup_filter(base_coord, phase);
 
-    float w = 0.0;
+    WeightLUT lut = weights[int(min(phase * float(PHASES) + 0.5, float(PHASES - 1)))];
 
-    for (int i = -LOBE; i <= LOBE; i++)
+    [[unroll]]
+    for (int i = 0; i < TAPS; i++)
     {
-        float filter_phase = phase - float(i);
-        float window_phase = clamp(filter_phase / float(LOBE), -1.0, 1.0);
-
-        // Basic windowed sinc approach.
-        float kernel = sinc(filter_phase * registers.bw) * cos(0.5 * PI * window_phase);
-        w += kernel;
-
 #if IS_HORIZ
-        ivec2 offset = ivec2(i, 0);
+        ivec2 offset = ivec2(i - (LOBE - 1), 0);
 #else
-        ivec2 offset = ivec2(0, i);
+        ivec2 offset = ivec2(0, i - (LOBE - 1));
 #endif
+        // Basic windowed sinc approach.
+        float kernel = lut.weights[i];
         filtered += kernel * texelFetch(uInput, base_coord + offset, 0).rgb;
     }
 
-    filtered /= w;
     Output = filtered;
 
 #if IS_HORIZ

@@ -396,7 +396,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 										  ? CRTFilter::Primaries::BT601_625
 										  : CRTFilter::Primaries::BT601_525;
 		crt_opts.progressive = !vsync.interlaced;
-		crt_opts.feedback = 0.5f;
+		crt_opts.feedback = 0.2f;
 		crt_opts.input_strength = frame_multiplier_phase == 0 ? 1.0f : 0.0f;
 		crt_opts.hdr10_target_max_cll = SDRScale;
 		crt_opts.hdr10_target_paper_white = 0.75f * SDRScale;
