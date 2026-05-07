@@ -41,15 +41,10 @@ void accumulate(vec3 sampled, inout vec3 color, int y, float phase)
 
     // Sample the gaussian in multiple position to get a more correct integral estimate,
     // especially for sharper scanlines.
-    vec3 gaussian = vec3(0.0);
-    for (int samples = 0; samples < 4; samples++)
-    {
-        float biased_phase = phase - 0.0625 + 0.125 * float(samples) / 3.0;
-        gaussian += exp(-0.5 * inv_variance * biased_phase * biased_phase);
-    }
+    vec3 gaussian = exp(-0.5 * inv_variance * phase * phase);
 
     const float one_over_sqrt_two_pi = 0.3989422;
-    gaussian *= one_over_sqrt_two_pi * inv_stddev * 0.25;
+    gaussian *= one_over_sqrt_two_pi * inv_stddev;
 
     // A little unclear if we should do gamma before or after. Before makes a little more sense I think.
     color += pow(sampled, vec3(registers.gamma)) * gaussian;
