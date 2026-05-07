@@ -72,7 +72,7 @@ vec3 sample_scan(vec2 coord)
 
 vec3 grille(vec3 color, vec2 pos)
 {
-    vec3 mask = vec3(0.125);
+    vec3 mask = vec3(0.25);
     pos.x = fract(pos.x / 3.0);
 
     if (pos.x < 0.333)
@@ -96,7 +96,7 @@ void main()
         if (APERTURE_GRILLE)
             LinearReference = grille(LinearReference, vUV * registers.output_size);
         else
-            LinearReference *= 0.5;
+            LinearReference *= 0.75;
     }
     else
     {
