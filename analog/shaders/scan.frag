@@ -8,6 +8,7 @@
 
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec3 LinearReference;
+layout(location = 1) out vec3 Threshold;
 layout(set = 0, binding = 0) uniform sampler2D uSampler;
 layout(set = 0, binding = 1) uniform sampler2D uBack;
 
@@ -111,5 +112,8 @@ void main()
         LinearReference += registers.feedback * clamp(textureLod(uBack, vUV, 0.0).rgb, vec3(0.0), vec3(1.0));
 
     // Safety clamp
-    LinearReference = clamp(LinearReference, vec3(0.0), vec3(4000.0));
+    LinearReference = clamp(LinearReference, vec3(0.0), vec3(2.0));
+
+    // Add some thresholding mechanism to the bloom effect.
+    Threshold = LinearReference * LinearReference;
 }

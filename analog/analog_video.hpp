@@ -157,6 +157,7 @@ private:
 	uint32_t tvl = 0;
 	uint32_t input_width = 0, input_height = 0;
 	Vulkan::ImageHandle phosphor_layer_front;
+	Vulkan::ImageHandle phosphor_layer_threshold;
 	Vulkan::ImageHandle phosphor_layer_back;
 	Vulkan::ImageHandle bloomed_half;
 	Vulkan::ImageHandle composited;

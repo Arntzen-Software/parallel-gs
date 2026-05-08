@@ -410,9 +410,11 @@ void CRTFilter::init_buffers(Vulkan::Device &device,
 		info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
 		info.initial_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
 		phosphor_layer_front = device.create_image(info);
+		phosphor_layer_threshold = device.create_image(info);
 		phosphor_layer_back = device.create_image(info);
 		composited = device.create_image(info);
 		device.set_name(*phosphor_layer_front, "phosphor-front");
+		device.set_name(*phosphor_layer_threshold, "phosphor-threshold");
 		device.set_name(*phosphor_layer_back, "phosphor-back");
 		device.set_name(*composited, "composited");
 
@@ -594,18 +596,23 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	rp.store_attachments = 0x1;
 
 	cmd.begin_barrier_batch();
-	cmd.image_barrier(*phosphor_layer_front, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-	                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
-	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-	cmd.image_barrier(*composited, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-					  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
-					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-	cmd.image_barrier(*bloomed_half, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-					  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
-					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-	cmd.image_barrier(*sinc_vert, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-					  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
-					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+
+    const Vulkan::Image *images[] =
+	{
+        phosphor_layer_front.get(),
+        phosphor_layer_threshold.get(),
+        composited.get(),
+        bloomed_half.get(),
+        sinc_vert.get(),
+    };
+
+	for (auto *img : images)
+	{
+		cmd.image_barrier(*img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
+				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+	}
+
 	cmd.barrier(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COPY_BIT, 0);
 	cmd.end_barrier_batch();
 
@@ -645,6 +652,9 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 
 	cmd.begin_region("crt-scan");
 	{
+		rp.color_attachments[1] = &phosphor_layer_threshold->get_view();
+		rp.num_color_attachments = 2;
+		rp.store_attachments = 0x3;
 		cmd.begin_render_pass(rp);
 		cmd.set_opaque_sprite_state();
 		cmd.set_program(scan);
@@ -658,12 +668,19 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 
 		cmd.draw(3);
 		cmd.end_render_pass();
+		rp.num_color_attachments = 1;
+		rp.store_attachments = 0x1;
 	}
 	cmd.end_region();
 
+	cmd.begin_barrier_batch();
 	cmd.image_barrier(*phosphor_layer_front, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
 	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 	                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	cmd.image_barrier(*phosphor_layer_threshold, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+					  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	cmd.end_barrier_batch();
 
 	cmd.begin_region("crt-bloom");
 	{
@@ -672,8 +689,8 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		cmd.set_opaque_sprite_state();
 		cmd.set_program(bloom);
 		cmd.set_specialization_constant(0, false);
-		cmd.set_texture(0, 0, phosphor_layer_front->get_view(), StockSampler::LinearClamp);
-		cmd.set_texture(0, 1, phosphor_layer_front->get_view());
+		cmd.set_texture(0, 0, phosphor_layer_threshold->get_view(), StockSampler::LinearClamp);
+		cmd.set_texture(0, 1, phosphor_layer_threshold->get_view());
 		allocate_gaussian_bloom_kernel(cmd, 0, 2, filter_options.bloom_strength);
 		cmd.draw(3);
 		cmd.end_render_pass();
