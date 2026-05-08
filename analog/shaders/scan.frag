@@ -41,7 +41,11 @@ void accumulate(vec3 sampled, inout vec3 color, int y, float phase)
 
     // Sample the gaussian in multiple position to get a more correct integral estimate,
     // especially for sharper scanlines.
-    vec3 gaussian = exp(-0.5 * inv_variance * phase * phase);
+
+    // Very minor convergence error. Could be tweaked with an option.
+    vec3 adjusted_phase = phase + vec3(-0.1, 0.0, +0.1) * sampled;
+
+    vec3 gaussian = exp(-0.5 * inv_variance * adjusted_phase * adjusted_phase);
 
     const float one_over_sqrt_two_pi = 0.3989422;
     gaussian *= one_over_sqrt_two_pi * inv_stddev;

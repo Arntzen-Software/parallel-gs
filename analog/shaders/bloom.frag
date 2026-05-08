@@ -5,11 +5,13 @@
 // SPDX-License-Identifier: LGPL-3.0+
 
 #extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_samplerless_texture_functions : require
 
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec3 Bloom;
 
 layout(set = 0, binding = 0) uniform sampler2D uTex;
+layout(set = 0, binding = 1) uniform texture2D uBlend;
 
 layout(push_constant) uniform Registers
 {
@@ -19,7 +21,7 @@ layout(push_constant) uniform Registers
     float input_strength;
 } registers;
 
-layout(set = 0, binding = 1) uniform BlurKernel
+layout(set = 0, binding = 2) uniform BlurKernel
 {
     vec4 weights;
     vec4 offsets;
@@ -43,6 +45,7 @@ void main()
         Bloom += textureLod(uTex, vUV + vec2(-0.5, +0.5) * registers.inv_output_size, 0.0).rgb;
         Bloom += textureLod(uTex, vUV + vec2(+0.5, +0.5) * registers.inv_output_size, 0.0).rgb;
         Bloom *= 0.25;
+        Bloom += texelFetch(uBlend, ivec2(gl_FragCoord.xy), 0).rgb;
     }
     else
     {

@@ -411,8 +411,10 @@ void CRTFilter::init_buffers(Vulkan::Device &device,
 		info.initial_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
 		phosphor_layer_front = device.create_image(info);
 		phosphor_layer_back = device.create_image(info);
+		composited = device.create_image(info);
 		device.set_name(*phosphor_layer_front, "phosphor-front");
 		device.set_name(*phosphor_layer_back, "phosphor-back");
+		device.set_name(*composited, "composited");
 
 		info.width /= 2;
 		info.height /= 2;
@@ -595,6 +597,9 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	cmd.image_barrier(*phosphor_layer_front, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 	                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
 	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+	cmd.image_barrier(*composited, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+					  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
+					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 	cmd.image_barrier(*bloomed_half, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 					  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
 					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
@@ -668,7 +673,8 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		cmd.set_program(bloom);
 		cmd.set_specialization_constant(0, false);
 		cmd.set_texture(0, 0, phosphor_layer_front->get_view(), StockSampler::LinearClamp);
-		allocate_gaussian_bloom_kernel(cmd, 0, 1, filter_options.bloom_strength);
+		cmd.set_texture(0, 1, phosphor_layer_front->get_view());
+		allocate_gaussian_bloom_kernel(cmd, 0, 2, filter_options.bloom_strength);
 		cmd.draw(3);
 		cmd.end_render_pass();
 	}
@@ -678,34 +684,24 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	cmd.image_barrier(*bloomed_half, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
 	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 	                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-	cmd.image_barrier(*phosphor_layer_front,
-	                  VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-	                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-	                  VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 	cmd.end_barrier_batch();
 
 	cmd.begin_region("crt-apply-bloom");
 	{
-		rp.color_attachments[0] = &phosphor_layer_front->get_view();
-		rp.load_attachments = 0x1;
+		rp.color_attachments[0] = &composited->get_view();
 		cmd.begin_render_pass(rp);
 		cmd.set_opaque_sprite_state();
 		cmd.set_program(bloom);
 		cmd.set_texture(0, 0, bloomed_half->get_view(), StockSampler::LinearClamp);
+		cmd.set_texture(0, 1, phosphor_layer_front->get_view());
 		cmd.set_specialization_constant_mask(1);
 		cmd.set_specialization_constant(0, true);
-		cmd.set_blend_enable(true);
-		cmd.set_blend_op(VK_BLEND_OP_ADD);
-		cmd.set_blend_factors(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE);
 		cmd.draw(3);
-		cmd.set_blend_enable(false);
 		cmd.end_render_pass();
-		rp.load_attachments = 0;
 	}
 	cmd.end_region();
 
-	cmd.image_barrier(*phosphor_layer_front, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+	cmd.image_barrier(*composited, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
 					  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 					  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
@@ -718,8 +714,8 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 			vec2 range;
 		} sinc_push = {};
 
-		sinc_push.input_sizes.x = float(phosphor_layer_front->get_width());
-		sinc_push.input_sizes.y = float(phosphor_layer_front->get_height());
+		sinc_push.input_sizes.x = float(composited->get_width());
+		sinc_push.input_sizes.y = float(composited->get_height());
 		sinc_push.input_sizes.z = 1.0f / sinc_push.input_sizes.x;
 		sinc_push.input_sizes.w = 1.0f / sinc_push.input_sizes.y;
 
@@ -736,7 +732,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		update_sinc_kernel(cmd, horiz_sinc_lut, horiz_bandwidth);
 
 		// If we're downsampling, make sure we get a proper low-pass.
-		float effective_vert_resolution = filter_options.input_rect.height * float(phosphor_layer_front->get_height());
+		float effective_vert_resolution = filter_options.input_rect.height * float(composited->get_height());
 		float vert_bandwidth = std::min(1.0f, SincBandwidth * sinc_push.output_sizes.y / effective_vert_resolution);
 
 		cmd.push_constants(&sinc_push, 0, sizeof(sinc_push));
@@ -746,7 +742,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		cmd.begin_render_pass(rp);
 		cmd.set_opaque_sprite_state();
 		cmd.set_program(sinc[0]);
-		cmd.set_texture(0, 0, phosphor_layer_front->get_view());
+		cmd.set_texture(0, 0, composited->get_view());
 		cmd.set_storage_buffer(0, 3, *vert_sinc_lut);
 		cmd.draw(3);
 		cmd.end_render_pass();

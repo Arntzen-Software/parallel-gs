@@ -128,7 +128,7 @@ public:
 		// The resolution of the horizontal phosphor stripes.
 		// Counts number of e.g. red dots horizontally.
 		// Shouldn't be too large or too low or the effect doesn't work right.
-		uint32_t tvl = 512;
+		uint32_t tvl = 640;
 
 		// Normalized. Use to only sample part of the input to remove e.g. overscan.
 		struct
@@ -159,6 +159,7 @@ private:
 	Vulkan::ImageHandle phosphor_layer_front;
 	Vulkan::ImageHandle phosphor_layer_back;
 	Vulkan::ImageHandle bloomed_half;
+	Vulkan::ImageHandle composited;
 	Vulkan::ImageHandle sinc_vert;
 	Vulkan::BufferHandle vert_sinc_lut;
 	Vulkan::BufferHandle horiz_sinc_lut;
