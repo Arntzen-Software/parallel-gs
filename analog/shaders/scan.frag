@@ -81,11 +81,11 @@ vec3 grille(vec3 color, vec2 pos)
     pos.x = fract(pos.x / 3.0);
 
     if (pos.x < 0.333)
-        mask.r = 1.0;
+        mask.r = 1.25;
     else if (pos.x < 0.666)
-        mask.g = 1.0;
+        mask.g = 1.25;
     else
-        mask.b = 1.0;
+        mask.b = 1.25;
 
     return color * mask;
 }
@@ -114,6 +114,6 @@ void main()
     // Safety clamp
     LinearReference = clamp(LinearReference, vec3(0.0), vec3(2.0));
 
-    // Add some thresholding mechanism to the bloom effect.
-    Threshold = LinearReference * LinearReference;
+    // Add some mild thresholding mechanism to the bloom effect.
+    Threshold = pow(clamp(LinearReference, vec3(0.0), vec3(1.0)), vec3(1.5));
 }
