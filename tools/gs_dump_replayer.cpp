@@ -22,7 +22,15 @@ using namespace Util;
 
 static void print_help()
 {
-	LOGI("Usage: parallel-gs-replayer <dump.gs> [--ssaa <rate>] [--strided] [--full] [--iterations <count>] [--high-res-scanout] [--ssaa-textures] [--disable-sampler-feedback]\n");
+	LOGI("Usage: parallel-gs-replayer <dump.gs>\n"
+		"\t[--ssaa <rate>]\n"
+		"\t[--strided]\n"
+		"\t[--full]\n"
+		"\t[--iterations <count>]\n"
+		"\t[--high-res-scanout]\n"
+		"\t[--ssaa-textures]\n"
+		"\t[--conservative-crtc]\n"
+		"\t[--disable-sampler-feedback]\n");
 }
 
 int main(int argc, char **argv)
@@ -33,6 +41,7 @@ int main(int argc, char **argv)
 	debug_mode.draw_mode = DebugMode::DrawDebugMode::None;
 	unsigned total_iterations = 1;
 	bool high_res_scanout = false;
+	bool conservative_crtc = false;
 	GSOptions opts = {};
 
 	CLICallbacks cbs;
@@ -44,6 +53,7 @@ int main(int argc, char **argv)
 	cbs.add("--high-res-scanout", [&](CLIParser &) { high_res_scanout = true; });
 	cbs.add("--ssaa-textures", [&](CLIParser &) { opts.super_sampled_textures = true; });
 	cbs.add("--disable-sampler-feedback", [&](CLIParser &) { debug_mode.disable_sampler_feedback = true; });
+	cbs.add("--conservative-crtc", [&](CLIParser &) { conservative_crtc = true; });
 	cbs.default_handler = [&](const char *arg) { dump_path = arg; };
 
 	CLIParser cli_parser(std::move(cbs), argc - 1, argv + 1);
@@ -104,7 +114,7 @@ int main(int argc, char **argv)
 			LOGI("Running frame ...\n");
 			if (iterations > 0)
 				vsyncs++;
-		} while (parser.iterate_until_vsync(high_res_scanout));
+		} while (parser.iterate_until_vsync(high_res_scanout, conservative_crtc));
 
 		if (!parser.restart())
 		{
