@@ -125,6 +125,11 @@ public:
 		float scan_factor_narrow = 4.5f;
 		float scan_factor_wide = 3.5f;
 
+		// The resolution of the horizontal phosphor stripes.
+		// Counts number of e.g. red dots horizontally.
+		// Shouldn't be too large or too low or the effect doesn't work right.
+		uint32_t tvl = 512;
+
 		// Normalized. Use to only sample part of the input to remove e.g. overscan.
 		struct
 		{
@@ -148,7 +153,8 @@ public:
 	static muglm::mat3 generate_primary_conversion(const Granite::Primaries &output, const Granite::Primaries &input);
 
 private:
-	void init_buffers(Vulkan::Device &device, const Vulkan::ImageView &input_view, uint32_t output_width, uint32_t output_height);
+	void init_buffers(Vulkan::Device &device, const Vulkan::ImageView &input_view, uint32_t tvl, uint32_t output_width, uint32_t output_height);
+	uint32_t tvl = 0;
 	uint32_t input_width = 0, input_height = 0;
 	Vulkan::ImageHandle phosphor_layer_front;
 	Vulkan::ImageHandle phosphor_layer_back;

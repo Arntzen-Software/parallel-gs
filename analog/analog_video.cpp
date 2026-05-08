@@ -381,7 +381,7 @@ const Granite::Primaries &CRTFilter::get_primaries(Primaries primaries)
 
 void CRTFilter::init_buffers(Vulkan::Device &device,
                              const Vulkan::ImageView &input_view,
-                             uint32_t, uint32_t output_height)
+                             uint32_t tvl_, uint32_t, uint32_t output_height)
 {
 	VkImageFormatProperties2 props2 = { VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2 };
 	bool supports_rgb9e5 = device.get_image_format_properties(VK_FORMAT_E5B9G9R9_UFLOAT_PACK32, VK_IMAGE_TYPE_2D,
@@ -392,19 +392,20 @@ void CRTFilter::init_buffers(Vulkan::Device &device,
 
 	auto fmt = supports_rgb9e5 ? VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 : VK_FORMAT_B10G11R11_UFLOAT_PACK32;
 
-	if (input_width != input_view.get_view_width() || input_height != input_view.get_view_height())
+	if (tvl != tvl_ || input_width != input_view.get_view_width() || input_height != input_view.get_view_height())
 	{
+		tvl = tvl_;
 		input_width = input_view.get_view_width();
 		input_height = input_view.get_view_height();
 
-		auto info = Vulkan::ImageCreateInfo::render_target(
-			BaseOutputResolution * 3, input_view.get_view_height(), fmt);
+		auto info = Vulkan::ImageCreateInfo::render_target(tvl * 3, input_view.get_view_height(), fmt);
 
 		// Sample the scanlines at even multiple resolution to avoid pumping effects due to aliasing.
+		// The scanline multiplier is tuned to be roughly a 4:3 image.
 		if (input_view.get_view_height() > 350)
-			info.height *= 4;
+			info.height *= 3;
 		else
-			info.height *= 8;
+			info.height *= 6;
 
 		info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
 		info.initial_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
@@ -579,7 +580,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
                                    const FilterOptions &filter_options,
                                    uint32_t output_width, uint32_t output_height)
 {
-	init_buffers(cmd.get_device(), view, output_width, output_height);
+	init_buffers(cmd.get_device(), view, filter_options.tvl, output_width, output_height);
 
 	std::swap(phosphor_layer_front, phosphor_layer_back);
 	if (front_is_valid)
