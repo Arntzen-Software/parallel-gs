@@ -1,4 +1,4 @@
-From 31ea679b998c214849ddeda5ec46c2736992ab0f Mon Sep 17 00:00:00 2001
+From 13320d8ae6346e6c2b308a11bf1fa0d7abd9878c Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sat, 2 May 2026 15:34:15 +0200
 Subject: [PATCH 2/2] Add new analog video options.
@@ -805,7 +805,7 @@ index fcbf78a11..f06e4f37e 100644
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
-index c6885cb56..44fd7eec2 100644
+index c6885cb56..c067b4828 100644
 --- a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 @@ -66,7 +66,7 @@ static void FsrRcasCon(float *con, float sharpness)
@@ -963,7 +963,7 @@ index c6885cb56..44fd7eec2 100644
 -	info.crtc_offsets = GSConfig.PCRTCOffsets;
 +	info.anti_blur = !GSConfig.PGSDisableCRTCEnhancements && GSConfig.PCRTCAntiBlur;
 +
-+	info.force_progressive = !GSConfig.PGSDisableAutoProgressive;
++	info.force_progressive = GSConfig.PGSHighResScanout || !GSConfig.PGSDisableAutoProgressive;
 +
 +	// The CRT simulation path assumes some kind of overscan.
 +	info.overscan = GSConfig.PGSTVEmulation != PGS_TV_EMULATION_NONE ||
