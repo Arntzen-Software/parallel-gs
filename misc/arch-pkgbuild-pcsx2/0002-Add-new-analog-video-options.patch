@@ -1,4 +1,4 @@
-From 8125b6c6801264eb9469c3f569c12ecbbe5ae7d3 Mon Sep 17 00:00:00 2001
+From 8e7cee4e7d404abf7392530ec41cbd2e2b2f16db Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sat, 2 May 2026 15:34:15 +0200
 Subject: [PATCH 2/2] Add new analog video options.
@@ -663,7 +663,7 @@ index 3b8499cb1..c1b4b1443 100644
 + <connections/>
  </ui>
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
-index ef2c32715..50bf4b5b6 100644
+index ef2c32715..89d89f604 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 @@ -256,6 +256,21 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
@@ -680,7 +680,7 @@ index ef2c32715..50bf4b5b6 100644
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsDisplayCalibration, "EmuCore/GS", "pgsDisplayCalibration", 0);
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsPaperWhite, "EmuCore/GS", "pgsPaperWhite", 200);
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsHighRefreshInsertion, "EmuCore/GS", "pgsHighRefreshInsertion", 0);
-+	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsApertureGrille, "EmuCore/GS", "pgsApertureGrille", 0);
++	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsApertureGrille, "EmuCore/GS", "pgsApertureGrille", 1);
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsPhosphorBloom, "EmuCore/GS", "pgsPhosphorBloom", 100);
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsExposure, "EmuCore/GS", "pgsExposure", 100);
 +	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsScanlineSharpness, "EmuCore/GS", "pgsScanlineSharpness", 50);
@@ -771,7 +771,7 @@ index b9e8164f6..e7a46f837 100644
  	list(APPEND pcsx2GSSources GS/Renderers/parallel-gs/GSRendererPGS.cpp)
  	list(APPEND pcsx2GSHeaders GS/Renderers/parallel-gs/GSRendererPGS.h)
 diff --git a/pcsx2/Config.h b/pcsx2/Config.h
-index fcbf78a11..f06e4f37e 100644
+index fcbf78a11..e11745552 100644
 --- a/pcsx2/Config.h
 +++ b/pcsx2/Config.h
 @@ -898,6 +898,7 @@ struct Pcsx2Config
@@ -794,7 +794,7 @@ index fcbf78a11..f06e4f37e 100644
 +		u8 PGSPhosphorPrimaries = 0;
 +		u8 PGSPhosphorGamma = 0;
 +		u8 PGSDisplayCalibration = 0;
-+		u16 PGSPaperWhite = 0;
++		u16 PGSPaperWhite = 200;
 +		u8 PGSHighRefreshInsertion = 0;
 +		u8 PGSApertureGrille = 1;
 +		u8 PGSPhosphorBloom = 100;
