@@ -40,10 +40,15 @@ struct ScanoutResult
 	// The result may already be deinterlaced automatically unless it was skipped.
 	bool interlaced;
 
+	// Signals that the output is using progressive scan over composite, i.e. "240p".
+	// Aspect ratio computation might need to change.
+	bool double_strike;
+
 	// If interlaced, top (0) or bottom (1).
 	uint32_t interlace_phase;
 
 	// Pixel clock rate. Generally 13.5 MHz for interlaced 640x480 video and 27 MHz for progressive 640x480.
+	// If high_resolution_scanout is used, this may lower a bit to compensate. E.g. 512x448 might be 10.8 MHz.
 	float sampling_rate_mhz;
 };
 

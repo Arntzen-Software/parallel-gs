@@ -4259,8 +4259,14 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	bool high_resolution_scanout = info.high_resolution_scanout;
 	bool is_interlaced = scanout_is_interlaced(priv, info);
 	bool force_deinterlace = !high_resolution_scanout &&
-	                         (priv.smode2.FFMD && priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE);
+	                         (priv.smode2.FFMD && priv.smode2.INT && priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE);
+
+	// FIELD mode.
 	bool alternative_sampling = priv.smode2.INT && !priv.smode2.FFMD;
+
+	// Signals a very rare 240p mode which almost never happens.
+	// For aspect ratio purposes, the height should be doubled.
+	bool double_strike = priv.smode2.FFMD && !priv.smode2.INT && priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
 
 	// We have to scan out tightly packed fields or upscaling breaks.
 	if (!force_progressive || priv.extwrite.WRITE ||
@@ -4273,6 +4279,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	bool field_aware_rendering = high_resolution_scanout &&
 	                             sampling_rate_y_log2 &&
 	                             priv.smode2.FFMD &&
+	                             priv.smode2.INT &&
 	                             priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
 
 	uint32_t super_samples = 1;
@@ -4341,7 +4348,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			scan_offset_y = 36;
 		}
 
-		if (!is_interlaced && !force_deinterlace)
+		if (!is_interlaced && !double_strike && !force_deinterlace)
 		{
 			mode_height *= 2;
 			scan_offset_y *= 2;
@@ -4373,7 +4380,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			insert_label(cmd, "HDTV 720p", info.phase);
 		}
 
-		if (!is_interlaced && !force_deinterlace)
+		if (!is_interlaced && !double_strike && !force_deinterlace)
 		{
 			mode_height *= 2;
 			scan_offset_y *= 2;
@@ -5062,6 +5069,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	result.image = std::move(merged);
 	result.interlaced = should_deinterlace;
 	result.interlace_phase = info.phase;
+	result.double_strike = double_strike;
 
 	flush_submit(0);
 	return result;

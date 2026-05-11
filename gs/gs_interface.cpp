@@ -4654,6 +4654,7 @@ ScanoutResult GSInterface::vsync(const VSyncInfo &info_)
 	render_pass.field_aware_rendering = info.high_resolution_scanout &&
 	                                    sampling_rate_y_log2 &&
 	                                    priv_registers.smode2.FFMD &&
+	                                    priv_registers.smode2.INT &&
 	                                    priv_registers.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
 
 	renderer.set_field_aware_super_sampling(render_pass.field_aware_rendering);

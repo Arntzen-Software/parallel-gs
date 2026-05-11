@@ -400,12 +400,19 @@ void CRTFilter::init_buffers(Vulkan::Device &device,
 
 		auto info = Vulkan::ImageCreateInfo::render_target(tvl * 3, input_view.get_view_height(), fmt);
 
-		// Sample the scanlines at even multiple resolution to avoid pumping effects due to aliasing.
+		// Just a crude check to distinguish between progressive and interlaced/double-strike.
+		uint32_t effective_height = input_view.get_view_height();
+		if (effective_height < 350)
+			effective_height *= 2;
+
+		// Must be a multiple of 2 to make the downscale sensible.
 		// The scanline multiplier is tuned to be roughly a 4:3 image.
-		if (input_view.get_view_height() > 350)
-			info.height *= 3;
-		else
-			info.height *= 6;
+		float scan_ratio_float = float(info.width) / float(effective_height);
+		int scan_ratio = 2 * int(muglm::round(scan_ratio_float));
+		scan_ratio = std::max(scan_ratio, 2);
+		info.height *= scan_ratio;
+
+		// Sample the scanlines at even multiple resolution to avoid pumping effects due to aliasing.
 
 		info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
 		info.initial_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
