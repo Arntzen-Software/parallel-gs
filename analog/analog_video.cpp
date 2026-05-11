@@ -381,7 +381,7 @@ const Granite::Primaries &CRTFilter::get_primaries(Primaries primaries)
 
 void CRTFilter::init_buffers(Vulkan::Device &device,
                              const Vulkan::ImageView &input_view,
-                             uint32_t tvl_, uint32_t, uint32_t output_height)
+                             uint32_t tvl_, uint32_t output_width, uint32_t output_height)
 {
 	VkImageFormatProperties2 props2 = { VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2 };
 	bool supports_rgb9e5 = device.get_image_format_properties(VK_FORMAT_E5B9G9R9_UFLOAT_PACK32, VK_IMAGE_TYPE_2D,
@@ -392,23 +392,28 @@ void CRTFilter::init_buffers(Vulkan::Device &device,
 
 	auto fmt = supports_rgb9e5 ? VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 : VK_FORMAT_B10G11R11_UFLOAT_PACK32;
 
-	if (tvl != tvl_ || input_width != input_view.get_view_width() || input_height != input_view.get_view_height())
+	if (tvl != tvl_ || input_width != input_view.get_view_width() || input_height != input_view.get_view_height() ||
+		last_output_width != output_width || last_output_height != output_height)
 	{
 		tvl = tvl_;
 		input_width = input_view.get_view_width();
 		input_height = input_view.get_view_height();
+		last_output_width = output_width;
+		last_output_height = output_height;
 
 		auto info = Vulkan::ImageCreateInfo::render_target(tvl * 3, input_view.get_view_height(), fmt);
 
-		// Just a crude check to distinguish between progressive and interlaced/double-strike.
-		uint32_t effective_height = input_view.get_view_height();
-		if (effective_height < 350)
-			effective_height *= 2;
+		bool odd_height = input_view.get_view_height() % 2 != 0;
+		float inv_output_aspect = float(output_height) / float(output_width);
+		float scan_ratio_float = inv_output_aspect * float(info.width) / float(input_view.get_view_height());
 
 		// Must be a multiple of 2 to make the downscale sensible.
-		// The scanline multiplier is tuned to be roughly a 4:3 image.
-		float scan_ratio_float = float(info.width) / float(effective_height);
-		int scan_ratio = 2 * int(muglm::round(scan_ratio_float));
+		int scan_ratio;
+		if (odd_height)
+			scan_ratio = 2 * int(muglm::round(0.5f * scan_ratio_float));
+		else
+			scan_ratio = int(muglm::round(scan_ratio_float));
+
 		scan_ratio = std::max(scan_ratio, 2);
 		info.height *= scan_ratio;
 

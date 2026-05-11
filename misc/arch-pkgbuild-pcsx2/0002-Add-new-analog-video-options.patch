@@ -1,4 +1,4 @@
-From 8e7cee4e7d404abf7392530ec41cbd2e2b2f16db Mon Sep 17 00:00:00 2001
+From 33760aab248e918793a9b6812fc274b0534d3e2a Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sat, 2 May 2026 15:34:15 +0200
 Subject: [PATCH 2/2] Add new analog video options.
@@ -8,10 +8,10 @@ Subject: [PATCH 2/2] Add new analog video options.
  pcsx2-qt/Settings/GraphicsSettingsWidget.cpp  |  77 +++
  pcsx2/CMakeLists.txt                          |   2 +-
  pcsx2/Config.h                                |  16 +
- .../Renderers/parallel-gs/GSRendererPGS.cpp   | 541 +++++++++++++---
+ .../Renderers/parallel-gs/GSRendererPGS.cpp   | 545 +++++++++++++---
  .../GS/Renderers/parallel-gs/GSRendererPGS.h  |   4 +
  pcsx2/Pcsx2Config.cpp                         |  34 +-
- 7 files changed, 1109 insertions(+), 167 deletions(-)
+ 7 files changed, 1113 insertions(+), 167 deletions(-)
 
 diff --git a/pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui b/pcsx2-qt/Settings/GraphicsPGSRenderingSettingsTab.ui
 index 3b8499cb1..c1b4b1443 100644
@@ -805,7 +805,7 @@ index fcbf78a11..e11745552 100644
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
-index c6885cb56..037633605 100644
+index c6885cb56..d3c5911d4 100644
 --- a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 @@ -66,7 +66,7 @@ static void FsrRcasCon(float *con, float sharpness)
@@ -1329,7 +1329,7 @@ index c6885cb56..037633605 100644
  				fsr_info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
  				fsr_info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
  				fsr_info.misc |= IMAGE_MISC_MUTABLE_SRGB_BIT;
-@@ -626,26 +922,105 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
+@@ -626,26 +922,109 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
  				fsr_render_is_valid = false;
  			}
  		}
@@ -1352,7 +1352,7 @@ index c6885cb56..037633605 100644
 +		{
 +			crt_filter_options.phase = vsync.interlaced ? vsync.interlace_phase : 0;
 +			crt_filter_options.progressive = !vsync.interlaced;
-+			crt_filter_options.feedback = 0.05f;
++			crt_filter_options.feedback = 0.02f;
 +			crt_filter_options.feedback = std::pow(crt_filter_options.feedback, 1.0f / frame_multiplier);
 +
 +			crt_filter_options.input_strength = float(GSConfig.PGSExposure) / 100.0f;
@@ -1409,6 +1409,10 @@ index c6885cb56..037633605 100644
 +
 +			crt_filter_options.aperture_grille = GSConfig.PGSApertureGrille != 0;
 +			crt_filter_options.bloom_strength = 1.2f * float(GSConfig.PGSPhosphorBloom) / 100.0f;
++
++			// For wide-screen, assume a more HD CRT TV style with far higher TVL.
++			float game_aspect = GetCurrentAspectRatioFloat(priv->smode1.CMOD == 0);
++			crt_filter_options.tvl = uint32_t(480.0f * game_aspect);
 +
 +			crt_filter.run_filter_prepass(*cmd,
 +				analog_output_is_valid ? analog_filter.get_output() : vsync.image->get_view(),

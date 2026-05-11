@@ -4317,7 +4317,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			scan_offset_y = 25;
 		}
 
-		if (!is_interlaced && !force_deinterlace)
+		if (!is_interlaced && !double_strike && !force_deinterlace)
 		{
 			mode_height *= 2;
 			scan_offset_y *= 2;
@@ -4775,6 +4775,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 			result.internal_width = result.image->get_width() >> int(high_resolution_scanout);
 			result.internal_height = result.image->get_height() >> int(high_resolution_scanout);
+			result.double_strike = double_strike;
 
 			flush_submit(0);
 			return result;

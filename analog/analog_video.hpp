@@ -156,6 +156,7 @@ private:
 	void init_buffers(Vulkan::Device &device, const Vulkan::ImageView &input_view, uint32_t tvl, uint32_t output_width, uint32_t output_height);
 	uint32_t tvl = 0;
 	uint32_t input_width = 0, input_height = 0;
+	uint32_t last_output_width = 0, last_output_height = 0;
 	Vulkan::ImageHandle phosphor_layer_front;
 	Vulkan::ImageHandle phosphor_layer_threshold;
 	Vulkan::ImageHandle phosphor_layer_back;
