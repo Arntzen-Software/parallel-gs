@@ -652,7 +652,10 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		1.0f / float(phosphor_layer_back->get_width()),
 		1.0f / float(phosphor_layer_back->get_height()));
 
-	push.phase = filter_options.progressive ? 0.0f : (0.25f - 0.5f * float(filter_options.phase));
+	if (filter_options.double_strike)
+		push.phase = 0.25f; // Only render top field.
+	else
+		push.phase = filter_options.progressive ? 0.0f : (0.25f - 0.5f * float(filter_options.phase));
 
 	// Simulate some kind of phosphor persistence. Should be very subtle but might aid
 	// perceptual deinterlacing effect.

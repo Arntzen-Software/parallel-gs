@@ -106,6 +106,7 @@ public:
 	{
 		bool hdr10 = false;
 		bool progressive = false;
+		bool double_strike = false;
 		uint32_t phase = 0; // 0 = top, 1 = bottom. Irrelevant for progressive.
 		Primaries phosphor_primaries = Primaries::BT709;
 
