@@ -24,6 +24,15 @@
 			"variants": [
 				{ "define": "IS_HORIZ", "count": 2, "resolve": false }
 			]
+		},
+		{
+			"name": "iir",
+			"path": "iir.comp",
+			"compute": true,
+			"variants": [
+				{ "define": "SUBGROUP", "count": 2, "resolve": false }
+			]
+
 		}
 	]
 }

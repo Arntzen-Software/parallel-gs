@@ -1,0 +1,146 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : require
+
+#ifndef SUBGROUP
+#error "Expected subgroup to be defined."
+#endif
+
+#if SUBGROUP
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle_relative : require
+#endif
+
+// Based on "Prefix Sums and Their Applications, Guy E. Blelloch (1990)
+// Section 1.4.
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, r32f) uniform imageBuffer BUF;
+
+layout(constant_id = 0) const int PER_THREAD = 1;
+layout(constant_id = 1) const int MIN_WAVE_SIZE = 1;
+
+layout(push_constant) uniform Registers
+{
+	float b0, b1, b2;
+	float a1, a2;
+};
+
+shared float state_A0x[256 / MIN_WAVE_SIZE];
+shared float state_A0y[256 / MIN_WAVE_SIZE];
+shared float state_A1x[256 / MIN_WAVE_SIZE];
+shared float state_A1y[256 / MIN_WAVE_SIZE];
+shared float state_Bx[256 / MIN_WAVE_SIZE];
+shared float state_By[256 / MIN_WAVE_SIZE];
+
+struct Biquad
+{
+	mat2 A;
+	vec2 B;
+};
+
+void store_biquad(uint index, Biquad quad)
+{
+	state_A0x[index] = quad.A[0].x;
+	state_A0y[index] = quad.A[0].y;
+	state_A1x[index] = quad.A[1].x;
+	state_A1y[index] = quad.A[1].y;
+	state_Bx[index] = quad.B.x;
+	state_By[index] = quad.B.y;
+}
+
+Biquad load_biquad(uint index)
+{
+	return Biquad(mat2(vec2(state_A0x[index], state_A0y[index]),
+		vec2(state_A1x[index], state_A1y[index])),
+		vec2(state_Bx[index], state_By[index]));
+}
+
+Biquad init(float v)
+{
+	return Biquad(mat2(vec2(a1, a2), vec2(1, 0)), vec2(v, 0));
+}
+
+Biquad scan(Biquad prev, Biquad current)
+{
+	return Biquad(prev.A * current.A, prev.B * current.A + current.B);
+}
+
+void main()
+{
+#if SUBGROUP
+	uint index = gl_WorkGroupID.x * gl_WorkGroupSize.x + gl_SubgroupID * gl_SubgroupSize + gl_SubgroupInvocationID;
+#else
+	uint index = gl_GlobalInvocationID.x;
+#endif
+
+	float xs[PER_THREAD + 2];
+	Biquad quad[PER_THREAD];
+
+	[[unroll]]
+	for (int i = -2; i < PER_THREAD; i++)
+		xs[i + 2] = imageLoad(BUF, PER_THREAD * int(index) + i).x;
+
+	[[unroll]]
+	for (int i = 0; i < PER_THREAD; i++)
+		quad[i] = init(xs[i + 2] * b0 + xs[i + 1] * b1 + xs[i + 0] * b2);
+
+	[[unroll]]
+	for (int i = 1; i < PER_THREAD; i++)
+		quad[i] = scan(quad[i - 1], quad[i]);
+
+#if SUBGROUP
+	for (uint step = 1; step < gl_SubgroupSize; step *= 2)
+	{
+		Biquad prev;
+		prev.A[0].x = subgroupShuffleUp(quad[PER_THREAD - 1].A[0].x, step);
+		prev.A[0].y = subgroupShuffleUp(quad[PER_THREAD - 1].A[0].y, step);
+		prev.A[1].x = subgroupShuffleUp(quad[PER_THREAD - 1].A[1].x, step);
+		prev.A[1].y = subgroupShuffleUp(quad[PER_THREAD - 1].A[1].y, step);
+		prev.B.x = subgroupShuffleUp(quad[PER_THREAD - 1].B.x, step);
+		prev.B.y = subgroupShuffleUp(quad[PER_THREAD - 1].B.y, step);
+
+		if (gl_SubgroupInvocationID >= step)
+		{
+			[[unroll]]
+			for (int i = 0; i < PER_THREAD; i++)
+				quad[i] = scan(prev, quad[i]);
+		}
+	}
+
+	for (uint step = 1; step < gl_NumSubgroups; step *= 2)
+	{
+		if (gl_SubgroupInvocationID + 1 == gl_SubgroupSize)
+			store_biquad(gl_SubgroupID, quad[PER_THREAD - 1]);
+
+		barrier();
+
+		if (gl_SubgroupID >= step)
+		{
+			Biquad prev = load_biquad(gl_SubgroupID - step);
+			[[unroll]]
+			for (int i = 0; i < PER_THREAD; i++)
+				quad[i] = scan(prev, quad[i]);
+		}
+	}
+#else
+	[[unroll]]
+	for (uint step = 1; step < gl_WorkGroupSize.x; step *= 2)
+	{
+		store_biquad(index, quad[PER_THREAD - 1]);
+		barrier();
+		if (gl_LocalInvocationIndex >= step)
+		{
+			Biquad prev = load_biquad(index - step);
+			[[unroll]]
+			for (int i = 0; i < PER_THREAD; i++)
+				quad[i] = scan(prev, quad[i]);
+		}
+		barrier();
+	}
+#endif
+
+	[[unroll]]
+	for (int i = 0; i < PER_THREAD; i++)
+		imageStore(BUF, PER_THREAD * int(index) + i, vec4(quad[i].B.x));
+}

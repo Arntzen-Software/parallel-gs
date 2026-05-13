@@ -6,3 +6,7 @@ add_library(analog-video STATIC analog_video.hpp analog_video.cpp)
 target_compile_options(analog-video PRIVATE ${PARALLEL_GS_CXX_FLAGS})
 target_link_libraries(analog-video PUBLIC granite-vulkan granite-math)
 target_include_directories(analog-video PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_granite_offline_tool(analog-sandbox sandbox.cpp)
+target_compile_options(analog-sandbox PRIVATE ${PARALLEL_GS_CXX_FLAGS})
+target_include_directories(analog-sandbox PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
