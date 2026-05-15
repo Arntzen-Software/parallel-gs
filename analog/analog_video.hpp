@@ -89,7 +89,7 @@ private:
 	Analog::Shaders<> shaders;
 
 	bool supports_subgroups() const;
-	void run_iir_pass(Vulkan::CommandBuffer &cmd);
+	void run_iir_pass(Vulkan::CommandBuffer &cmd, uint32_t lines);
 };
 
 class CRTFilter

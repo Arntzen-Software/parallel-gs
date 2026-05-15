@@ -352,7 +352,7 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 			// Run IIR notch pass.
 			cmd.begin_region("analog-iir");
 			{
-				run_iir_pass(cmd);
+				run_iir_pass(cmd, input.get_view_height());
 			}
 			cmd.end_region();
 
@@ -377,7 +377,7 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 					  filter_options.dst_stage, filter_options.dst_access);
 }
 
-void AnalogVideoFilter::run_iir_pass(CommandBuffer &cmd)
+void AnalogVideoFilter::run_iir_pass(CommandBuffer &cmd, uint32_t lines)
 {
 	cmd.set_program(shaders.iir);
 	cmd.set_storage_texture(0, 0, luma_target->get_view());
@@ -392,31 +392,27 @@ void AnalogVideoFilter::run_iir_pass(CommandBuffer &cmd)
 
 	// Compute a biquad IIR notch filter.
 	double w = 2.0 * muglm::pi<double>() / 27.0;
-	double Q;
+	constexpr double fir_q = 0.99;
+	constexpr double iir_q = 0.85;
+
+	// Don't do a complete notch since that leads to really bad ringing.
+	// We just need a fairly narrow band-stop though ...
 
 	if (options.system == System::NTSC)
-	{
 		w *= 315.0 / 88.0;
-		// Surgical notch since the blurring is far more severe.
-		Q = 0.995;
-	}
 	else
-	{
 		w *= 4.43361875;
-		// Don't have to be as extreme on PAL.
-		Q = 0.985;
-	}
 
 	// Preconvolves two zeroes at exp(i * w) and exp(-i * w).
 	double b0 = 1.0;
-	double b1 = -2.0 * cos(w);
-	double b2 = 1.0;
+	double b1 = -2.0 * fir_q * cos(w);
+	double b2 = fir_q * fir_q;
 
 	// Preconvolves two poles at exp(i * w * Q) and exp(-i * w * Q).
 	// Flip sign here since we're designing the filter as B(z) / A(z) and
 	// when evaluating the filter we flip the signs.
-	double a1 = 2.0 * Q * cos(w);
-	double a2 = -Q * Q;
+	double a1 = 2.0 * iir_q * cos(w);
+	double a2 = -iir_q * iir_q;
 
 	// Normalize the FIR gain to obtain a 0 dB gain at DC.
 	double fir_gain = b0 + b1 + b2;
@@ -439,7 +435,7 @@ void AnalogVideoFilter::run_iir_pass(CommandBuffer &cmd)
 		cmd.enable_subgroup_size_control(true);
 		cmd.set_subgroup_size_log2(true, 4, 7);
 	}
-	cmd.dispatch(luma_target->get_height(), 1, 1);
+	cmd.dispatch(lines, 1, 1);
 	cmd.enable_subgroup_size_control(false);
 }
 
