@@ -390,7 +390,49 @@ void AnalogVideoFilter::run_iir_pass(CommandBuffer &cmd)
 		float b0, b1, b2, a1, a2;
 	} push = {};
 
-	push.b0 = 1.0f;
+	// Compute a biquad IIR notch filter.
+	double w = 2.0 * muglm::pi<double>() / 27.0;
+	double Q;
+
+	if (options.system == System::NTSC)
+	{
+		w *= 315.0 / 88.0;
+		// Surgical notch since the blurring is far more severe.
+		Q = 0.995;
+	}
+	else
+	{
+		w *= 4.43361875;
+		// Don't have to be as extreme on PAL.
+		Q = 0.985;
+	}
+
+	// Preconvolves two zeroes at exp(i * w) and exp(-i * w).
+	double b0 = 1.0;
+	double b1 = -2.0 * cos(w);
+	double b2 = 1.0;
+
+	// Preconvolves two poles at exp(i * w * Q) and exp(-i * w * Q).
+	// Flip sign here since we're designing the filter as B(z) / A(z) and
+	// when evaluating the filter we flip the signs.
+	double a1 = 2.0 * Q * cos(w);
+	double a2 = -Q * Q;
+
+	// Normalize the FIR gain to obtain a 0 dB gain at DC.
+	double fir_gain = b0 + b1 + b2;
+	double target_fir_gain = 1.0 - a1 - a2;
+	double fir_scale = target_fir_gain / fir_gain;
+
+	b0 *= fir_scale;
+	b1 *= fir_scale;
+	b2 *= fir_scale;
+
+	push.b0 = float(b0);
+	push.b1 = float(b1);
+	push.b2 = float(b2);
+	push.a1 = float(a1);
+	push.a2 = float(a2);
+
 	cmd.push_constants(&push, 0, sizeof(push));
 	if (supports_subgroups())
 	{

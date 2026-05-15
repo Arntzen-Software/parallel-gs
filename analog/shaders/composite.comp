@@ -457,13 +457,7 @@ void main()
             else if (PassIndex == PASS_ENCODE)
                 filter_pass_encode(LumaEncodePAL, ChromaEncodePAL);
             else if (PassIndex == PASS_DECODE)
-            {
-                // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
-                if (SVIDEO || SKIP_NOTCH)
-                    filter_pass_decode(LumaEncodePAL, ChromaDecodePAL);
-                else
-                    filter_pass_decode(LumaDecodePAL, ChromaDecodePAL);
-            }
+                filter_pass_decode(LumaEncodePAL, ChromaDecodePAL);
             else if (PassIndex == PASS_BANDPASS)
                 filter_pass_bandpass(ChromaBandpassPAL);
         }
@@ -474,13 +468,7 @@ void main()
             else if (PassIndex == PASS_ENCODE)
                 filter_pass_encode(LumaEncodeNTSC, ChromaEncodeNTSC);
             else if (PassIndex == PASS_DECODE)
-            {
-                // For SVIDEO and COMB skip the notch filtering, leading to higher quality decode.
-                if (SVIDEO || SKIP_NOTCH)
-                    filter_pass_decode(LumaEncodeNTSC, ChromaDecodeNTSC);
-                else
-                    filter_pass_decode(LumaDecodeNTSC, ChromaDecodeNTSC);
-            }
+                filter_pass_decode(LumaEncodeNTSC, ChromaDecodeNTSC);
             else if (PassIndex == PASS_BANDPASS)
                 filter_pass_bandpass(ChromaBandpassNTSC);
         }
