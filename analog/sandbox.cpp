@@ -3,6 +3,7 @@
 #include "context.hpp"
 #include "device.hpp"
 #include <assert.h>
+#include "analog_video.hpp"
 
 using namespace Vulkan;
 using namespace Granite;
@@ -25,8 +26,8 @@ static void iir(float *buffer, size_t count, float b0, float b1, float b2, float
 static void run_test(Device &device)
 {
 	ResourceLayout layout;
-	Analog::Shaders<> shaders(device, layout, 0);
-	auto *prog = shaders.iir[1];
+	Analog::Shaders<> shaders(device, layout, [](const char *, const char *) { return 1; });
+	auto *prog = shaders.iir;
 
 	struct
 	{
@@ -41,24 +42,23 @@ static void run_test(Device &device)
 
 	float data[1024] = { 1.0f, 0.0f, 3.0f };
 
-	BufferCreateInfo bufinfo = {};
-	bufinfo.usage = VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
-	bufinfo.size = sizeof(data);
-	bufinfo.domain = BufferDomain::Device;
-	auto buf = device.create_buffer(bufinfo, data);
+	auto imginfo = ImageCreateInfo::immutable_2d_image(1024, 1, VK_FORMAT_R32_SFLOAT);
+	imginfo.type = VK_IMAGE_TYPE_1D;
+	imginfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	imginfo.misc |= IMAGE_MISC_FORCE_ARRAY_BIT;
+	imginfo.initial_layout = VK_IMAGE_LAYOUT_GENERAL;
+	ImageInitialData imgdata = { data };
+	auto img = device.create_image(imginfo, &imgdata);
 
+	BufferCreateInfo bufinfo = {};
+	bufinfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+	bufinfo.size = sizeof(data);
 	bufinfo.domain = BufferDomain::CachedHost;
 	auto readback_buf = device.create_buffer(bufinfo);
 
-	BufferViewCreateInfo view_info = {};
-	view_info.buffer = buf.get();
-	view_info.format = VK_FORMAT_R32_SFLOAT;
-	view_info.range = VK_WHOLE_SIZE;
-	auto view = device.create_buffer_view(view_info);
-
 	auto cmd = device.request_command_buffer();
 	cmd->set_program(prog);
-	cmd->set_storage_buffer_view(0, 0, *view);
+	cmd->set_storage_texture(0, 0, img->get_view());
 	cmd->set_specialization_constant_mask(3);
 	cmd->set_specialization_constant(0, 4);
 	cmd->set_specialization_constant(1, 16);
@@ -71,9 +71,11 @@ static void run_test(Device &device)
 		cmd->dispatch(1, 1, 1);
 	auto end_ts = cmd->write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
-	cmd->barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+	cmd->image_barrier(*img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 		VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-	cmd->copy_buffer(*readback_buf, *buf);
+	cmd->copy_image_to_buffer(*readback_buf, *img, 0, {}, { 1024, 1, 1 },
+		0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 });
 	cmd->barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 		VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
 
@@ -103,5 +105,12 @@ int main()
 
 	Device dev;
 	dev.set_context(ctx);
+
+	bool rdoc = Device::init_renderdoc_capture();
+	if (rdoc)
+		dev.begin_renderdoc_capture();
 	run_test(dev);
+	ParallelGS::AnalogVideoFilter::execute_color_bar_self_test(dev);
+	if (rdoc)
+		dev.end_renderdoc_capture();
 }

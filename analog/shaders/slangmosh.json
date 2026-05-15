@@ -30,7 +30,7 @@
 			"path": "iir.comp",
 			"compute": true,
 			"variants": [
-				{ "define": "SUBGROUP", "count": 2, "resolve": false }
+				{ "define": "SUBGROUP", "count": 2, "resolve": true }
 			]
 
 		}

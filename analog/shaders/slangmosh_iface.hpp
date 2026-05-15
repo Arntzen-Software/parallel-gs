@@ -18,7 +18,7 @@ struct Shaders
 	Shader bloom = {};
 	Shader scan = {};
 	Shader sinc[2] = {};
-	Program iir[2] = {};
+	Program iir = {};
 	Shaders() = default;
 
 	template <typename Device, typename Layout, typename Resolver>

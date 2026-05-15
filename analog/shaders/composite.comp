@@ -14,6 +14,7 @@ layout(set = 0, binding = 1) uniform texture1DArray Inputs1D;
 layout(set = 0, binding = 2) writeonly uniform image1DArray Outputs1D;
 layout(set = 0, binding = 3) writeonly uniform image2D Outputs2D;
 layout(set = 0, binding = 4) uniform texture1DArray InputChromaEstimate;
+layout(set = 0, binding = 5, rg16f) uniform image1DArray Outputs1DChroma;
 
 #include "filters.h"
 
@@ -24,7 +25,7 @@ const int PASS_ENCODE = 1;
 const int PASS_DECODE = 2;
 const int PASS_BANDPASS = 3;
 const int PASS_SEPARATION = 4;
-const int PASS_HANNOVER = 5;
+const int PASS_YUV2RGB = 5;
 
 const int CABLE_COMPOSITE = 0;
 const int CABLE_SVIDEO = 1;
@@ -137,10 +138,20 @@ int scale_horiz_coord(int x)
 void hannover_filter()
 {
     int coord = int(gl_GlobalInvocationID.x);
-    vec3 line0 = texelFetch(Inputs1D, ivec2(coord, max(int(gl_WorkGroupID.y) - 1, 0)), 0).rgb;
-    vec3 line1 = texelFetch(Inputs1D, ivec2(coord, int(gl_WorkGroupID.y) + 0), 0).rgb;
-    vec3 line2 = texelFetch(Inputs1D, ivec2(coord, clamp(int(gl_WorkGroupID.y) + 1, 0, registers.height - 1)), 0).rgb;
-    vec3 yuv = vec3(line1.x, 0.25 * line0.yz + 0.5 * line1.yz + 0.25 * line2.yz);
+    vec2 line0 = texelFetch(InputChromaEstimate, ivec2(coord, max(int(gl_WorkGroupID.y) - 1, 0)), 0).rg;
+    vec2 line1 = texelFetch(InputChromaEstimate, ivec2(coord, int(gl_WorkGroupID.y) + 0), 0).rg;
+    vec2 line2 = texelFetch(InputChromaEstimate, ivec2(coord, clamp(int(gl_WorkGroupID.y) + 1, 0, registers.height - 1)), 0).rg;
+    vec3 yuv = vec3(texelFetch(Inputs1D, ivec2(coord, int(gl_WorkGroupID.y)), 0).x,
+        0.25 * line0 + 0.5 * line1 + 0.25 * line2);
+    yuv = decode_yuv(yuv);
+    imageStore(Outputs2D, ivec2(coord, gl_WorkGroupID.y), vec4(yuv, 0.0));
+}
+
+void yuv2rgb_filter()
+{
+    int coord = int(gl_GlobalInvocationID.x);
+    vec3 yuv = vec3(texelFetch(Inputs1D, ivec2(coord, int(gl_WorkGroupID.y)), 0).x,
+		texelFetch(InputChromaEstimate, ivec2(coord, int(gl_WorkGroupID.y) + 0), 0).rg);
     yuv = decode_yuv(yuv);
     imageStore(Outputs2D, ivec2(coord, gl_WorkGroupID.y), vec4(yuv, 0.0));
 }
@@ -397,22 +408,27 @@ void filter_pass_decode(float luma_kernel[31], float chroma_kernel[31])
 
     int coord = int(gl_GlobalInvocationID.x + registers.output_offset);
     // Defer this to Hannover Filter.
-    if (!PAL || CABLE != CABLE_COMPOSITE)
+    const bool ImmediatelyConsume = CABLE != CABLE_COMPOSITE || (!PAL && SKIP_NOTCH);
+    if (ImmediatelyConsume)
     {
         filtered = decode_yuv(filtered);
         imageStore(Outputs2D, ivec2(coord, gl_WorkGroupID.y), vec4(filtered, 0.0));
     }
     else
     {
-        imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), vec4(filtered, 0.0));
+        imageStore(Outputs1D, ivec2(coord, gl_WorkGroupID.y), filtered.xxxx);
+        imageStore(Outputs1DChroma, ivec2(coord, gl_WorkGroupID.y), filtered.yzyz);
     }
 }
 
 void main()
 {
-    if (PassIndex == PASS_HANNOVER)
+    if (PassIndex == PASS_YUV2RGB)
     {
-        hannover_filter();
+        if (PAL)
+            hannover_filter();
+        else
+            yuv2rgb_filter();
     }
     else if (PassIndex == PASS_SEPARATION)
     {

@@ -14,6 +14,16 @@ using namespace Granite;
 
 static constexpr uint32_t BaseOutputResolution = 720;
 
+bool AnalogVideoFilter::supports_subgroups() const
+{
+	static constexpr VkSubgroupFeatureFlags required =
+			VK_SUBGROUP_FEATURE_BASIC_BIT |
+			VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT;
+	return device->supports_subgroup_size_log2(true, 4, 7) &&
+	       (device->get_device_features().vk11_props.subgroupSupportedOperations &
+	        required) == required;
+}
+
 bool AnalogVideoFilter::init(Device &device_, const Options &options_)
 {
 	device = &device_;
@@ -44,11 +54,15 @@ bool AnalogVideoFilter::init(Device &device_, const Options &options_)
 		chroma_estimate_target = device->create_image(image_info);
 		device->set_name(*chroma_estimate_target, "chroma-estimate");
 
-		if (options.system == System::PAL && options.cable == Cable::Composite)
+		if (options.cable == Cable::Composite)
 		{
-			image_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
-			yuv_target = device->create_image(image_info);
-			device->set_name(*yuv_target, "yuv-target");
+			image_info.format = VK_FORMAT_R32_SFLOAT;
+			luma_target = device->create_image(image_info);
+			device->set_name(*luma_target, "luma-target");
+
+			image_info.format = VK_FORMAT_R16G16_SFLOAT;
+			chroma_target = device->create_image(image_info);
+			device->set_name(*chroma_target, "chroma-target");
 		}
 	}
 
@@ -58,11 +72,19 @@ bool AnalogVideoFilter::init(Device &device_, const Options &options_)
 	image_info.initial_layout = VK_IMAGE_LAYOUT_GENERAL;
 	image_info.layout = ImageLayout::General;
 	image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+	image_info.format = VK_FORMAT_R16G16_SFLOAT;
 	dummy_1d_array = device->create_image(image_info);
 	device->set_name(*dummy_1d_array, "dummy-1d-array");
 
 	ResourceLayout layout;
-	shaders = Analog::Shaders<>(*device, layout, 0);
+	shaders = Analog::Shaders<>(*device, layout,
+	                            [&](const char *, const char *def) -> int
+	                            {
+		                            if (strcmp(def, "SUBGROUP") == 0)
+			                            return supports_subgroups();
+		                            else
+			                            return 0;
+	                            });
 
 	// Encode output on-demand.
 	return true;
@@ -79,6 +101,13 @@ static void storage_to_sampled_barrier(CommandBuffer &cmd, const Image &img,
 	cmd.image_barrier(img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
 	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 	                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | extra_stages, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+}
+
+static void storage_barrier(CommandBuffer &cmd)
+{
+	cmd.barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+	            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+	                                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 }
 
 void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
@@ -185,11 +214,16 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 	cmd.set_storage_texture(0, 2, downsample_target->get_view());
 	cmd.set_storage_texture(0, 3, get_output());
 	cmd.set_texture(0, 4, dummy_1d_array->get_view());
+	if (chroma_target)
+		cmd.set_storage_texture(0, 5, chroma_target->get_view());
+	else
+		cmd.set_storage_texture(0, 5, dummy_1d_array->get_view());
 
 	const Image *images[] = {
 		downsample_target.get(),
 		encode_target.get(),
-		yuv_target.get(),
+		luma_target.get(),
+		chroma_target.get(),
 		decode_target.get(),
 		bandpass_target.get(),
 		chroma_estimate_target.get(),
@@ -215,7 +249,7 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 		PassDecode,
 		PassBandpass,
 		PassSeparation,
-		PassHannoverBarFilter
+		PassYUVToRGB
 	};
 
 	static const char *pass_to_str[] = {
@@ -224,11 +258,12 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 		"analog-decode",
 		"analog-bandpass",
 		"analog-separation",
-		"analog-hannover",
+		"analog-yuv-to-rgb",
 	};
 
-	const auto run_pass = [&](Pass pass, const ImageView *src, const ImageView *dst)
+	const auto run_pass = [&](Pass pass, const ImageView *src, const ImageView *dst, bool storage_sync = false)
 	{
+		cmd.set_program(shaders.composite);
 		cmd.begin_region(pass_to_str[pass]);
 		cmd.push_constants(&push, 0, sizeof(push));
 
@@ -251,7 +286,12 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 		cmd.set_specialization_constant(0, pass);
 		cmd.dispatch(groups_x, input.get_view_height(), 1);
 		if (dst)
-			storage_to_sampled_barrier(cmd, dst->get_image());
+		{
+			if (storage_sync)
+				storage_barrier(cmd);
+			else
+				storage_to_sampled_barrier(cmd, dst->get_image());
+		}
 		cmd.end_region();
 	};
 
@@ -293,19 +333,72 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 		cmd.set_specialization_constant(3, filter_options.line_comb);
 		cmd.set_specialization_constant(4, filter_options.skip_notch);
 
-		bool hannover_filter = options.system == System::PAL && options.cable == Cable::Composite;
-		run_pass(PassDecode, &encode_target->get_view(), hannover_filter ? &yuv_target->get_view() : nullptr);
+		bool immediate_convert = (options.system != System::PAL && filter_options.skip_notch) || options.cable != Cable::Composite;
+		bool iir_pass = !filter_options.skip_notch && options.cable == Cable::Composite;
+		run_pass(PassDecode, &encode_target->get_view(), immediate_convert ? nullptr : &luma_target->get_view(), iir_pass);
 
-		if (hannover_filter)
+		if (!immediate_convert)
+		{
+			storage_to_sampled_barrier(cmd, *chroma_target);
+			cmd.set_texture(0, 4, chroma_target->get_view());
+		}
+
+		cmd.set_storage_texture(0, 5, dummy_1d_array->get_view());
+
+		if (!filter_options.skip_notch && options.cable == Cable::Composite)
+		{
+			storage_barrier(cmd);
+
+			// Run IIR notch pass.
+			cmd.begin_region("analog-iir");
+			{
+				run_iir_pass(cmd);
+			}
+			cmd.end_region();
+
+			// Restore state that gets clobbered.
+			cmd.set_specialization_constant_mask(0x1f);
+			cmd.set_specialization_constant(0, 0);
+			cmd.set_specialization_constant(1, options.system == System::PAL);
+			cmd.set_texture(0, 0, input);
+			storage_to_sampled_barrier(cmd, *luma_target);
+		}
+
+		// Convert YUV to RGB.
+		if (!immediate_convert)
 		{
 			push.input_offset = 0;
-			run_pass(PassHannoverBarFilter, &yuv_target->get_view(), nullptr);
+			run_pass(PassYUVToRGB, &luma_target->get_view(), nullptr);
 		}
 	}
 
 	cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_GENERAL, filter_options.dst_layout,
 					  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 					  filter_options.dst_stage, filter_options.dst_access);
+}
+
+void AnalogVideoFilter::run_iir_pass(CommandBuffer &cmd)
+{
+	cmd.set_program(shaders.iir);
+	cmd.set_storage_texture(0, 0, luma_target->get_view());
+	uint32_t num_outputs_per_thread = (luma_target->get_width() + 255) / 256;
+	cmd.set_specialization_constant(0, num_outputs_per_thread);
+	cmd.set_specialization_constant(1, supports_subgroups() ? 16 : 1);
+
+	struct
+	{
+		float b0, b1, b2, a1, a2;
+	} push = {};
+
+	push.b0 = 1.0f;
+	cmd.push_constants(&push, 0, sizeof(push));
+	if (supports_subgroups())
+	{
+		cmd.enable_subgroup_size_control(true);
+		cmd.set_subgroup_size_log2(true, 4, 7);
+	}
+	cmd.dispatch(luma_target->get_height(), 1, 1);
+	cmd.enable_subgroup_size_control(false);
 }
 
 const ImageView &AnalogVideoFilter::get_output() const
@@ -316,7 +409,10 @@ const ImageView &AnalogVideoFilter::get_output() const
 bool CRTFilter::init(Vulkan::Device &device)
 {
 	ResourceLayout layout;
-	Analog::Shaders<> shaders(device, layout, 0);
+	Analog::Shaders<> shaders(device, layout, [&](const char *, const char *) -> int
+	{
+		return 0;
+	});
 
 	scan = device.request_program(shaders.blit, shaders.scan);
 	bloom = device.request_program(shaders.blit, shaders.bloom);

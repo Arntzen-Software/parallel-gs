@@ -83,9 +83,13 @@ private:
 	Vulkan::ImageHandle decode_target;
 	Vulkan::ImageHandle bandpass_target;
 	Vulkan::ImageHandle chroma_estimate_target;
-	Vulkan::ImageHandle yuv_target;
+	Vulkan::ImageHandle luma_target;
+	Vulkan::ImageHandle chroma_target;
 	uint64_t total_line_counter = 0;
 	Analog::Shaders<> shaders;
+
+	bool supports_subgroups() const;
+	void run_iir_pass(Vulkan::CommandBuffer &cmd);
 };
 
 class CRTFilter
@@ -118,7 +122,6 @@ public:
 
 		float gamma = 2.4f;
 
-		// Must not go too high, or there will be uncontrolled feedback in the system, especially if feedback is large.
 		float bloom_strength = 0.6f;
 		bool aperture_grille = true;
 

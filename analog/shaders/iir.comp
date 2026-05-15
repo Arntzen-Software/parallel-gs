@@ -15,7 +15,7 @@
 
 layout(local_size_x = 256) in;
 
-layout(set = 0, binding = 0, r32f) uniform imageBuffer BUF;
+layout(set = 0, binding = 0, r32f) uniform image1DArray BUF;
 
 layout(constant_id = 0) const int PER_THREAD = 1;
 layout(constant_id = 1) const int MIN_WAVE_SIZE = 1;
@@ -69,9 +69,9 @@ Biquad scan(Biquad prev, Biquad current)
 void main()
 {
 #if SUBGROUP
-	uint index = gl_WorkGroupID.x * gl_WorkGroupSize.x + gl_SubgroupID * gl_SubgroupSize + gl_SubgroupInvocationID;
+	uint index = gl_SubgroupID * gl_SubgroupSize + gl_SubgroupInvocationID;
 #else
-	uint index = gl_GlobalInvocationID.x;
+	uint index = gl_LocalInvocationIndex;
 #endif
 
 	float xs[PER_THREAD + 2];
@@ -79,7 +79,7 @@ void main()
 
 	[[unroll]]
 	for (int i = -2; i < PER_THREAD; i++)
-		xs[i + 2] = imageLoad(BUF, PER_THREAD * int(index) + i).x;
+		xs[i + 2] = imageLoad(BUF, ivec2(PER_THREAD * int(index) + i, gl_WorkGroupID.x)).x;
 
 	[[unroll]]
 	for (int i = 0; i < PER_THREAD; i++)
@@ -140,7 +140,10 @@ void main()
 	}
 #endif
 
+	// Probably not needed, but there is a theoretical WAR hazard.
+	memoryBarrierImage();
+
 	[[unroll]]
 	for (int i = 0; i < PER_THREAD; i++)
-		imageStore(BUF, PER_THREAD * int(index) + i, vec4(quad[i].B.x));
+		imageStore(BUF, ivec2(PER_THREAD * int(index) + i, gl_WorkGroupID.x), vec4(quad[i].B.x));
 }
