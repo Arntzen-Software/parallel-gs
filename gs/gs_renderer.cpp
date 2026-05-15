@@ -4266,7 +4266,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 	// Signals a very rare 240p mode which almost never happens.
 	// For aspect ratio purposes, the height should be doubled.
-	bool double_strike = priv.smode2.FFMD && !priv.smode2.INT && priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
+	bool double_strike = !priv.smode2.INT && priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
 
 	// We have to scan out tightly packed fields or upscaling breaks.
 	if (!force_progressive || priv.extwrite.WRITE ||
