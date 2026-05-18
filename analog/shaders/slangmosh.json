@@ -20,10 +20,7 @@
 		},
 		{
 			"name": "sinc",
-			"path": "sinc.frag",
-			"variants": [
-				{ "define": "IS_HORIZ", "count": 2, "resolve": false }
-			]
+			"path": "sinc.frag"
 		},
 		{
 			"name": "iir",

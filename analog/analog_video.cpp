@@ -454,8 +454,7 @@ bool CRTFilter::init(Vulkan::Device &device)
 
 	scan = device.request_program(shaders.blit, shaders.scan);
 	bloom = device.request_program(shaders.blit, shaders.bloom);
-	sinc[0] = device.request_program(shaders.blit, shaders.sinc[0]);
-	sinc[1] = device.request_program(shaders.blit, shaders.sinc[1]);
+	sinc = device.request_program(shaders.blit, shaders.sinc);
 
 	return true;
 }
@@ -536,6 +535,7 @@ void CRTFilter::init_buffers(Vulkan::Device &device,
 		last_output_height = output_height;
 
 		auto info = Vulkan::ImageCreateInfo::render_target(tvl * 3, input_view.get_view_height(), fmt);
+		info.width = (info.width + 1u) & ~1u;
 
 		bool odd_height = input_view.get_view_height() % 2 != 0;
 		float inv_output_aspect = float(output_height) / float(output_width);
@@ -553,6 +553,18 @@ void CRTFilter::init_buffers(Vulkan::Device &device,
 
 		// Sample the scanlines at even multiple resolution to avoid pumping effects due to aliasing.
 
+		// Undersampling the aperture pattern is very hard to effectively anti-alias while preserving the look and feel.
+		// Clamp the horizontal resolution to make sure we only upsample.
+		uint32_t aligned_output_width = (output_width + 1u) & ~1u;
+		trivial_horiz_pass = false;
+
+		if (info.width >= aligned_output_width)
+		{
+			// No need to run sinc pass if there's 1:1 scaling.
+			info.width = aligned_output_width;
+			trivial_horiz_pass = true;
+		}
+
 		info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
 		info.initial_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
 		phosphor_layer_front = device.create_image(info);
@@ -566,11 +578,16 @@ void CRTFilter::init_buffers(Vulkan::Device &device,
 
 		info.width /= 2;
 		info.height /= 2;
+
 		bloomed_half = device.create_image(info);
 		device.set_name(*bloomed_half, "bloom");
 	}
 
-	if (!sinc_vert || sinc_vert->get_height() != output_height || sinc_vert->get_width() != phosphor_layer_front->get_width())
+	if (trivial_horiz_pass)
+	{
+		sinc_vert.reset();
+	}
+	else if (!sinc_vert || sinc_vert->get_height() != output_height || sinc_vert->get_width() != phosphor_layer_front->get_width())
 	{
 		auto info = Vulkan::ImageCreateInfo::render_target(phosphor_layer_front->get_width(), output_height, fmt);
 		info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -585,30 +602,39 @@ static constexpr float SincBandwidth = 1.0f;
 
 bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOptions &filter_options)
 {
-	if (!sinc_vert)
+	auto *input = sinc_vert ? sinc_vert.get() : composited.get();
+	if (!input)
 		return false;
 
 	struct
 	{
 		vec4 input_sizes;
-		vec4 output_sizes;
 		vec2 range;
 		float max_cll;
 	} push = {};
 
 	push.input_sizes = vec4(
-		float(sinc_vert->get_width()),
-		float(sinc_vert->get_height()),
-		1.0f / float(sinc_vert->get_width()),
-		1.0f / float(sinc_vert->get_height()));
+		float(input->get_width()),
+		float(input->get_height()),
+		1.0f / float(input->get_width()),
+		1.0f / float(input->get_height()));
 
-	push.output_sizes = vec4(
-		cmd.get_viewport().width,
-		cmd.get_viewport().height,
-		1.0f / cmd.get_viewport().width,
-		1.0f / cmd.get_viewport().height);
+	CommandBufferSavedState saved;
+	cmd.save_state(COMMAND_BUFFER_SAVED_SCISSOR_BIT | COMMAND_BUFFER_SAVED_VIEWPORT_BIT, saved);
 
-	push.range = vec2(filter_options.input_rect.x, filter_options.input_rect.width);
+	auto vp = cmd.get_viewport();
+
+	// Respect the output rect, but if we have odd width have to raster in a way that throws
+	// away the rightmost pixel.
+	cmd.set_scissor({{ int(vp.x), int(vp.y) }, { uint32_t(vp.width), uint32_t(vp.height) }});
+	vp.width = float((int(vp.width) + 1) & ~1);
+	cmd.set_viewport(vp);
+
+	if (sinc_vert)
+		push.range = vec2(0.0f, 1.0f);
+	else
+		push.range = vec2(filter_options.input_rect.y, filter_options.input_rect.height);
+
 	push.max_cll = filter_options.hdr10_target_max_cll;
 
 	cmd.push_constants(&push, 0, sizeof(push));
@@ -625,15 +651,19 @@ bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOption
 	primary_transform[2] = vec4(sdr_scale * conv[2], 0.0f);
 	cmd.set_opaque_sprite_state();
 	cmd.set_depth_test(false, false);
-	cmd.set_specialization_constant_mask(0x1);
+	cmd.set_specialization_constant_mask(0x7);
 	cmd.set_specialization_constant(0, filter_options.hdr10);
-	cmd.set_program(sinc[1]);
-	cmd.set_texture(0, 0, sinc_vert->get_view());
-	cmd.set_storage_buffer(0, 3, *horiz_sinc_lut);
+	cmd.set_specialization_constant(1, true);
+	cmd.set_specialization_constant(2, bool(sinc_vert));
+	cmd.set_program(sinc);
+	cmd.set_texture(0, 0, input->get_view());
+	cmd.set_storage_buffer(0, 3, sinc_vert ? *horiz_sinc_lut : *vert_sinc_lut);
 
 	cmd.begin_region("sinc-output");
 	cmd.draw(3);
 	cmd.end_region();
+
+	cmd.restore_state(saved);
 
 	return true;
 }
@@ -754,9 +784,12 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 
 	for (auto *img : images)
 	{
-		cmd.image_barrier(*img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
-				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+		if (img)
+		{
+			cmd.image_barrier(*img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+					VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
+					VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+		}
 	}
 
 	cmd.barrier(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COPY_BIT, 0);
@@ -772,6 +805,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		float gamma;
 		float scan_factor_narrow;
 		float scan_factor_wide;
+		vec2 range;
 	} push = {};
 
 	push.input_sizes = vec4(
@@ -785,6 +819,8 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		float(phosphor_layer_back->get_height()),
 		1.0f / float(phosphor_layer_back->get_width()),
 		1.0f / float(phosphor_layer_back->get_height()));
+
+	push.range = vec2(filter_options.input_rect.x, filter_options.input_rect.width);
 
 	if (filter_options.double_strike)
 		push.phase = 0.25f; // Only render top field.
@@ -872,11 +908,23 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 					  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
 	cmd.begin_region("crt-sinc-vert");
+
+	if (sinc_vert)
+	{
+		auto horiz_bandwidth = std::min(1.0f, SincBandwidth * float(output_width) / float(sinc_vert->get_width()));
+		update_sinc_kernel(cmd, horiz_sinc_lut, horiz_bandwidth);
+	}
+
+	// If we're downsampling, make sure we get a proper low-pass.
+	auto effective_vert_resolution = filter_options.input_rect.height * float(composited->get_height());
+	auto vert_bandwidth = std::min(1.0f, SincBandwidth * float(output_height) / effective_vert_resolution);
+	update_sinc_kernel(cmd, vert_sinc_lut, vert_bandwidth);
+
+	if (sinc_vert)
 	{
 		struct
 		{
 			vec4 input_sizes;
-			vec4 output_sizes;
 			vec2 range;
 		} sinc_push = {};
 
@@ -884,40 +932,28 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		sinc_push.input_sizes.y = float(composited->get_height());
 		sinc_push.input_sizes.z = 1.0f / sinc_push.input_sizes.x;
 		sinc_push.input_sizes.w = 1.0f / sinc_push.input_sizes.y;
-
-		sinc_push.output_sizes.x = float(sinc_vert->get_width());
-		sinc_push.output_sizes.y = float(sinc_vert->get_height());
-		sinc_push.output_sizes.z = 1.0f / sinc_push.output_sizes.x;
-		sinc_push.output_sizes.w = 1.0f / sinc_push.output_sizes.y;
-
 		sinc_push.range = vec2(filter_options.input_rect.y, filter_options.input_rect.height);
 
-		// If we're downsampling, make sure we get a proper low-pass.
-		float effective_horiz_resolution = filter_options.input_rect.width * float(sinc_vert->get_width());
-		float horiz_bandwidth = std::min(1.0f, SincBandwidth * float(output_width) / effective_horiz_resolution);
-		update_sinc_kernel(cmd, horiz_sinc_lut, horiz_bandwidth);
-
-		// If we're downsampling, make sure we get a proper low-pass.
-		float effective_vert_resolution = filter_options.input_rect.height * float(composited->get_height());
-		float vert_bandwidth = std::min(1.0f, SincBandwidth * sinc_push.output_sizes.y / effective_vert_resolution);
-
 		cmd.push_constants(&sinc_push, 0, sizeof(sinc_push));
-		update_sinc_kernel(cmd, vert_sinc_lut, vert_bandwidth);
+
+		// Allocate dummy data.
+		cmd.allocate_typed_constant_data<float>(0, 2, 1);
 
 		rp.color_attachments[0] = &sinc_vert->get_view();
 		cmd.begin_render_pass(rp);
 		cmd.set_opaque_sprite_state();
-		cmd.set_program(sinc[0]);
+		cmd.set_program(sinc);
+		cmd.set_specialization_constant_mask(0);
 		cmd.set_texture(0, 0, composited->get_view());
 		cmd.set_storage_buffer(0, 3, *vert_sinc_lut);
 		cmd.draw(3);
 		cmd.end_render_pass();
+
+		cmd.image_barrier(*sinc_vert, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+			  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	}
 	cmd.end_region();
-
-	cmd.image_barrier(*sinc_vert, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
-				  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-				  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
 	front_is_valid = true;
 	return true;

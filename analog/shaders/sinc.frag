@@ -14,13 +14,13 @@ layout(set = 0, binding = 0) uniform texture2D uInput;
 layout(push_constant) uniform Registers
 {
     vec2 input_size, inv_input_size;
-    vec2 output_size, inv_output_size;
     vec2 range;
     float max_cll;
 } registers;
 
-#if IS_HORIZ
 layout(constant_id = 0) const bool HDR10 = false;
+layout(constant_id = 1) const bool ENCODE = false;
+layout(constant_id = 2) const bool HORIZ = false;
 
 vec3 encode_pq(vec3 nits)
 {
@@ -41,7 +41,6 @@ layout(set = 0, binding = 2) uniform UBO
 {
     mat3 primary_transform;
 };
-#endif
 
 const int PHASES = 256;
 const int TAPS = 16;
@@ -62,25 +61,27 @@ void setup_filter(out ivec2 base_coord, out float phase)
 {
     vec2 uv = vUV;
 
-#if IS_HORIZ
-    uv.x = uv.x * registers.range.y + registers.range.x;
-#else
-    uv.y = uv.y * registers.range.y + registers.range.x;
-#endif
+    if (HORIZ)
+        uv.x = uv.x * registers.range.y + registers.range.x;
+    else
+        uv.y = uv.y * registers.range.y + registers.range.x;
 
     vec2 input_coord = uv * registers.input_size;
 
-#if IS_HORIZ
-    float coord_x = input_coord.x - 0.5;
-    float floor_coord_x = floor(coord_x);
-    phase = coord_x - floor_coord_x;
-    base_coord = ivec2(floor_coord_x, input_coord.y);
-#else
-    float coord_y = input_coord.y - 0.5;
-    float floor_coord_y = floor(coord_y);
-    phase = coord_y - floor_coord_y;
-    base_coord = ivec2(input_coord.x, floor_coord_y);
-#endif
+    if (HORIZ)
+    {
+        float coord_x = input_coord.x - 0.5;
+        float floor_coord_x = floor(coord_x);
+        phase = coord_x - floor_coord_x;
+        base_coord = ivec2(floor_coord_x, input_coord.y);
+    }
+    else
+    {
+        float coord_y = input_coord.y - 0.5;
+        float floor_coord_y = floor(coord_y);
+        phase = coord_y - floor_coord_y;
+        base_coord = ivec2(input_coord.x, floor_coord_y);
+    }
 }
 
 vec3 tonemap(vec3 color, float max_cll)
@@ -104,11 +105,13 @@ void main()
     [[unroll]]
     for (int i = 0; i < TAPS; i++)
     {
-#if IS_HORIZ
-        ivec2 offset = ivec2(i - (LOBE - 1), 0);
-#else
-        ivec2 offset = ivec2(0, i - (LOBE - 1));
-#endif
+        ivec2 offset;
+
+        if (HORIZ)
+            offset = ivec2(i - (LOBE - 1), 0);
+        else
+            offset = ivec2(0, i - (LOBE - 1));
+
         // Basic windowed sinc approach.
         float kernel = lut.weights[i];
         filtered += kernel * texelFetch(uInput, base_coord + offset, 0).rgb;
@@ -116,17 +119,18 @@ void main()
 
     Output = filtered;
 
-#if IS_HORIZ
-    // Color space conversions.
-    vec3 display_nits = clamp(primary_transform * Output, vec3(0.0), vec3(1000.0));
-    if (HDR10)
+    if (ENCODE)
     {
-        Output = encode_pq(tonemap(display_nits, registers.max_cll));
+        // Color space conversions.
+        vec3 display_nits = clamp(primary_transform * Output, vec3(0.0), vec3(1000.0));
+        if (HDR10)
+        {
+            Output = encode_pq(tonemap(display_nits, registers.max_cll));
+        }
+        else
+        {
+            // SDR will get a bit overexposed by default.
+            Output = pow(clamp(tonemap(display_nits * 0.75, 1.0), vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));
+        }
     }
-    else
-    {
-        // SDR will get a bit overexposed by default.
-        Output = pow(clamp(tonemap(display_nits * 0.75, 1.0), vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));
-    }
-#endif
 }

@@ -17,7 +17,7 @@ struct Shaders
 	Shader blit = {};
 	Shader bloom = {};
 	Shader scan = {};
-	Shader sinc[2] = {};
+	Shader sinc = {};
 	Program iir = {};
 	Shaders() = default;
 

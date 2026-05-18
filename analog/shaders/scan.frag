@@ -21,6 +21,7 @@ layout(push_constant) uniform Registers
     float gamma;
     float scan_factor_narrow;
     float scan_factor_wide;
+    vec2 range;
 } registers;
 
 void accumulate(vec3 sampled, inout vec3 color, int y, float phase)
@@ -96,7 +97,9 @@ void main()
 {
     if (registers.input_strength > 0.0)
     {
-        LinearReference = registers.input_strength * sample_scan(vUV);
+		vec2 uv = vUV;
+		uv.x = registers.range.x + uv.x * registers.range.y;
+        LinearReference = registers.input_strength * sample_scan(uv);
 
         if (APERTURE_GRILLE)
             LinearReference = grille(LinearReference, vUV * registers.output_size);

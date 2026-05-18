@@ -132,6 +132,8 @@ public:
 		// The resolution of the horizontal phosphor stripes.
 		// Counts number of e.g. red dots horizontally.
 		// Shouldn't be too large or too low or the effect doesn't work right.
+		// If output resolution is not large enough to support the TVL, it will
+		// be automatically adjusted so that there is clean 1:1 output.
 		uint32_t tvl = 640;
 
 		// Normalized. Use to only sample part of the input to remove e.g. overscan.
@@ -171,9 +173,10 @@ private:
 	Vulkan::BufferHandle horiz_sinc_lut;
 	bool back_is_valid = false;
 	bool front_is_valid = false;
+	bool trivial_horiz_pass = false;
 	Vulkan::Program *scan = nullptr;
 	Vulkan::Program *bloom = nullptr;
-	Vulkan::Program *sinc[2] = {};
+	Vulkan::Program *sinc = nullptr;
 
 	void allocate_gaussian_bloom_kernel(Vulkan::CommandBuffer &cmd, uint32_t desc_set, uint32_t binding, float intensity);
 	void update_sinc_kernel(Vulkan::CommandBuffer &cmd, Vulkan::BufferHandle &handle, float bw);
