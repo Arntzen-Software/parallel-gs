@@ -4395,7 +4395,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	}
 	else
 	{
-		LOGE("Unknown video format.\n");
+		LOGW("Unknown video format.\n");
 		cmd.end_region();
 		flush_submit(0);
 		return {};

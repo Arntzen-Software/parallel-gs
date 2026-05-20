@@ -23,49 +23,6 @@
 using namespace Granite;
 using namespace Vulkan;
 
-static void FsrEasuCon(
-		float *con0,
-		float *con1,
-		float *con2,
-		float *con3,
-		float inputViewportInPixelsX,
-		float inputViewportInPixelsY,
-		float inputSizeInPixelsX,
-		float inputSizeInPixelsY,
-		float outputSizeInPixelsX,
-		float outputSizeInPixelsY)
-{
-	// Output integer position to a pixel position in viewport.
-	con0[0] = inputViewportInPixelsX / outputSizeInPixelsX;
-	con0[1] = inputViewportInPixelsY / outputSizeInPixelsY;
-	con0[2] = 0.5f * inputViewportInPixelsX / outputSizeInPixelsX - 0.5f;
-	con0[3] = 0.5f * inputViewportInPixelsY / outputSizeInPixelsY - 0.5f;
-	con1[0] = 1.0f / inputSizeInPixelsX;
-	con1[1] = 1.0f / inputSizeInPixelsY;
-	con1[2] = 1.0f / inputSizeInPixelsX;
-	con1[3] = -1.0f / inputSizeInPixelsY;
-	con2[0] = -1.0f / inputSizeInPixelsX;
-	con2[1] = 2.0f / inputSizeInPixelsY;
-	con2[2] = 1.0f / inputSizeInPixelsX;
-	con2[3] = 2.0f / inputSizeInPixelsY;
-	con3[0] = 0.0f / inputSizeInPixelsX;
-	con3[1] = 4.0f / inputSizeInPixelsY;
-	con3[2] = con3[3] = 0.0f;
-}
-
-static void FsrRcasCon(float *con, float sharpness)
-{
-	sharpness = muglm::exp2(-sharpness);
-	uint32_t half = floatToHalf(sharpness);
-	con[0] = sharpness;
-	uint32_t halves = half | (half << 16);
-	memcpy(&con[1], &halves, sizeof(halves));
-	con[2] = 0.0f;
-	con[3] = 0.0f;
-}
-
-static constexpr float SDRScale = 600.0f;
-
 namespace ParallelGS
 {
 struct StreamApplication : Granite::Application, Granite::EventHandler
@@ -77,11 +34,6 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		EVENT_MANAGER_REGISTER_LATCH(StreamApplication, on_swapchain_created, on_swapchain_destroyed, SwapchainParameterEvent);
 		EVENT_MANAGER_REGISTER(StreamApplication, on_key_pressed, KeyboardEvent);
 		get_wsi().set_backbuffer_format(BackbufferFormat::UNORM);
-
-		auto meta = get_wsi().get_hdr_metadata();
-		meta.maxContentLightLevel = SDRScale;
-		// The rest can be left undefined.
-		get_wsi().set_hdr_metadata(meta);
 	}
 
 	std::unique_ptr<GSInterface> iface;
@@ -238,90 +190,6 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 	double timestamp_stats[int(TimestampType::Count)] = {};
 	double last_timestamp_stats[int(TimestampType::Count)] = {};
 
-	void render_fsr(CommandBuffer &cmd, const ImageView &view)
-	{
-		cmd.image_barrier(*fsr_render_target,
-		                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-		                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-		                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-
-		RenderPassInfo rp = {};
-		rp.num_color_attachments = 1;
-		rp.color_attachments[0] = &fsr_render_target->get_view();
-		rp.store_attachments = 1u << 0;
-
-		cmd.begin_render_pass(rp);
-		{
-			struct Constants
-			{
-				float params[4][4];
-			} constants;
-
-			struct Push
-			{
-				float width, height;
-			} push;
-
-			auto width = float(view.get_image().get_width());
-			auto height = float(view.get_image().get_height());
-			auto *params = cmd.allocate_typed_constant_data<Constants>(1, 0, 1);
-			FsrEasuCon(constants.params[0], constants.params[1], constants.params[2], constants.params[3],
-			           width, height, width, height, cmd.get_viewport().width, cmd.get_viewport().height);
-			*params = constants;
-
-			push.width = cmd.get_viewport().width;
-			push.height = cmd.get_viewport().height;
-			cmd.push_constants(&push, 0, sizeof(push));
-
-			const vec2 vertex_data[] = { vec2(-1.0f, -1.0f), vec2(-1.0f, 3.0f), vec2(3.0f, -1.0f) };
-			memcpy(cmd.allocate_vertex_data(0, sizeof(vertex_data), sizeof(vec2)), vertex_data, sizeof(vertex_data));
-			cmd.set_vertex_attrib(0, 0, VK_FORMAT_R32G32_SFLOAT, 0);
-
-			cmd.set_texture(0, 0, view, StockSampler::NearestClamp);
-
-			cmd.set_program(upscale_program);
-			cmd.set_opaque_state();
-			cmd.set_depth_test(false, false);
-			cmd.draw(3);
-		}
-		cmd.end_render_pass();
-
-		cmd.image_barrier(*fsr_render_target,
-		                  VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
-		                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-		                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-	}
-
-	void render_rcas(CommandBuffer &cmd, const ImageView &view)
-	{
-		struct Constants
-		{
-			float params[4];
-			int32_t range[4];
-		} constants;
-
-		FsrRcasCon(constants.params, 0.5f);
-		constants.range[0] = 0;
-		constants.range[1] = 0;
-		constants.range[2] = int(view.get_view_width()) - 1;
-		constants.range[3] = int(view.get_view_height()) - 1;
-		auto *params = cmd.allocate_typed_constant_data<Constants>(1, 0, 1);
-		*params = constants;
-
-		const vec2 vertex_data[] = { vec2(-1.0f, -1.0f), vec2(-1.0f, 3.0f), vec2(3.0f, -1.0f) };
-		memcpy(cmd.allocate_vertex_data(0, sizeof(vertex_data), sizeof(vec2)), vertex_data, sizeof(vertex_data));
-		cmd.set_vertex_attrib(0, 0, VK_FORMAT_R32G32_SFLOAT, 0);
-		cmd.set_srgb_texture(0, 0, fsr_render_target->get_view());
-		cmd.set_sampler(0, 0, Vulkan::StockSampler::NearestClamp);
-		cmd.set_opaque_state();
-		cmd.set_depth_test(false, false);
-		cmd.set_program(sharpen_program);
-		cmd.draw(3);
-	}
-
-	uint32_t frame_multiplier = 1;
-	uint32_t frame_multiplier_phase = 1;
-
 	void render_frame(double, double)
 	{
 		if (!iface)
@@ -331,16 +199,6 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		}
 		auto &wsi = get_wsi();
 		auto &device = wsi.get_device();
-
-#if 0
-		if (Device::init_renderdoc_capture())
-		{
-			device.begin_renderdoc_capture();
-			AnalogVideoFilter::execute_color_bar_self_test(device);
-			device.end_renderdoc_capture();
-			request_shutdown();
-		}
-#endif
 
 		if (capture_count == NumCaptureFrames && has_renderdoc_capture)
 		{
@@ -354,9 +212,9 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		bool empty_vsync = false;
 
-		if (frame_multiplier_phase >= frame_multiplier && mode != IterationMode::Pause && !is_eof)
+		if (mode != IterationMode::Pause && !is_eof)
 		{
-			if (parser.iterate_until_vsync(false, true))
+			if (parser.iterate_until_vsync(false))
 			{
 				vsync = parser.consume_vsync_result();
 				auto flush_stats = iface->consume_flush_stats();
@@ -374,63 +232,21 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 					empty_vsync = true;
 
 				vsync_index++;
-				frame_multiplier_phase = 0;
 			}
 			else
 				is_eof = true;
 		}
 
-		if (mode == IterationMode::Pause)
-			frame_multiplier_phase = 0;
-
-		//read_page_memory();
-
 		auto cmd = device.request_command_buffer();
-		//if (vsync.image)
-		//	render_fsr(*cmd, vsync.image->get_view());
-
-		CRTFilter::FilterOptions crt_opts = {};
-		crt_opts.hdr10 = get_wsi().get_backbuffer_color_space() == VK_COLOR_SPACE_HDR10_ST2084_EXT;
-		crt_opts.phase = vsync.interlace_phase;
-		crt_opts.phosphor_primaries = filter.get_options().system == AnalogVideoFilter::System::PAL
-										  ? CRTFilter::Primaries::BT601_625
-										  : CRTFilter::Primaries::BT601_525;
-		crt_opts.progressive = !vsync.interlaced;
-		crt_opts.feedback = 0.2f;
-		crt_opts.input_strength = frame_multiplier_phase == 0 ? 1.0f : 0.0f;
-		crt_opts.hdr10_target_max_cll = SDRScale;
-		crt_opts.hdr10_target_paper_white = 0.75f * SDRScale;
-
-		crt_opts.input_rect = { 0.1f, 0.05f, 0.8f, 0.9f };
-
-		if (frame_multiplier_phase)
-			wsi.set_next_present_is_duplicated();
-
-		if (vsync.image)
-		{
-			AnalogVideoFilter::FilterOptions opts = {};
-			opts.phase = vsync.interlace_phase;
-			opts.input_sampling_rate_mhz = 13.5f * float(vsync.image->get_width()) / 640.0f;
-			opts.line_comb = true;
-			opts.skip_notch = false;
-			filter.run_filter(*cmd, vsync.image->get_view(), opts);
-
-			crt_filter.run_filter_prepass(*cmd, filter.get_output(), crt_opts,
-			                              device.get_swapchain_view().get_view_width(),
-			                              device.get_swapchain_view().get_view_height());
-		}
-
 		cmd->begin_render_pass(device.get_swapchain_render_pass(SwapchainRenderPass::Depth));
 
 		if (vsync.image)
 		{
-			//render_rcas(*cmd, fsr_render_target->get_view());
-			crt_filter.run_filter_encode(*cmd, crt_opts);
+			cmd->set_texture(0, 0, vsync.image->get_view(), StockSampler::NearestClamp);
+			CommandBufferUtil::draw_fullscreen_quad(*cmd, "builtin://shaders/quad.vert",
+			                                        "builtin://shaders/blit.frag");
 		}
 
-		frame_multiplier_phase++;
-
-#if 1
 		flat_renderer.begin();
 
 		vec2 ui_offset = vec2(cmd->get_viewport().width - 105.0f, 5.0f);
@@ -491,7 +307,6 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		            timestamp_stats[int(TimestampType::Shading)]);
 
 		flat_renderer.flush(*cmd, vec3(0.0f), vec3(cmd->get_viewport().width, cmd->get_viewport().height, 1.0f));
-#endif
 
 		cmd->end_render_pass();
 		device.submit(cmd);
