@@ -54,7 +54,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 	bool has_renderdoc_capture = false;
 	uint32_t capture_count = 0;
 	DebugMode::DrawDebugMode draw_mode = DebugMode::DrawDebugMode::None;
-	bool hdr = false;
+	bool high_res_scanout = false;
 
 	enum { NumCaptureFrames = 4 };
 
@@ -91,23 +91,20 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		{
 			draw_mode = DebugMode::DrawDebugMode((uint32_t(draw_mode) + 1) % uint32_t(DebugMode::DrawDebugMode::Count));
 		}
+		else if (e.get_key() == Key::H)
+			high_res_scanout = !high_res_scanout;
 		else if (e.get_key() == Key::_1 && iface)
 			iface->set_super_sampling_rate(SuperSampling::X1, true, false);
 		else if (e.get_key() == Key::_2 && iface)
-			iface->set_super_sampling_rate(SuperSampling::X2, true, false);
+			iface->set_super_sampling_rate(SuperSampling::X2, true, high_res_scanout);
 		else if (e.get_key() == Key::_3 && iface)
-			iface->set_super_sampling_rate(SuperSampling::X4, true, false);
+			iface->set_super_sampling_rate(SuperSampling::X4, true, high_res_scanout);
 		else if (e.get_key() == Key::_4 && iface)
-			iface->set_super_sampling_rate(SuperSampling::X8, true, false);
+			iface->set_super_sampling_rate(SuperSampling::X8, true, high_res_scanout);
 		else if (e.get_key() == Key::_5 && iface)
-			iface->set_super_sampling_rate(SuperSampling::X16, true, false);
+			iface->set_super_sampling_rate(SuperSampling::X16, true, high_res_scanout);
 		else if (e.get_key() == Key::M)
 			get_wsi().set_present_mode(get_wsi().get_present_mode() == PresentMode::SyncToVBlank ? PresentMode::UnlockedMaybeTear : PresentMode::SyncToVBlank);
-		else if (e.get_key() == Key::H)
-		{
-			hdr = !hdr;
-			get_wsi().set_backbuffer_format(hdr ? BackbufferFormat::HDR10 : BackbufferFormat::UNORM);
-		}
 
 		return true;
 	}
@@ -214,7 +211,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 
 		if (mode != IterationMode::Pause && !is_eof)
 		{
-			if (parser.iterate_until_vsync(false))
+			if (parser.iterate_until_vsync(high_res_scanout))
 			{
 				vsync = parser.consume_vsync_result();
 				auto flush_stats = iface->consume_flush_stats();
@@ -268,16 +265,10 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		else if (mode == IterationMode::Pause)
 			render_text("Paused", ui_offset + vec2(0.0f, 60.0f), vec2(100.0f, 30.0f));
 
-		auto color_space = get_wsi().get_backbuffer_color_space();
-		if (color_space == VK_COLOR_SPACE_HDR10_ST2084_EXT)
-			render_text("HDR", ui_offset + vec2(0.0f, 90.0f), vec2(100.0f, 30.0f));
-		else
-			render_text("SDR", ui_offset + vec2(0.0f, 90.0f), vec2(100.0f, 30.0f));
-
 		const vec2 SIZE = vec2(100.0f, 30.0f);
 		const vec2 LARGE_SIZE = vec2(150.0f, 30.0f);
 
-		ui_offset = vec2(cmd->get_viewport().width - 105.0f, 130.0f);
+		ui_offset = vec2(cmd->get_viewport().width - 105.0f, 100.0f);
 		render_text("RP %u", ui_offset, SIZE, stats.num_render_passes);
 		ui_offset.y += 30.0f;
 		render_text("CLUT %u", ui_offset, SIZE, stats.num_palette_updates);
