@@ -404,13 +404,6 @@ private:
 	};
 	std::vector<PendingIndirectTextureUpload> pending_indirect_uploads;
 
-	struct PendingIndirectAnalysis
-	{
-		Vulkan::BufferHandle indirect;
-		VkDeviceSize indirect_offset;
-	};
-	std::vector<PendingIndirectAnalysis> pending_indirect_analysis;
-
 	struct
 	{
 		Vulkan::BufferHandle clut;

@@ -1472,12 +1472,8 @@ void GSRenderer::ensure_conservative_indirect_texture_uploads()
 		                                sizeof(fallback), &fallback);
 	}
 
-	for (auto &dispatch : pending_indirect_analysis)
-		qword_clears.push_back(dispatch.indirect->get_device_address() + dispatch.indirect_offset);
-
 	clear_cmd->end_region();
 	pending_indirect_uploads.clear();
-	pending_indirect_analysis.clear();
 
 	// For any pending work we've yet to record, disable the indirection.
 	texture_analysis.clear();
@@ -3174,7 +3170,6 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 
 	// We didn't end up flushing indirect texture uploads before flushing the full render pass, so we're safe.
 	pending_indirect_uploads.clear();
-	pending_indirect_analysis.clear();
 
 #ifdef PARALLEL_GS_DEBUG
 	sanitize_state_indices(buffers.prim, rp);
@@ -3499,11 +3494,7 @@ void GSRenderer::dispatch_texture_analysis(Vulkan::CommandBuffer &cmd, const Ren
 	} push = { rp.num_primitives, uint32_t(texture_analysis.size()), ssaa_sample_offset };
 	cmd.push_constants(&push, 0, sizeof(push));
 
-	uint32_t indirect_data[] = { (rp.num_primitives + 255) / 256, 1, 1, 0 };
-	VkDeviceSize indirect_offset = allocate_device_scratch(sizeof(indirect_data), buffers.rebar_scratch, indirect_data);
-	cmd.dispatch_indirect(*buffers.rebar_scratch.buffer, indirect_offset);
-	// In case we have to cancel the analysis late and fallback.
-	pending_indirect_analysis.push_back({ buffers.rebar_scratch.buffer, indirect_offset });
+	cmd.dispatch((rp.num_primitives + 255) / 256, 1, 1);
 }
 
 void GSRenderer::upload_texture(const TextureUpload &upload)
