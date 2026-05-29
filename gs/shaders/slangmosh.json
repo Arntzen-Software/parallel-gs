@@ -98,6 +98,18 @@
 			"name": "sampler_feedback",
 			"path": "sampler_feedback.comp",
 			"compute": true
+		},
+		{
+			"name": "ui_vert",
+			"path": "ui.vert"
+		},
+		{
+			"name": "ui_frag",
+			"path": "ui.frag",
+			"variants": [
+				{ "define": "TEX", "count": 2, "resolve": false },
+				{ "define": "LINEAR", "count": 2, "resolve": false }
+			]
 		}
 	]
 }

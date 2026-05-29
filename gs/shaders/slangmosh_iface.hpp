@@ -32,6 +32,8 @@ struct Shaders
 	Program extwrite = {};
 	Program qword_clear = {};
 	Program sampler_feedback = {};
+	Shader ui_vert = {};
+	Shader ui_frag[2][2] = {};
 	Shaders() = default;
 
 	template <typename Device, typename Layout, typename Resolver>
