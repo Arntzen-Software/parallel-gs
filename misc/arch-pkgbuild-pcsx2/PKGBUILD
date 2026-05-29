@@ -5,7 +5,7 @@
 # Contributor: Themaister <post@themaister.net>
 
 pkgname=pcsx2-parallel-gs-git
-pkgver=2.7.309.r2.ga4f5891e24
+pkgver=2.7.366.r3.g213a338cb9
 pkgrel=1
 pkgdesc='A Sony PlayStation 2 emulator with experimental paraLLEl-GS support'
 arch=(x86_64)
@@ -63,11 +63,12 @@ conflicts=(pcsx2 pcsx2-git)
 options=(!lto)
 
 source=(
-    git+https://github.com/PCSX2/pcsx2.git#tag=v2.7.309
+    git+https://github.com/PCSX2/pcsx2.git#tag=v2.7.366
     git+https://github.com/Arntzen-Software/parallel-gs.git
     git+https://github.com/PCSX2/pcsx2_patches.git
     0001-Early-integration-of-parallel-GS.patch
     0002-Add-new-analog-video-options.patch
+    0003-Hook-up-ImGui-UI-support.patch
 )
 
 prepare() 
@@ -80,6 +81,7 @@ prepare()
     git config user.email "local@local"
     git am "${srcdir}/0001-Early-integration-of-parallel-GS.patch"
     git am "${srcdir}/0002-Add-new-analog-video-options.patch"
+    git am "${srcdir}/0003-Hook-up-ImGui-UI-support.patch"
 
     echo "Linking in parallel-gs."
     cd pcsx2/GS
@@ -130,6 +132,7 @@ package() {
 }
 
 sha256sums=(
+    'SKIP'
     'SKIP'
     'SKIP'
     'SKIP'

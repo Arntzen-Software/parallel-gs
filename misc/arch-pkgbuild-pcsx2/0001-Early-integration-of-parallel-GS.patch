@@ -1,7 +1,7 @@
-From cfc65ecd9a9f78d42921a92c451444a0c0daab60 Mon Sep 17 00:00:00 2001
+From b526dab887ffa5a5e83362b61116c66fa019248f Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sun, 23 Jun 2024 14:54:43 +0200
-Subject: [PATCH 1/2] Early integration of parallel-GS.
+Subject: [PATCH 1/3] Early integration of parallel-GS.
 
 ---
  .gitignore                                    |   2 +
@@ -79,7 +79,7 @@ index 375985c84..782fa3292 100644
  				else if (StringUtil::Strcasecmp(rname, "gl") == 0)
  					type = GSRendererType::OGL;
 diff --git a/pcsx2-qt/MainWindow.cpp b/pcsx2-qt/MainWindow.cpp
-index de49c00c7..ad45638de 100644
+index 05e91a6b0..5343dd682 100644
 --- a/pcsx2-qt/MainWindow.cpp
 +++ b/pcsx2-qt/MainWindow.cpp
 @@ -472,6 +472,9 @@ void MainWindow::createRendererSwitchMenu()
@@ -228,7 +228,7 @@ index 000000000..3b8499cb1
 + </widget>
 +</ui>
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
-index a71099d57..ef2c32715 100644
+index 455be1a21..9a1235f72 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 @@ -21,6 +21,9 @@ struct RendererInfo
@@ -249,7 +249,7 @@ index a71099d57..ef2c32715 100644
  	m_hardware_fixes_tab = setupTab(m_fixes, tr("Hardware Fixes"));
  	m_upscaling_fixes_tab = setupTab(m_upscaling, tr("Upscaling Fixes"));
  	m_texture_replacement_tab = setupTab(m_texture, tr("Texture Replacement"));
-@@ -242,6 +246,17 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
+@@ -243,6 +247,17 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
  
  	setTabVisible(m_advanced_tab, QtHost::ShouldShowAdvancedSettings());
  
@@ -267,7 +267,7 @@ index a71099d57..ef2c32715 100644
  	//////////////////////////////////////////////////////////////////////////
  	// Non-trivial settings
  	//////////////////////////////////////////////////////////////////////////
-@@ -556,6 +571,43 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
+@@ -557,6 +572,43 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
  
  		dialog()->registerWidgetHelp(
  			m_sw.swMipmap, tr("Mipmapping"), tr("Checked"), tr("Enables mipmapping, which some games require to render correctly."));
@@ -311,7 +311,7 @@ index a71099d57..ef2c32715 100644
  	}
  
  	// Hardware Fixes tab
-@@ -996,6 +1048,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+@@ -1000,6 +1052,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
  	const bool is_hardware = (type == GSRendererType::DX11 || type == GSRendererType::DX12 || type == GSRendererType::OGL ||
  							  type == GSRendererType::VK || type == GSRendererType::Metal);
  	const bool is_software = (type == GSRendererType::SW);
@@ -319,7 +319,7 @@ index a71099d57..ef2c32715 100644
  	const bool is_auto = (type == GSRendererType::Auto);
  	const bool is_vk = (type == GSRendererType::VK);
  	const bool is_disable_barriers = (type == GSRendererType::Metal || type == GSRendererType::SW);
-@@ -1006,6 +1059,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+@@ -1010,6 +1063,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
  	{
  		setTabVisible(m_hardware_rendering_tab, true);
  		setTabVisible(m_software_rendering_tab, false, m_hardware_rendering_tab);
@@ -327,7 +327,7 @@ index a71099d57..ef2c32715 100644
  
  		prev_tab = m_hardware_rendering_tab;
  	}
-@@ -1013,6 +1067,15 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+@@ -1017,6 +1071,15 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
  	{
  		setTabVisible(m_software_rendering_tab, true);
  		setTabVisible(m_hardware_rendering_tab, false, m_software_rendering_tab);
@@ -343,7 +343,7 @@ index a71099d57..ef2c32715 100644
  
  		prev_tab = m_software_rendering_tab;
  	}
-@@ -1020,6 +1083,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
+@@ -1024,6 +1087,7 @@ void GraphicsSettingsWidget::updateRendererDependentOptions()
  	{
  		setTabVisible(m_hardware_rendering_tab, false, m_display_tab);
  		setTabVisible(m_software_rendering_tab, false, m_display_tab);
@@ -392,7 +392,7 @@ index 251ed822b..09f172c24 100644
      <Link>
        <AdditionalDependencies>$(QtEntryPointLib);%(AdditionalDependencies)</AdditionalDependencies>
 diff --git a/pcsx2/CMakeLists.txt b/pcsx2/CMakeLists.txt
-index 1ff5bbc23..b9e8164f6 100644
+index a81ab474e..c3fb6f9ed 100644
 --- a/pcsx2/CMakeLists.txt
 +++ b/pcsx2/CMakeLists.txt
 @@ -644,6 +644,7 @@ if(USE_VULKAN)
@@ -428,7 +428,7 @@ index 1ff5bbc23..b9e8164f6 100644
  	GS/Renderers/Metal/cas.metal
  	GS/Renderers/Metal/convert.metal
 diff --git a/pcsx2/Config.h b/pcsx2/Config.h
-index f338cead3..fcbf78a11 100644
+index cc67c55fa..d1c7db408 100644
 --- a/pcsx2/Config.h
 +++ b/pcsx2/Config.h
 @@ -278,6 +278,7 @@ enum class GSRendererType : s8
@@ -439,7 +439,7 @@ index f338cead3..fcbf78a11 100644
  };
  
  enum class GSVSyncMode : u8
-@@ -897,6 +898,13 @@ struct Pcsx2Config
+@@ -898,6 +899,13 @@ struct Pcsx2Config
  		u8 ShadeBoost_Saturation = DEFAULT_SHADEBOOST_SATURATION;
  		u8 ShadeBoost_Gamma = DEFAULT_SHADEBOOST_GAMMA;
  		u8 PNGCompressionLevel = 1;
@@ -454,7 +454,7 @@ index f338cead3..fcbf78a11 100644
  		u16 SWExtraThreads = 2;
  		u16 SWExtraThreadsHeight = 4;
 diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
-index 52c19b9ec..c89a68302 100644
+index e320f17a3..e7585c6fb 100644
 --- a/pcsx2/GS/GS.cpp
 +++ b/pcsx2/GS/GS.cpp
 @@ -1,5 +1,10 @@
@@ -1153,7 +1153,7 @@ index 892f406a7..4b70ad003 100644
  {
  	/// Called when the GS is creating a render device.
 diff --git a/pcsx2/GS/GSState.cpp b/pcsx2/GS/GSState.cpp
-index 0944443ab..27d7729e8 100644
+index 8175653a2..985d0d5ed 100644
 --- a/pcsx2/GS/GSState.cpp
 +++ b/pcsx2/GS/GSState.cpp
 @@ -28,7 +28,7 @@ static __fi bool IsAutoFlushEnabled()
@@ -1166,7 +1166,7 @@ index 0944443ab..27d7729e8 100644
  	int size = 0;
  
 diff --git a/pcsx2/GS/GSState.h b/pcsx2/GS/GSState.h
-index a618358ba..269ebdd1e 100644
+index dad4a8672..b6f8330e9 100644
 --- a/pcsx2/GS/GSState.h
 +++ b/pcsx2/GS/GSState.h
 @@ -22,7 +22,7 @@ public:
@@ -1179,7 +1179,7 @@ index a618358ba..269ebdd1e 100644
  private:
  	// RESTRICT prevents multiple loads of the same part of the register when accessing its bitfields (the compiler is happy to know that memory writes in-between will not go there)
 diff --git a/pcsx2/GS/GSUtil.cpp b/pcsx2/GS/GSUtil.cpp
-index 85be5b083..2c3c0d1d9 100644
+index ef080e628..6f13c4726 100644
 --- a/pcsx2/GS/GSUtil.cpp
 +++ b/pcsx2/GS/GSUtil.cpp
 @@ -279,7 +279,9 @@ GSRendererType GSUtil::GetPreferredRenderer()
@@ -1194,7 +1194,7 @@ index 85be5b083..2c3c0d1d9 100644
  		preferred_renderer = GSRendererType::Metal;
  #elif defined(_WIN32) && defined(ARCH_ARM64)
 diff --git a/pcsx2/GS/Renderers/Common/GSRenderer.cpp b/pcsx2/GS/Renderers/Common/GSRenderer.cpp
-index a6bf06355..db58546ba 100644
+index d841789f1..fd57f5c3c 100644
 --- a/pcsx2/GS/Renderers/Common/GSRenderer.cpp
 +++ b/pcsx2/GS/Renderers/Common/GSRenderer.cpp
 @@ -288,7 +288,7 @@ float GSRenderer::GetModXYOffset()
@@ -2282,7 +2282,7 @@ index 000000000..0a4eb3558
 +	uint32_t dump_frames = 0;
 +};
 diff --git a/pcsx2/ImGui/ImGuiFullscreen.cpp b/pcsx2/ImGui/ImGuiFullscreen.cpp
-index 321571e0d..dfed50460 100644
+index d9d40795e..93d62b5d7 100644
 --- a/pcsx2/ImGui/ImGuiFullscreen.cpp
 +++ b/pcsx2/ImGui/ImGuiFullscreen.cpp
 @@ -801,6 +801,8 @@ ImGuiFullscreen::FocusResetType ImGuiFullscreen::GetQueuedFocusResetType()
@@ -2295,7 +2295,7 @@ index 321571e0d..dfed50460 100644
  	g.ActiveIdSource = (g.ActiveIdSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
  	g.NavInputSource = (g.NavInputSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
 diff --git a/pcsx2/Pcsx2Config.cpp b/pcsx2/Pcsx2Config.cpp
-index 18a00d98c..8aa768e5a 100644
+index 48df8c250..840d51782 100644
 --- a/pcsx2/Pcsx2Config.cpp
 +++ b/pcsx2/Pcsx2Config.cpp
 @@ -696,6 +696,7 @@ const char* Pcsx2Config::GSOptions::GetRendererName(GSRendererType type)
@@ -2306,7 +2306,7 @@ index 18a00d98c..8aa768e5a 100644
  		default:                    return "";
  			// clang-format on
  	}
-@@ -890,7 +891,14 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
+@@ -891,7 +892,14 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
  		OpEqu(Adapter) &&
  
  		OpEqu(HWDumpDirectory) &&
@@ -2322,7 +2322,7 @@ index 18a00d98c..8aa768e5a 100644
  }
  
  bool Pcsx2Config::GSOptions::operator!=(const GSOptions& right) const
-@@ -980,6 +988,13 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
+@@ -981,6 +989,13 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
  	SettingsWrapBitBool(HWSpinCPUForReadbacks);
  	SettingsWrapBitBoolEx(GPUPaletteConversion, "paltex");
  	SettingsWrapBitBoolEx(AutoFlushSW, "autoflush_sw");

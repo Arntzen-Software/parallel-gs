@@ -1,7 +1,7 @@
-From b92435029f273a08871a14300bd07053f13ecca5 Mon Sep 17 00:00:00 2001
+From f21b4ebfcd268b44e7cfd0c21e9da6dcd52db873 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sat, 2 May 2026 15:34:15 +0200
-Subject: [PATCH 2/2] Add new analog video options.
+Subject: [PATCH 2/3] Add new analog video options.
 
 ---
  .../GraphicsPGSRenderingSettingsTab.ui        | 602 +++++++++++++++---
@@ -663,10 +663,10 @@ index 3b8499cb1..c1b4b1443 100644
 + <connections/>
  </ui>
 diff --git a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
-index ef2c32715..89d89f604 100644
+index 9a1235f72..1b2766230 100644
 --- a/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
 +++ b/pcsx2-qt/Settings/GraphicsSettingsWidget.cpp
-@@ -256,6 +256,21 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
+@@ -257,6 +257,21 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
  	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsDisableReadbackSync, "EmuCore/GS", "pgsDisableReadbackSync", 0);
  	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsSharpBackbuffer, "EmuCore/GS", "pgsSharpBackbuffer", 0);
  	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_pgs.pgsBlendDemotion, "EmuCore/GS", "pgsBlendDemotion", 0);
@@ -688,7 +688,7 @@ index ef2c32715..89d89f604 100644
  
  	//////////////////////////////////////////////////////////////////////////
  	// Non-trivial settings
-@@ -608,6 +623,68 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
+@@ -609,6 +624,68 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog,
  
  		dialog()->registerWidgetHelp(m_pgs.pgsDisableReadbackSync, tr("Disable readback sync"), tr("Unchecked"),
  			tr("Disables sync for readbacks. Eliminates stalls, but will probably break things. Used for perf debug."));
@@ -758,7 +758,7 @@ index ef2c32715..89d89f604 100644
  
  	// Hardware Fixes tab
 diff --git a/pcsx2/CMakeLists.txt b/pcsx2/CMakeLists.txt
-index b9e8164f6..e7a46f837 100644
+index c3fb6f9ed..7b529781d 100644
 --- a/pcsx2/CMakeLists.txt
 +++ b/pcsx2/CMakeLists.txt
 @@ -655,7 +655,7 @@ endif()
@@ -771,10 +771,10 @@ index b9e8164f6..e7a46f837 100644
  	list(APPEND pcsx2GSSources GS/Renderers/parallel-gs/GSRendererPGS.cpp)
  	list(APPEND pcsx2GSHeaders GS/Renderers/parallel-gs/GSRendererPGS.h)
 diff --git a/pcsx2/Config.h b/pcsx2/Config.h
-index fcbf78a11..e11745552 100644
+index d1c7db408..31198e25f 100644
 --- a/pcsx2/Config.h
 +++ b/pcsx2/Config.h
-@@ -898,6 +898,7 @@ struct Pcsx2Config
+@@ -899,6 +899,7 @@ struct Pcsx2Config
  		u8 ShadeBoost_Saturation = DEFAULT_SHADEBOOST_SATURATION;
  		u8 ShadeBoost_Gamma = DEFAULT_SHADEBOOST_GAMMA;
  		u8 PNGCompressionLevel = 1;
@@ -782,7 +782,7 @@ index fcbf78a11..e11745552 100644
  		u8 PGSSuperSampling = 0;
  		u8 PGSHighResScanout = 0;
  		u8 PGSDisableMipmaps = 0;
-@@ -905,6 +906,21 @@ struct Pcsx2Config
+@@ -906,6 +907,21 @@ struct Pcsx2Config
  		u8 PGSSuperSampleTextures = 0;
  		u8 PGSSharpBackbuffer = 0;
  		u8 PGSBlendDemotion = 0;
@@ -1478,10 +1478,10 @@ index 0a4eb3558..8fba63757 100644
 +	ParallelGS::CRTFilter crt_filter;
  };
 diff --git a/pcsx2/Pcsx2Config.cpp b/pcsx2/Pcsx2Config.cpp
-index 8aa768e5a..432372890 100644
+index 840d51782..2c71a2626 100644
 --- a/pcsx2/Pcsx2Config.cpp
 +++ b/pcsx2/Pcsx2Config.cpp
-@@ -898,7 +898,22 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
+@@ -899,7 +899,22 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
  		OpEqu(PGSDisableMipmaps) &&
  		OpEqu(PGSDisableReadbackSync) &&
  		OpEqu(PGSSharpBackbuffer) &&
@@ -1505,7 +1505,7 @@ index 8aa768e5a..432372890 100644
  }
  
  bool Pcsx2Config::GSOptions::operator!=(const GSOptions& right) const
-@@ -988,6 +1003,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
+@@ -989,6 +1004,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
  	SettingsWrapBitBool(HWSpinCPUForReadbacks);
  	SettingsWrapBitBoolEx(GPUPaletteConversion, "paltex");
  	SettingsWrapBitBoolEx(AutoFlushSW, "autoflush_sw");
@@ -1513,7 +1513,7 @@ index 8aa768e5a..432372890 100644
  	SettingsWrapIntEnumEx(PGSSuperSampling, "pgsSuperSampling");
  	SettingsWrapBitBoolEx(PGSHighResScanout, "pgsHighResScanout");
  	SettingsWrapBitBoolEx(PGSSuperSampleTextures, "pgsSuperSampleTextures");
-@@ -995,6 +1011,22 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
+@@ -996,6 +1012,22 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
  	SettingsWrapBitBoolEx(PGSDisableReadbackSync, "pgsDisableReadbackSync");
  	SettingsWrapBitBoolEx(PGSSharpBackbuffer, "pgsSharpBackbuffer");
  	SettingsWrapBitBoolEx(PGSBlendDemotion, "pgsBlendDemotion");
