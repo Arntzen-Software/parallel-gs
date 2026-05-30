@@ -126,6 +126,7 @@ enum class FlushReason
 	TextureHazard,
 	CopyHazard,
 	SubmissionFlush,
+	PressureFlush,
 	HostAccess
 };
 
@@ -204,6 +205,12 @@ public:
 	bool page_has_fb_write(const PageRect &rect) const;
 	bool page_is_copy_cached_sensitive(const PageRect &rect) const;
 
+	// Called by renderer to notify that we need to flush for memory pressure reasons.
+	void mark_memory_pressure();
+
+	// This may flush everything. Should be called after each call that may allocate resources.
+	void flush_if_memory_pressure();
+
 private:
 	GSInterface &cb;
 	Util::ObjectPool<CachedTexture> cached_texture_pool;
@@ -246,5 +253,7 @@ private:
 	void register_accessed_copy_pages(uint32_t page);
 	void register_accessed_fb_pages(uint32_t page);
 	void register_accessed_cache_pages(uint32_t page);
+
+	bool memory_pressure = false;
 };
 }

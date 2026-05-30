@@ -885,15 +885,7 @@ void GSRenderer::check_flush_stats()
 		LOGI("  %u copy threads\n", stats.num_copy_threads);
 		LOGI("  %u copy barriers\n", stats.num_copy_barriers);
 #endif
-		// Flush the work that is considered pending right now.
-		// Render passes always commit their work to a command buffer right away.
-		flush_transfer();
-		// If we flush submissions now, we will never know if a future primitive depends on a texture,
-		// so have to upload the full thing. We have already committed to using indirect dispatch.
-		ensure_conservative_indirect_texture_uploads();
-		flush_cache_upload();
-		// Calls next_frame_context and does garbage collection.
-		flush_submit(0);
+		tracker.mark_memory_pressure();
 	}
 	else if (pending_copies.size() >= MaxPendingCopiesWithoutFlush || stats.num_copy_threads >= MaxPendingCopyThreads)
 	{
@@ -1133,9 +1125,7 @@ void GSRenderer::flush_submit(uint64_t value)
 
 	if (clear_cmd)
 	{
-		clear_cmd->barrier(VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_COPY_BIT |
-		                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-		                   VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		clear_cmd->barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
 		                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
 		                   VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
@@ -1426,11 +1416,6 @@ void GSRenderer::allocate_upload_indirection(TextureAnalysis &analysis, TextureU
 
 	analysis.base = u16vec2(upload.desc.rect.x, upload.desc.rect.y);
 	analysis.size_minus_1 = uvec2(upload.desc.rect.width - 1, upload.desc.rect.height - 1);
-
-	pending_indirect_uploads.push_back({ upload.indirection.indirect, upload.indirection.indirect_offset,
-	                                     { uint16_t(horiz_blocks),
-	                                       uint16_t(vert_blocks),
-	                                       uint16_t(upload.image->get_create_info().layers) }});
 }
 
 void GSRenderer::commit_cached_texture(uint32_t tex_info_index, bool sampler_feedback)
@@ -1446,39 +1431,6 @@ void GSRenderer::commit_cached_texture(uint32_t tex_info_index, bool sampler_fee
 
 	// Delay any flushing since we may want to modify the texture upload based on the page tracker later.
 	check_flush_stats();
-}
-
-void GSRenderer::ensure_conservative_indirect_texture_uploads()
-{
-	if (pending_indirect_uploads.empty())
-		return;
-
-	if (!qword_clears.empty())
-	{
-		flush_qword_clears();
-		// Ensure that update_buffer_inline is ordered after the qword clears.
-		clear_cmd->barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-		                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-	}
-
-	ensure_clear_cmd();
-
-	// Ensure that any previously recorded command will indirect dispatch with the normal direct dispatch sizes.
-	clear_cmd->begin_region("ensure-conservative-indirect-upload");
-	for (auto &upload : pending_indirect_uploads)
-	{
-		uvec3 fallback = uvec3(upload.fallback_dispatch);
-		clear_cmd->update_buffer_inline(*upload.indirect, upload.indirect_offset,
-		                                sizeof(fallback), &fallback);
-	}
-
-	clear_cmd->end_region();
-	pending_indirect_uploads.clear();
-
-	// For any pending work we've yet to record, disable the indirection.
-	texture_analysis.clear();
-	for (auto &upload : texture_uploads)
-		upload.indirection = {};
 }
 
 void GSRenderer::promote_cached_texture_upload_cpu(const PageRect &rect)
@@ -3167,9 +3119,6 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 	if (rp.num_primitives == 0)
 		return;
 	assert(rp.num_primitives <= MaxPrimitivesPerFlush);
-
-	// We didn't end up flushing indirect texture uploads before flushing the full render pass, so we're safe.
-	pending_indirect_uploads.clear();
 
 #ifdef PARALLEL_GS_DEBUG
 	sanitize_state_indices(buffers.prim, rp);

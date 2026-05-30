@@ -962,6 +962,20 @@ uint64_t PageTracker::mark_submission_timeline(FlushReason reason)
 	return timeline;
 }
 
+void PageTracker::mark_memory_pressure()
+{
+	memory_pressure = true;
+}
+
+void PageTracker::flush_if_memory_pressure()
+{
+	if (memory_pressure)
+	{
+		memory_pressure = false;
+		flush_render_pass(FlushReason::PressureFlush);
+	}
+}
+
 void CachedTextureDeleter::operator()(CachedTexture *texture)
 {
 	texture->pool.free(texture);

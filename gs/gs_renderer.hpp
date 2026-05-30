@@ -396,14 +396,6 @@ private:
 	std::vector<TextureUpload> texture_uploads;
 	std::vector<TextureAnalysis> texture_analysis;
 
-	struct PendingIndirectTextureUpload
-	{
-		Vulkan::BufferHandle indirect;
-		VkDeviceSize indirect_offset;
-		u16vec3 fallback_dispatch;
-	};
-	std::vector<PendingIndirectTextureUpload> pending_indirect_uploads;
-
 	struct
 	{
 		Vulkan::BufferHandle clut;
@@ -583,7 +575,6 @@ private:
 	void set_hierarchical_binning_subgroup_config(Vulkan::CommandBuffer &cmd, uint32_t hier_factor) const;
 
 	void allocate_upload_indirection(TextureAnalysis &analysis, TextureUpload &upload);
-	void ensure_conservative_indirect_texture_uploads();
 
 	void flush_qword_clears();
 	void ensure_clear_cmd();

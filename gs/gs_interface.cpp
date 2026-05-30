@@ -410,6 +410,15 @@ void GSInterface::flush(PageTrackerFlushFlags flags, FlushReason reason)
 		if (!block_buffer.empty())
 			renderer.flush_readback(block_buffer.data(), block_buffer.size());
 	}
+
+	// For pressure flushes, we need to ensure GPU is kicked.
+	if (reason == FlushReason::PressureFlush)
+	{
+		uint64_t value = tracker.mark_submission_timeline();
+		renderer.flush_submit(value);
+		if (debug_mode.deterministic_timeline_query)
+			renderer.wait_timeline(value);
+	}
 }
 
 void GSInterface::sync_host_vram_page(uint32_t page_index, uint32_t block_mask)
@@ -790,6 +799,7 @@ void GSInterface::handle_clut_upload(uint32_t ctx_index)
 void GSInterface::handle_tex0_write(uint32_t ctx_index)
 {
 	handle_clut_upload(ctx_index);
+	tracker.flush_if_memory_pressure();
 }
 
 void GSInterface::handle_miptbl_gen(uint32_t ctx_index)
@@ -2928,6 +2938,8 @@ void GSInterface::post_draw_kick_handler()
 		flush_pending_transfer(true);
 		tracker.flush_render_pass(FlushReason::Overflow);
 	}
+
+	tracker.flush_if_memory_pressure();
 }
 
 void GSInterface::reset_vertex_queue()
