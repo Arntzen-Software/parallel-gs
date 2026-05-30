@@ -157,13 +157,18 @@ void main_inner(uint index)
     // Need hardware tests to determine exactly how the rules go.
     if (line)
     {
-        if (b.x > a.x)
+		// Only shift for Bresenham if we hit tie-break rules.
+		// Otherwise we're introducing interpolation errors for no reason.
+		bvec2 snapped_a = equal(a & (PGS_SUBPIXELS - 1), ivec2(0));
+		bvec2 snapped_b = equal(b & (PGS_SUBPIXELS - 1), ivec2(0));
+
+        if ((snapped_a.x || snapped_b.x) && b.x > a.x)
         {
             a.x += 1;
             b.x += 1;
         }
 
-        if (b.y > a.y)
+        if ((snapped_a.y || snapped_b.y) && b.y > a.y)
         {
             a.y += 1;
             b.y += 1;
@@ -236,8 +241,8 @@ void main_inner(uint index)
 			// Needs more testing.
 			if (!multisample)
 			{
-				a.x += 1;
-				b.x += 1;
+				a.y += 1;
+				b.y += 1;
 			}
 
             c.x = a.x;
@@ -255,8 +260,8 @@ void main_inner(uint index)
 			// According to TJnotJT: half pixel points round up.
 			if (!multisample)
 			{
-				a.y += 1;
-				b.y += 1;
+				a.x += 1;
+				b.x += 1;
 			}
             c.y = a.y;
         }
