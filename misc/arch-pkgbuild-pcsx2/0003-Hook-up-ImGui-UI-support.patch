@@ -1,4 +1,4 @@
-From b41d994f5fb19f20a8c8fbd93519485bee2ebde5 Mon Sep 17 00:00:00 2001
+From 26cb1779b3a2135ac1b4fa397f6dbf21540e4a8c Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Fri, 29 May 2026 21:23:20 +0200
 Subject: [PATCH 3/3] Hook up ImGui UI support.
@@ -162,7 +162,7 @@ index e7585c6fb..e98602f17 100644
  	if (g_gs_device)
  		g_gs_device->SetVSyncMode(mode, allow_present_throttle);
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
-index 0261f68a4..f088f5c0f 100644
+index 5a9f22e93..6ab9800ce 100644
 --- a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.cpp
 @@ -3,6 +3,7 @@
@@ -224,7 +224,7 @@ index 0261f68a4..f088f5c0f 100644
  {
  	// Always force the reload, since the other backends may clobber the volk pointers.
  	if (!Context::init_loader(nullptr, true))
-@@ -224,11 +228,22 @@ bool GSRendererPGS::Init()
+@@ -222,11 +226,22 @@ bool GSRendererPGS::Init()
  	// We will cycle through many memory contexts per frame most likely.
  	wsi.get_device().init_frame_contexts(12);
  
@@ -247,7 +247,7 @@ index 0261f68a4..f088f5c0f 100644
  
  	GSOptions opts = {};
  	opts.vram_size = GSLocalMemory::m_vmsize;
-@@ -316,7 +331,7 @@ void GSRendererPGS::UpdateConfig()
+@@ -314,7 +329,7 @@ void GSRendererPGS::UpdateConfig()
  	if (meta.maxContentLightLevel >= 10000.0f)
  		meta.maxContentLightLevel = 0.0f;
  
@@ -256,7 +256,7 @@ index 0261f68a4..f088f5c0f 100644
  	{
  		// NV workaround. It is out of spec and does not sanitize HDR metadata.
  		meta.maxLuminance = meta.maxContentLightLevel;
-@@ -328,7 +343,7 @@ void GSRendererPGS::UpdateConfig()
+@@ -326,7 +341,7 @@ void GSRendererPGS::UpdateConfig()
  		}
  	}
  
@@ -265,7 +265,7 @@ index 0261f68a4..f088f5c0f 100644
  }
  
  int GSRendererPGS::GetSaveStateSize(int version)
-@@ -575,74 +590,85 @@ enum PGSGamma
+@@ -573,74 +588,85 @@ enum PGSGamma
  	PGS_GAMMA_28,
  };
  
@@ -397,7 +397,7 @@ index 0261f68a4..f088f5c0f 100644
  		return;
  	}
  
-@@ -765,10 +791,10 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
+@@ -774,10 +800,10 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
  
  	for (uint32_t frame_index = 0; frame_index < frame_multiplier; frame_index++)
  	{
@@ -411,7 +411,7 @@ index 0261f68a4..f088f5c0f 100644
  			return;
  
  		uint32_t output_width = wsi.get_device().get_swapchain_view().get_view_width();
-@@ -879,6 +905,8 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
+@@ -888,6 +914,8 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
  
  		auto cmd = dev.request_command_buffer();
  
@@ -420,7 +420,7 @@ index 0261f68a4..f088f5c0f 100644
  		if (frame_index == 0 && vsync.image && GSConfig.PGSTVEmulation != PGS_TV_EMULATION_NONE && priv->smode1.LC == SMODE1Bits::LC_ANALOG)
  		{
  			AnalogVideoFilter::FilterOptions filter_options = {};
-@@ -1019,18 +1047,20 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
+@@ -1028,18 +1056,20 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
  					vp_offset_x, vp_offset_y, vp_width, vp_height);
  			}
  		}
@@ -446,7 +446,7 @@ index 0261f68a4..f088f5c0f 100644
  }
  
  void GSRendererPGS::Transfer(const u8* mem, u32 size)
-@@ -1054,10 +1084,8 @@ void GSRendererPGS::GetInternalResolution(int *width, int *height)
+@@ -1063,10 +1093,8 @@ void GSRendererPGS::GetInternalResolution(int *width, int *height)
  	*height = int(last_internal_height);
  }
  
@@ -458,7 +458,7 @@ index 0261f68a4..f088f5c0f 100644
  	std::optional<WindowInfo> window = Host::AcquireRenderWindow(true);
  	if (window.has_value())
  	{
-@@ -1069,7 +1097,13 @@ bool GSRendererPGS::UpdateWindow()
+@@ -1078,7 +1106,13 @@ bool GSRendererPGS::UpdateWindow()
  		return false;
  }
  
@@ -473,7 +473,7 @@ index 0261f68a4..f088f5c0f 100644
  {
  	resize = true;
  	window_info.surface_width = width;
-@@ -1077,12 +1111,12 @@ void GSRendererPGS::ResizeWindow(int width, int height, float /*scale*/)
+@@ -1086,12 +1120,12 @@ void GSRendererPGS::ResizeWindow(int width, int height, float /*scale*/)
  	// TODO: No idea what to do about scale.
  }
  
@@ -488,7 +488,7 @@ index 0261f68a4..f088f5c0f 100644
  {
  	if (mode == GSVSyncMode::FIFO)
  		wsi.set_present_mode(PresentMode::SyncToVBlank);
-@@ -1093,7 +1127,7 @@ void GSRendererPGS::SetVSyncMode(GSVSyncMode mode, bool /*allow_present_throttle
+@@ -1102,7 +1136,7 @@ void GSRendererPGS::SetVSyncMode(GSVSyncMode mode, bool /*allow_present_throttle
  	// Unknown what allow_present_throttle means.
  }
  
@@ -497,7 +497,7 @@ index 0261f68a4..f088f5c0f 100644
  {
  	if (window_info.type == WindowInfo::Type::Surfaceless)
  	{
-@@ -1141,12 +1175,12 @@ VkSurfaceKHR GSRendererPGS::create_surface(VkInstance instance, VkPhysicalDevice
+@@ -1150,12 +1184,12 @@ VkSurfaceKHR GSRendererPGS::create_surface(VkInstance instance, VkPhysicalDevice
  	return VK_NULL_HANDLE;
  }
  
@@ -512,7 +512,7 @@ index 0261f68a4..f088f5c0f 100644
  {
  	return {
  		VK_KHR_SURFACE_EXTENSION_NAME,
-@@ -1162,37 +1196,37 @@ std::vector<const char *> GSRendererPGS::get_instance_extensions()
+@@ -1171,37 +1205,37 @@ std::vector<const char *> GSRendererPGS::get_instance_extensions()
  	};
  }
  
@@ -557,7 +557,7 @@ index 0261f68a4..f088f5c0f 100644
  {
  	WSIPlatform::event_swapchain_destroyed();
  	has_wsi_begin_frame = false;
-@@ -1229,9 +1263,183 @@ void GSRendererPGS::QueueSnapshot(const std::string &path, u32 gsdump_frames)
+@@ -1238,9 +1272,183 @@ void GSRendererPGS::QueueSnapshot(const std::string &path, u32 gsdump_frames)
  	delete[] fd.data;
  }
  
@@ -1087,5 +1087,5 @@ index b5650ca3b..30c95260f 100644
  		sc.texture.reset();
  		return;
 -- 
-2.54.0
+2.49.0
 
