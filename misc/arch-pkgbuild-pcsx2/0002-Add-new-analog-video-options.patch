@@ -1,4 +1,4 @@
-From 76b3e66034224c9268df712bcbac48406b08ec4e Mon Sep 17 00:00:00 2001
+From bfe4af89bb3155863ba2975f579aae2ab40902f4 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sat, 2 May 2026 15:34:15 +0200
 Subject: [PATCH 2/3] Add new analog video options.
@@ -1546,5 +1546,5 @@ index 840d51782..2c71a2626 100644
  	SettingsWrapBitBoolEx(Mipmap, "mipmap");
  	SettingsWrapBitBoolEx(ManualUserHacks, "UserHacks");
 -- 
-2.49.0
+2.54.0
 

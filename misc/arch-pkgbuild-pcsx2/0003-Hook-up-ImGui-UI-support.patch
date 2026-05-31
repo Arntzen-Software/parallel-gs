@@ -1,4 +1,4 @@
-From 26cb1779b3a2135ac1b4fa397f6dbf21540e4a8c Mon Sep 17 00:00:00 2001
+From aa50eda6ed5955e0402f9261bd510859d49b29cb Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Fri, 29 May 2026 21:23:20 +0200
 Subject: [PATCH 3/3] Hook up ImGui UI support.
@@ -1087,5 +1087,5 @@ index b5650ca3b..30c95260f 100644
  		sc.texture.reset();
  		return;
 -- 
-2.49.0
+2.54.0
 

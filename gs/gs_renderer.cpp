@@ -917,6 +917,7 @@ void GSRenderer::flush_attribute_scratch(AttributeScratch &scratch)
 			async_transfer_cmd->begin_region("AsyncTransfer");
 
 		async_transfer_cmd->begin_region("AttributeFlush");
+		async_transfer_cmd->checkpoint("attrib-copy");
 		async_transfer_cmd->copy_buffer(*scratch.gpu_buffer, scratch.flushed_to,
 		                                *scratch.buffer, scratch.flushed_to,
 		                                scratch.offset - scratch.flushed_to);
@@ -1071,6 +1072,8 @@ void GSRenderer::flush_qword_clears()
 	clear_cmd->push_constants(&count, 0, sizeof(count));
 
 	uint32_t wgx = (count + 63) / 64;
+
+	clear_cmd->checkpoint("qword-clears");
 
 	if (wgx <= device->get_gpu_properties().limits.maxComputeWorkGroupCount[0])
 	{
@@ -1964,6 +1967,7 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 	Vulkan::QueryPoolHandle start_ts, end_ts;
 	if (enable_timestamps)
 		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	cmd.checkpoint("triangle-setup");
 	cmd.dispatch((rp.num_primitives + 63) / 64, 1, 1);
 	if (enable_timestamps)
 	{
@@ -2128,6 +2132,7 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 
 	uint32_t tiles_x = align_coarse_tiles(inst.coarse_tiles_width, hier_binning) / hier_binning;
 	uint32_t tiles_y = align_coarse_tiles(inst.coarse_tiles_height, hier_binning) / hier_binning;
+	cmd.checkpoint("binning");
 	cmd.dispatch(tiles_x, tiles_y, 1);
 
 	if (enable_timestamps)
@@ -2754,6 +2759,7 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd,
 	const auto push_work = [&](uint32_t group_x, uint32_t group_y, uint32_t transfer_id) {
 		if (num_wgs == MaxWorkgroups)
 		{
+			cmd.checkpoint("copy-vram");
 			cmd.dispatch(num_wgs, 1, 1);
 			max_wgs -= num_wgs;
 			work_items = cmd.allocate_typed_constant_data<uvec4>(1, 0, std::min<uint32_t>(MaxWorkgroups, max_wgs));
@@ -2814,7 +2820,10 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd,
 	}
 
 	if (num_wgs)
+	{
+		cmd.checkpoint("copy-vram");
 		cmd.dispatch(num_wgs, 1, 1);
+	}
 }
 
 void GSRenderer::copy_vram(const CopyDescriptor &desc, const PageRect &damage_rect)
@@ -3442,7 +3451,7 @@ void GSRenderer::dispatch_texture_analysis(Vulkan::CommandBuffer &cmd, const Ren
 		uint32_t ssaa_sample_offset;
 	} push = { rp.num_primitives, uint32_t(texture_analysis.size()), ssaa_sample_offset };
 	cmd.push_constants(&push, 0, sizeof(push));
-
+	cmd.checkpoint("texture-analysis");
 	cmd.dispatch((rp.num_primitives + 255) / 256, 1, 1);
 }
 
@@ -3558,6 +3567,8 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 
 		cmd.set_storage_texture_level(0, 1, img.get_view(), level);
 		cmd.push_constants(&info, 0, sizeof(info));
+
+		cmd.checkpoint("upload-texture");
 
 		if (upload.indirection.buffer)
 			cmd.dispatch_indirect(*upload.indirection.indirect, upload.indirection.indirect_offset);
@@ -3757,6 +3768,8 @@ void GSRenderer::flush_palette_upload()
 				cmd.push_constants(&push, 0, sizeof(push));
 				if (device->consumes_debug_markers())
 					insert_label(cmd, "Split [%u, %u)", push.wg_offset, push.wg_offset + push.count);
+
+				cmd.checkpoint("flush-palette-upload");
 				cmd.dispatch(1, 1, 1);
 
 				if (out_of_order_read)
@@ -3787,6 +3800,7 @@ void GSRenderer::flush_palette_upload()
 	cmd.push_constants(&push, 0, sizeof(push));
 	if (device->consumes_debug_markers())
 		insert_label(cmd, "Split [%u, %u)", push.wg_offset, push.wg_offset + push.count);
+	cmd.checkpoint("flush-palette-upload");
 	cmd.dispatch(1, 1, 1);
 
 	if (enable_timestamps)
@@ -4091,6 +4105,7 @@ void GSRenderer::sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::I
 	push.phase_stride = rect.phase_stride;
 	cmd.push_constants(&push, 0, sizeof(push));
 
+	cmd.checkpoint("sample-crtc");
 	cmd.draw(3);
 
 	cmd.end_render_pass();
@@ -4807,6 +4822,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 			cmd.set_viewport(vp);
 
+			cmd.checkpoint("blit-circuit");
 			cmd.draw(3);
 		}
 	}
@@ -4863,6 +4879,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 					VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ZERO);
 			}
 
+			cmd.checkpoint("blit-circuit");
 			cmd.draw(3);
 		}
 	}
@@ -4957,6 +4974,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 			// Is the write-back filtered at all? Probably not, but whatever.
 			cmd.set_texture(0, 1, *view, Vulkan::StockSampler::NearestClamp);
+			cmd.checkpoint("ext-feedback");
 			cmd.dispatch((push.resolution.x + 7) / 8, (push.resolution.y + 7) / 8, 1);
 			cmd.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 			            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -5051,6 +5069,7 @@ Vulkan::ImageHandle GSRenderer::fastmad_deinterlace(Vulkan::CommandBuffer &cmd, 
 	for (int i = 0; i < 4; i++)
 		cmd.set_texture(0, i, vsync_last_fields[i]->get_view());
 
+	cmd.checkpoint("fastmad");
 	cmd.draw(3);
 	cmd.end_render_pass();
 
