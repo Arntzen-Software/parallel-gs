@@ -4428,11 +4428,22 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	}
 	else if (priv.smode1.CMOD == SMODE1Bits::CMOD_PROGRESSIVE && priv.smode1.LC == SMODE1Bits::LC_VGA)
 	{
-		mode_width = 640;
-		mode_height = 480;
-		// Matches the known content that uses VGA.
-		scan_offset_x = 138;
-		scan_offset_y = 34;
+		if (overscan)
+		{
+			mode_width = 714;
+			mode_height = 520;
+			scan_offset_x = 101;
+			scan_offset_y = 14;
+		}
+		else
+		{
+			mode_width = 640;
+			mode_height = 480;
+			// Matches the known content that uses VGA.
+			scan_offset_x = 138;
+			scan_offset_y = 34;
+		}
+
 		insert_label(cmd, "VGA 640x480");
 		clock_divider = SMODE1Bits::CLOCK_DIVIDER_COMPONENT;
 	}
