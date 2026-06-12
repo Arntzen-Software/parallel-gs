@@ -4284,6 +4284,26 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		if (priv.smode1.CMOD == SMODE1Bits::CMOD_PROGRESSIVE)
 			insert_label(cmd, "Progressive scan", info.phase);
 	}
+	else if (priv.smode1.CMOD == SMODE1Bits::CMOD_PROGRESSIVE && priv.smode1.LC == SMODE1Bits::LC_VESA_640x480)
+	{
+		if (overscan)
+		{
+			mode_width = 714;
+			mode_height = 520;
+			scan_offset_x = 101;
+			scan_offset_y = 14;
+		}
+		else
+		{
+			mode_width = 640;
+			mode_height = 480;
+			scan_offset_x = 138;
+			scan_offset_y = 34;
+		}
+
+		clock_divider = SMODE1Bits::CLOCK_DIVIDER_COMPONENT;
+		insert_label(cmd, "VESA 640x480p");
+	}
 	else if (priv.smode1.CMOD == SMODE1Bits::CMOD_PAL && priv.smode1.LC == SMODE1Bits::LC_ANALOG)
 	{
 		// TODO: Does PAL output support progressive scan? I seem to recall PAL PS2s would output NTSC progressive
