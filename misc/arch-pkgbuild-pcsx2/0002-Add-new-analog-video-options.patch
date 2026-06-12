@@ -1072,6 +1072,9 @@ index c6885cb56..5a9f22e93 100644
 +	{
 +		// Are these values 100% accurate?
 +		float fps = priv->smode1.LC == SMODE1Bits::LC_ANALOG && priv->smode1.CMOD == SMODE1Bits::CMOD_PAL ? 50.0f : 59.94f;
++		// VGA uses a 59.94 Hz VESA output mode.
++		if (priv->smode1.LC == SMODE1Bits::LC_VESA_640x480)
++			fps = 59.94f;
 +		uint64_t target_period_ns = 1000000000ull / fps;
 +		bool force_vrr = false;
  
