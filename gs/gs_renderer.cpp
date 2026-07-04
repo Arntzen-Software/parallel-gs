@@ -4348,6 +4348,16 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		field_aware_rendering = false;
 		super_samples = 1;
 	}
+	else if (priv.smode1.CMOD == SMODE1Bits::CMOD_PROGRESSIVE && priv.smode1.LC == SMODE1Bits::LC_VGA)
+	{
+		mode_width = 640;
+		mode_height = 480;
+		// Matches the known content that uses VGA.
+		scan_offset_x = 138;
+		scan_offset_y = 34;
+		insert_label(cmd, "VGA 640x480");
+		clock_divider = SMODE1Bits::CLOCK_DIVIDER_COMPONENT;
+	}
 	else
 	{
 		LOGW("Unknown video format.\n");
