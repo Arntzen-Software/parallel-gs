@@ -709,8 +709,17 @@ struct SMODE1Bits
 	FIELD32(VHP, 1);
 	PAD32(27);
 	enum { CMOD_PROGRESSIVE = 0, CMOD_NTSC = 2, CMOD_PAL = 3 };
-	enum { LC_ANALOG = 32, LC_HDTV = 22, LC_VGA = 15 /* Uncertain */ };
-	enum {
+
+	enum
+	{
+		LC_ANALOG = 32,
+		LC_HDTV = 22,
+		LC_VGA = 15, // uncertain
+		LC_UNKNOWN_29 = 29 // no idea ... some weird-ass dump relies on it
+	};
+
+	enum
+	{
 		CLOCK_DIVIDER_COMPOSITE = 4,
 		CLOCK_DIVIDER_COMPONENT = 2 /* Seems to be the case based on progressive scan games. */,
 		CLOCK_DIVIDER_HDTV = 1

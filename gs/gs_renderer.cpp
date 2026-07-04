@@ -4358,6 +4358,16 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		insert_label(cmd, "VGA 640x480");
 		clock_divider = SMODE1Bits::CLOCK_DIVIDER_COMPONENT;
 	}
+	else if (priv.smode1.LC == SMODE1Bits::LC_UNKNOWN_29)
+	{
+		// A random dump used this and I have no idea ...
+		mode_width = 640;
+		mode_height = 480;
+		scan_offset_x = 318;
+		scan_offset_y = 50;
+		insert_label(cmd, "Weird undocumented 640x480");
+		clock_divider = SMODE1Bits::CLOCK_DIVIDER_COMPOSITE;
+	}
 	else
 	{
 		LOGW("Unknown video format.\n");
