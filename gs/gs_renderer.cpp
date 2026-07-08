@@ -357,6 +357,11 @@ void GSRenderer::set_field_aware_super_sampling(bool enable)
 	field_aware_super_sampling = enable;
 }
 
+void GSRenderer::set_super_sampled_quads(bool enable)
+{
+	super_sampled_quads = enable;
+}
+
 void GSRenderer::init_vram(const GSOptions &options)
 {
 	Vulkan::BufferCreateInfo info = {};
@@ -1957,12 +1962,13 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 	cmd.push_constants(&push, 0, sizeof(push));
 
 	cmd.set_program(shaders.triangle_setup);
-	cmd.set_specialization_constant_mask(0xf);
+	cmd.set_specialization_constant_mask(0x1f);
 	cmd.set_specialization_constant(0, sampling_rate_x_log2);
 	cmd.set_specialization_constant(1, sampling_rate_y_log2);
 	cmd.set_specialization_constant(2, bound_texture_has_array);
 
 	cmd.set_specialization_constant(3, bound_texture_has_array && allow_field_render);
+	cmd.set_specialization_constant(4, uint32_t(super_sampled_quads));
 
 	Vulkan::QueryPoolHandle start_ts, end_ts;
 	if (enable_timestamps)
