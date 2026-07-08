@@ -35,6 +35,7 @@ layout(constant_id = 0) const int SAMPLING_RATE_X_LOG2 = 0;
 layout(constant_id = 1) const int SAMPLING_RATE_Y_LOG2 = 0;
 layout(constant_id = 2) const bool SUPER_SAMPLED_TEXTURES = false;
 layout(constant_id = 3) const bool FORCE_LINEAR_SUPER_SAMPLE = false;
+layout(constant_id = 4) const bool super_sampled_quads = false;
 
 layout(push_constant) uniform Registers
 {
@@ -830,6 +831,17 @@ void main_inner(uint index)
             should_interpolate_per_sample = distqf.z != 0.0 || djstqf.z != 0.0;
         if (!should_interpolate_per_sample)
             should_interpolate_per_sample = za != zb || zb != zc;
+
+        // When super_sampled_quads is enabled, interpolate 2D quads per supersample
+        // instead of snapping to the native grid, so upscaled UI elements from higher
+        // resolution textures don't lose detail.
+        if (!should_interpolate_per_sample && super_sampled_quads && !line)
+        {
+            bool tme = (state_vectors.data[state_get_index(state_word)].combiner & COMBINER_TME_BIT) != 0;
+            bool is_per_sample = (primitive_attr.data[index].tex & TEX_PER_SAMPLE_BIT) != 0;
+            if (tme && is_per_sample)
+                should_interpolate_per_sample = true;
+        }
 
         if (!should_interpolate_per_sample)
         {

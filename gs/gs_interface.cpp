@@ -53,7 +53,8 @@ bool GSInterface::init(Vulkan::Device *device, const GSOptions &options)
 
 	set_super_sampling_rate(options.super_sampling,
 	                        options.ordered_super_sampling,
-	                        options.super_sampled_textures);
+	                        options.super_sampled_textures,
+	                        options.super_sampled_quads);
 
 	renderer.reserve_primitive_buffers(MaxPrimitivesPerFlush);
 	render_pass.positions = renderer.get_reserved_vertex_positions();
@@ -63,9 +64,12 @@ bool GSInterface::init(Vulkan::Device *device, const GSOptions &options)
 }
 
 void GSInterface::set_super_sampling_rate(SuperSampling super_sampling,
-                                          bool ordered_grid, bool super_sampled_textures_)
+                                          bool ordered_grid, bool super_sampled_textures_,
+                                          bool super_sampled_quads_)
 {
 	super_sampled_textures = super_sampled_textures_;
+	super_sampled_quads = super_sampled_quads_;
+	renderer.set_super_sampled_quads(super_sampled_quads_);
 	super_sampling = SuperSampling(std::min<uint32_t>(
 			uint32_t(super_sampling), uint32_t(renderer.get_max_supported_super_sampling())));
 
@@ -2687,8 +2691,15 @@ void GSInterface::drawing_kick_append()
 	{
 		prim_attr.state |= 1u << STATE_BIT_PARALLELOGRAM;
 		prim_attr.state |= 1u << STATE_BIT_SPRITE;
-		prim_attr.state |= 1u << STATE_BIT_SNAP_RASTER;
-		prim_attr.state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
+
+		// Force supersampling for textured quads when super_sampled_quad is enabled.
+		bool is_per_sample = prim_attr.tex & TEX_PER_SAMPLE_BIT;
+		bool super_sample_this_sprite = super_sampled_quads && prim.desc.TME && !is_per_sample;
+		if (!super_sample_this_sprite)
+		{
+			prim_attr.state |= 1u << STATE_BIT_SNAP_RASTER;
+			prim_attr.state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
+		}
 		prim_attr.state &= ~(1u << STATE_BIT_MULTISAMPLE);
 	}
 	else if (is_line)

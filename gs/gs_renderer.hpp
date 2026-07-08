@@ -322,6 +322,8 @@ public:
 
 	void set_field_aware_super_sampling(bool enable);
 
+	void set_super_sampled_quads(bool enable);
+
 private:
 	PageTracker &tracker;
 	Vulkan::Device *device = nullptr;
@@ -344,6 +346,7 @@ private:
 
 	bool last_clut_update_is_read = false;
 	bool field_aware_super_sampling = false;
+	bool super_sampled_quads = false;
 
 	std::vector<VkImageMemoryBarrier2> pre_image_barriers;
 	std::vector<VkImageMemoryBarrier2> post_image_barriers;
