@@ -378,11 +378,12 @@ private:
 		} indirection;
 	};
 
-	struct TextureAnalysis
+	struct alignas(16) TextureAnalysis
 	{
-		VkDeviceAddress indirect_dispatch_va;
-		VkDeviceAddress indirect_workgroups_va;
-		VkDeviceAddress indirect_bitmask_va;
+		uint32_t indirect_dispatch_offset;
+		uint32_t indirect_workgroups_offset;
+		uint32_t indirect_bitmask_offset;
+		uint32_t reserved;
 		uvec2 size_minus_1;
 		u16vec2 base;
 		uint16_t block_stride;
@@ -390,7 +391,7 @@ private:
 		uint32_t flags;
 		enum { ENABLED_BIT = 1 << 0 };
 	};
-	static_assert(sizeof(TextureAnalysis) % 16 == 0, "Unaligned TextureAnalysis");
+	static_assert(sizeof(TextureAnalysis) == 48, "Unexpected TextureAnalysis layout.");
 	static_assert(sizeof(TextureAnalysis) * MaxTextures <= Vulkan::VULKAN_MAX_UBO_SIZE, "Too large analysis struct.");
 
 	std::vector<TextureUpload> texture_uploads;
@@ -405,6 +406,7 @@ private:
 		Vulkan::BufferHandle vram_copy_payloads;
 
 		Scratch device_scratch, rebar_scratch;
+		Vulkan::BufferHandle texture_analysis_scratch;
 
 		VkDeviceSize ssbo_alignment = 0;
 
@@ -574,7 +576,7 @@ private:
 	uint32_t get_target_hierarchical_binning(uint32_t num_primitives, uint32_t coarse_tiles_width, uint32_t coarse_tiles_height) const;
 	void set_hierarchical_binning_subgroup_config(Vulkan::CommandBuffer &cmd, uint32_t hier_factor) const;
 
-	void allocate_upload_indirection(TextureAnalysis &analysis, TextureUpload &upload);
+	bool allocate_upload_indirection(TextureAnalysis &analysis, TextureUpload &upload);
 
 	void flush_qword_clears();
 	void ensure_clear_cmd();
