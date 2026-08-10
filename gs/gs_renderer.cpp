@@ -868,6 +868,9 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 
 void GSRenderer::check_flush_stats()
 {
+	if (pending_copies.size() >= MaxPendingCopiesWithoutFlush || stats.num_copy_threads >= MaxPendingCopyThreads)
+		flush_transfer();
+
 	// Make sure that we flush as soon as there is a reasonable amount of work in flight.
 	// We also want to keep memory usage under control. We have to garbage collect memory.
 
@@ -891,11 +894,6 @@ void GSRenderer::check_flush_stats()
 		LOGI("  %u copy barriers\n", stats.num_copy_barriers);
 #endif
 		tracker.mark_memory_pressure();
-	}
-	else if (pending_copies.size() >= MaxPendingCopiesWithoutFlush || stats.num_copy_threads >= MaxPendingCopyThreads)
-	{
-		// Deal with soft limits. We have to flush since our algorithms need it, not because of pressure.
-		flush_transfer();
 	}
 }
 
