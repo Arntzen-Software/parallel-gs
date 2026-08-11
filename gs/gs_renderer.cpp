@@ -1388,40 +1388,79 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 	return img;
 }
 
-void GSRenderer::allocate_upload_indirection(TextureAnalysis &analysis, TextureUpload &upload)
+bool GSRenderer::allocate_upload_indirection(TextureAnalysis &analysis, TextureUpload &upload)
 {
 	uint32_t horiz_blocks = (upload.desc.rect.width + 7) / 8;
 	uint32_t vert_blocks = (upload.desc.rect.height + 7) / 8;
-	uint32_t num_blocks = horiz_blocks * vert_blocks;
-	uint32_t qword_blocks = (num_blocks + 127) / 128;
+	uint32_t layers = upload.image->get_create_info().layers;
+	if (upload.desc.rect.width == 0 || upload.desc.rect.height == 0 ||
+	    upload.desc.rect.x > UINT16_MAX || upload.desc.rect.y > UINT16_MAX ||
+	    horiz_blocks > UINT16_MAX || layers > UINT16_MAX)
+	{
+		return false;
+	}
+
+	VkDeviceSize num_blocks = VkDeviceSize(horiz_blocks) * vert_blocks;
+	VkDeviceSize qword_blocks = (num_blocks + 127) / 128;
+	VkDeviceSize bitmask_size = qword_blocks * sizeof(uvec4);
+	VkDeviceSize workgroups_size = sizeof(uvec4) + num_blocks * sizeof(uvec2);
+	VkDeviceSize bitmask_relative_offset = sizeof(uvec4);
+	VkDeviceSize workgroups_relative_offset = bitmask_relative_offset + bitmask_size;
+	VkDeviceSize allocation_size = workgroups_relative_offset + workgroups_size;
+
+	auto &scratch = buffers.device_scratch;
+	// All analysis entries share one descriptor, so they cannot span scratch-buffer allocations.
+	if (!texture_analysis.empty() && scratch.buffer != buffers.texture_analysis_scratch)
+		return false;
+
+	VkDeviceSize aligned_offset = align_offset(scratch.offset, buffers.ssbo_alignment);
+	bool fits_existing_buffer = scratch.buffer && aligned_offset <= scratch.size &&
+	                            allocation_size <= scratch.size - aligned_offset;
+	bool would_reallocate = !fits_existing_buffer;
+	// Falling back to a full texture upload is always safe.
+	if (would_reallocate && !texture_analysis.empty())
+		return false;
+
+	constexpr VkDeviceSize MaxAddressableScratchSize = VkDeviceSize(UINT32_MAX) * sizeof(uint32_t);
+	VkDeviceSize expected_allocation_offset = would_reallocate ? 0 : aligned_offset;
+	if (expected_allocation_offset > MaxAddressableScratchSize ||
+	    allocation_size > MaxAddressableScratchSize - expected_allocation_offset)
+		return false;
+
+	VkDeviceSize allocation_offset = allocate_device_scratch(allocation_size, scratch, nullptr);
+	if (texture_analysis.empty())
+		buffers.texture_analysis_scratch = scratch.buffer;
+	else
+		VK_ASSERT(scratch.buffer == buffers.texture_analysis_scratch);
+
+	VkDeviceSize indirect_dispatch_offset = allocation_offset;
+	VkDeviceSize bitmask_offset = allocation_offset + bitmask_relative_offset;
+	VkDeviceSize workgroups_offset = allocation_offset + workgroups_relative_offset;
 
 	analysis = {};
 	analysis.flags = TextureAnalysis::ENABLED_BIT;
-	analysis.block_stride = horiz_blocks;
-	analysis.layers = upload.image->get_create_info().layers;
+	analysis.block_stride = uint16_t(horiz_blocks);
+	analysis.layers = uint16_t(layers);
+	analysis.indirect_dispatch_offset = uint32_t(indirect_dispatch_offset / sizeof(uint32_t));
+	analysis.indirect_bitmask_offset = uint32_t(bitmask_offset / sizeof(uint32_t));
+	analysis.indirect_workgroups_offset = uint32_t(workgroups_offset / sizeof(uint32_t));
 
-	VkDeviceSize indirect_workgroups_offset = allocate_device_scratch(sizeof(uvec4), buffers.device_scratch, nullptr);
-	analysis.indirect_dispatch_va = buffers.device_scratch.buffer->get_device_address() + indirect_workgroups_offset;
-	upload.indirection.indirect = buffers.device_scratch.buffer;
-	upload.indirection.indirect_offset = indirect_workgroups_offset;
-	qword_clears.push_back(analysis.indirect_dispatch_va);
-
-	VkDeviceSize bit_block_offset = allocate_device_scratch(qword_blocks * sizeof(uvec4), buffers.device_scratch, nullptr);
-	analysis.indirect_bitmask_va = buffers.device_scratch.buffer->get_device_address() + bit_block_offset;
-
-	for (uint32_t i = 0; i < qword_blocks; i++)
-		qword_clears.push_back(analysis.indirect_bitmask_va + sizeof(uvec4) * i);
-
-	VkDeviceSize workgroups_offset = allocate_device_scratch(
-			sizeof(uvec4) + num_blocks * sizeof(uvec2), buffers.device_scratch, nullptr);
-	analysis.indirect_workgroups_va = buffers.device_scratch.buffer->get_device_address() + workgroups_offset;
-	upload.indirection.buffer = buffers.device_scratch.buffer;
+	upload.indirection.indirect = scratch.buffer;
+	upload.indirection.indirect_offset = indirect_dispatch_offset;
+	upload.indirection.buffer = scratch.buffer;
 	upload.indirection.offset = workgroups_offset;
-	upload.indirection.size = sizeof(uvec4) + num_blocks * sizeof(uvec2);
-	qword_clears.push_back(analysis.indirect_workgroups_va);
+	upload.indirection.size = workgroups_size;
+
+	VkDeviceAddress scratch_address = scratch.buffer->get_device_address();
+	qword_clears.push_back(scratch_address + indirect_dispatch_offset);
+
+	for (VkDeviceSize i = 0; i < qword_blocks; i++)
+		qword_clears.push_back(scratch_address + bitmask_offset + sizeof(uvec4) * i);
+	qword_clears.push_back(scratch_address + workgroups_offset);
 
 	analysis.base = u16vec2(upload.desc.rect.x, upload.desc.rect.y);
 	analysis.size_minus_1 = uvec2(upload.desc.rect.width - 1, upload.desc.rect.height - 1);
+	return true;
 }
 
 void GSRenderer::commit_cached_texture(uint32_t tex_info_index, bool sampler_feedback)
@@ -1431,8 +1470,12 @@ void GSRenderer::commit_cached_texture(uint32_t tex_info_index, bool sampler_fee
 
 	if (sampler_feedback)
 	{
-		texture_analysis.resize(std::max<size_t>(texture_analysis.size(), tex_info_index + 1));
-		allocate_upload_indirection(texture_analysis[tex_info_index], texture_uploads.back());
+		TextureAnalysis analysis;
+		if (allocate_upload_indirection(analysis, texture_uploads.back()))
+		{
+			texture_analysis.resize(std::max<size_t>(texture_analysis.size(), tex_info_index + 1));
+			texture_analysis[tex_info_index] = analysis;
+		}
 	}
 
 	// Delay any flushing since we may want to modify the texture upload based on the page tracker later.
@@ -3425,6 +3468,7 @@ uint32_t GSRenderer::update_palette_cache(const PaletteUploadDescriptor &desc)
 void GSRenderer::dispatch_texture_analysis(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
 {
 	cmd.set_program(shaders.sampler_feedback);
+	cmd.set_storage_buffer(1, 1, *buffers.texture_analysis_scratch);
 	memcpy(cmd.allocate_typed_constant_data<TextureAnalysis>(1, 0, texture_analysis.size()),
 	       texture_analysis.data(),
 	       texture_analysis.size() * sizeof(TextureAnalysis));

@@ -3,7 +3,6 @@
 // SPDX-FileContributor: Hans-Kristian Arntzen
 // SPDX-License-Identifier: LGPL-3.0+
 
-#extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
 #extension GL_EXT_spirv_intrinsics : require
 
@@ -22,29 +21,14 @@
 
 layout(local_size_x = 256) in;
 
-layout(buffer_reference, buffer_reference_align = 16, std430) buffer IndirectDispatch
-{
-    uint dispatch[3];
-};
-
-layout(buffer_reference, buffer_reference_align = 16, std430) buffer WorkGroupBuffer
-{
-    uint valid;
-    layout(offset = 16) uvec2 workgroup_indices[];
-};
-
-layout(buffer_reference, buffer_reference_align = 16, std430) buffer BitMaskBuffer
-{
-    uint data[];
-};
-
 const uint ENABLED_BIT = 1 << 0;
 
 struct TextureAnalysis
 {
-    IndirectDispatch indirect_dispatch_va;
-    WorkGroupBuffer indirect_workgroups_va;
-    BitMaskBuffer indirect_bitmask_va;
+    uint indirect_dispatch_offset;
+    uint indirect_workgroups_offset;
+    uint indirect_bitmask_offset;
+    uint reserved;
     uvec2 size_minus_1;
     u16vec2 base;
     uint16_t block_stride;
@@ -57,6 +41,12 @@ layout(set = 1, binding = 0, std140) uniform AnalysisBuffer
     TextureAnalysis data[1024];
 } texture_analysis;
 
+layout(set = 1, binding = 1, std430) buffer ScratchBuffer
+{
+    // Descriptor-relative offsets avoid driver issues with atomics through buffer references.
+    uint data[];
+} scratch;
+
 layout(push_constant) uniform Registers
 {
     uint num_primitives;
@@ -64,25 +54,27 @@ layout(push_constant) uniform Registers
     int super_sample_offset;
 } registers;
 
-void allocate_block(IndirectDispatch dispatch_va, WorkGroupBuffer workgroup_va, BitMaskBuffer bitmask_va,
+void allocate_block(uint dispatch_offset, uint workgroup_offset, uint bitmask_offset,
                     uvec2 block, uint stride, uint layers)
 {
     uint linear_block = block.x + block.y * stride;
 
     uint mask = 1u << (linear_block & 31u);
-    uint old_mask = atomicOr(bitmask_va.data[linear_block / 32], mask);
+    uint old_mask = atomicOr(scratch.data[bitmask_offset + linear_block / 32u], mask);
 
     if ((mask & old_mask) == 0u)
     {
-        uint old_value = atomicExchange(workgroup_va.valid, 1u);
+        uint old_value = atomicExchange(scratch.data[workgroup_offset], 1u);
         if (old_value == 0u)
         {
-            dispatch_va.dispatch[1] = 1;
-            dispatch_va.dispatch[2] = layers;
+            scratch.data[dispatch_offset + 1u] = 1u;
+            scratch.data[dispatch_offset + 2u] = layers;
         }
 
-        uint index = atomicAdd(dispatch_va.dispatch[0], 1u);
-        workgroup_va.workgroup_indices[index] = block;
+        uint index = atomicAdd(scratch.data[dispatch_offset], 1u);
+        uint workgroup_index = workgroup_offset + 4u + 2u * index;
+        scratch.data[workgroup_index + 0u] = block.x;
+        scratch.data[workgroup_index + 1u] = block.y;
     }
 }
 
@@ -260,7 +252,8 @@ void main()
                     if (all(lessThanEqual(block, max_block)))
                     {
                         allocate_block(
-                            analysis.indirect_dispatch_va, analysis.indirect_workgroups_va, analysis.indirect_bitmask_va,
+                            analysis.indirect_dispatch_offset, analysis.indirect_workgroups_offset,
+                            analysis.indirect_bitmask_offset,
                             block, analysis.block_stride, analysis.layers);
                     }
                 }
@@ -300,7 +293,8 @@ void main()
                 // Don't try to allocate blocks outside the range we're interested in.
                 // We will get false aliasing that way.
                 allocate_block(
-                    analysis.indirect_dispatch_va, analysis.indirect_workgroups_va, analysis.indirect_bitmask_va,
+                    analysis.indirect_dispatch_offset, analysis.indirect_workgroups_offset,
+                    analysis.indirect_bitmask_offset,
                     block, analysis.block_stride, analysis.layers);
             }
         }
