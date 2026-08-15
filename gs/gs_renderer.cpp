@@ -456,6 +456,13 @@ bool GSRenderer::can_potentially_super_sample() const
 
 void GSRenderer::kick_compilation_tasks()
 {
+	const char *env = getenv("PGS_SKIP_COMPILATION_TASKS");
+	if (env && strcmp(env, "1") == 0)
+	{
+		LOGI("Skipping precompilation of shaders. May stutter way more.\n");
+		return;
+	}
+
 	// Pre-prime all potential shader variants early.
 	std::vector<Vulkan::DeferredPipelineCompile> tasks;
 	compilation_tasks_active = true;
