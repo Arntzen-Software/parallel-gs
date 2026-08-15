@@ -92,19 +92,39 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			draw_mode = DebugMode::DrawDebugMode((uint32_t(draw_mode) + 1) % uint32_t(DebugMode::DrawDebugMode::Count));
 		}
 		else if (e.get_key() == Key::H)
+		{
 			high_res_scanout = !high_res_scanout;
+			LOGI("Setting high res scanout to %u\n", high_res_scanout);
+		}
 		else if (e.get_key() == Key::_1 && iface)
+		{
 			iface->set_super_sampling_rate(SuperSampling::X1, true, false);
+			LOGI("Setting 1x sampling.\n");
+		}
 		else if (e.get_key() == Key::_2 && iface)
+		{
 			iface->set_super_sampling_rate(SuperSampling::X2, true, high_res_scanout);
+			LOGI("Setting 2x sampling (high_res_scanout %u).\n", high_res_scanout);
+		}
 		else if (e.get_key() == Key::_3 && iface)
+		{
 			iface->set_super_sampling_rate(SuperSampling::X4, true, high_res_scanout);
+			LOGI("Setting 4x sampling (high_res_scanout %u).\n", high_res_scanout);
+		}
 		else if (e.get_key() == Key::_4 && iface)
+		{
 			iface->set_super_sampling_rate(SuperSampling::X8, true, high_res_scanout);
+			LOGI("Setting 8x sampling (high_res_scanout %u).\n", high_res_scanout);
+		}
 		else if (e.get_key() == Key::_5 && iface)
+		{
 			iface->set_super_sampling_rate(SuperSampling::X16, true, high_res_scanout);
+			LOGI("Setting 16x sampling (high_res_scanout %u).\n", high_res_scanout);
+		}
 		else if (e.get_key() == Key::M)
+		{
 			get_wsi().set_present_mode(get_wsi().get_present_mode() == PresentMode::SyncToVBlank ? PresentMode::UnlockedMaybeTear : PresentMode::SyncToVBlank);
+		}
 
 		return true;
 	}
