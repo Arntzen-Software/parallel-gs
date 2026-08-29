@@ -1,3 +1,4 @@
 [submodule "Granite"]
 	path = Granite
 	url = https://github.com/Themaister/Granite
+	branch = master
