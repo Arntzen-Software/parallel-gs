@@ -55,6 +55,7 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 	uint32_t capture_count = 0;
 	DebugMode::DrawDebugMode draw_mode = DebugMode::DrawDebugMode::None;
 	bool high_res_scanout = false;
+	bool loop_enable = false;
 
 	enum { NumCaptureFrames = 4 };
 
@@ -90,6 +91,10 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		else if (e.get_key() == Key::D)
 		{
 			draw_mode = DebugMode::DrawDebugMode((uint32_t(draw_mode) + 1) % uint32_t(DebugMode::DrawDebugMode::Count));
+		}
+		else if (e.get_key() == Key::L)
+		{
+			loop_enable = !loop_enable;
 		}
 		else if (e.get_key() == Key::H)
 		{
@@ -252,6 +257,12 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 			}
 			else
 				is_eof = true;
+		}
+
+		if (is_eof && loop_enable)
+		{
+			vsync_index = 0;
+			is_eof = !parser.restart();
 		}
 
 		auto cmd = device.request_command_buffer();
