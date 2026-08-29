@@ -3477,6 +3477,12 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 		cmd.set_storage_buffer(0, 0, *buffers.gpu);
 	cmd.set_storage_buffer(0, BINDING_CLUT, *buffers.clut);
 
+	if (upload.desc.samples > 1 && scratch.buffer)
+	{
+		LOGE("CPU scratch upload with super-sampling should never happen ...\n");
+		return;
+	}
+
 	if (upload.indirection.buffer)
 		cmd.set_storage_buffer(0, 2, *upload.indirection.buffer, upload.indirection.offset, upload.indirection.size);
 	else

@@ -1715,11 +1715,15 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 				else
 					state_tracker.last_cpu_compatible_cache_TBP0 = UINT32_MAX;
 
-				if (tracker.register_cached_texture(state_tracker.tex.page_rects, desc.rect.levels,
-				                                    csa_mask, render_pass.clut_instance,
-				                                    hasher.get(), image) == PageTracker::UploadStrategy::CPU)
+				// CPU upload is not possible if we hit SSAA texture path.
+				if (desc.samples == 1)
 				{
-					renderer.promote_cached_texture_upload_cpu(state_tracker.tex.page_rects[0]);
+					if (tracker.register_cached_texture(state_tracker.tex.page_rects, desc.rect.levels,
+														csa_mask, render_pass.clut_instance,
+														hasher.get(), image) == PageTracker::UploadStrategy::CPU)
+					{
+						renderer.promote_cached_texture_upload_cpu(state_tracker.tex.page_rects[0]);
+					}
 				}
 			}
 			else
