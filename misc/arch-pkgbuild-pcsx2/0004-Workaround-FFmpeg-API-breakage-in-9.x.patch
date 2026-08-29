@@ -1,0 +1,74 @@
+From 4214b53f594b754a6fe23ba93d80bba0895a6f66 Mon Sep 17 00:00:00 2001
+From: Hans-Kristian Arntzen <post@arntzen-software.no>
+Date: Sat, 29 Aug 2026 13:19:59 +0200
+Subject: [PATCH 4/4] Workaround FFmpeg API breakage in 9.x.
+
+I don't use these features, so just remove the offending code until
+upstream fixes it properly.
+---
+ pcsx2/GS/GSCapture.cpp | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/pcsx2/GS/GSCapture.cpp b/pcsx2/GS/GSCapture.cpp
+index 827a4a75b..50b51012f 100644
+--- a/pcsx2/GS/GSCapture.cpp
++++ b/pcsx2/GS/GSCapture.cpp
+@@ -454,6 +454,8 @@ bool GSCapture::BeginCapture(float fps, GSVector2i recommendedResolution, float
+ 		// Default to NV12 if not overridden by the user
+ 		const AVPixelFormat preferred_sw_pix_fmt = GSConfig.VideoCaptureFormat.empty() ? AV_PIX_FMT_NV12 : static_cast<AVPixelFormat>(std::stoi(GSConfig.VideoCaptureFormat));
+ 		AVPixelFormat sw_pix_fmt = preferred_sw_pix_fmt;
++
++#if 0
+ 		if (vcodec->pix_fmts)
+ 		{
+ 			sw_pix_fmt = vcodec->pix_fmts[0];
+@@ -466,6 +468,7 @@ bool GSCapture::BeginCapture(float fps, GSVector2i recommendedResolution, float
+ 				}
+ 			}
+ 		}
++#endif
+ 
+ 		if (sw_pix_fmt == AV_PIX_FMT_VAAPI)
+ 			sw_pix_fmt = AV_PIX_FMT_NV12;
+@@ -685,6 +688,8 @@ bool GSCapture::BeginCapture(float fps, GSVector2i recommendedResolution, float
+ 		wrap_av_channel_layout_default(&s_audio_codec_context->ch_layout, AUDIO_CHANNELS);
+ #endif
+ 
++		bool supports_format = true;
++#if 0
+ 		bool supports_format = false;
+ 		for (const AVSampleFormat* p = acodec->sample_fmts; *p != AV_SAMPLE_FMT_NONE; p++)
+ 		{
+@@ -694,10 +699,12 @@ bool GSCapture::BeginCapture(float fps, GSVector2i recommendedResolution, float
+ 				break;
+ 			}
+ 		}
++#endif
++
+ 		if (!supports_format)
+ 		{
+ 			Console.WriteLn(fmt::format("Audio codec '{}' does not support float samples, using default.", acodec->name));
+-			s_audio_codec_context->sample_fmt = acodec->sample_fmts[0];
++			//s_audio_codec_context->sample_fmt = acodec->sample_fmts[0];
+ 			s_swr_context = wrap_swr_alloc();
+ 			if (!s_swr_context)
+ 			{
+@@ -1532,6 +1539,7 @@ GSCapture::FormatList GSCapture::GetVideoFormatList(const char* codec)
+ 		return ret;
+ 	}
+ 
++#if 0
+ 	// rawvideo doesn't have a list of formats.
+ 	if (v_codec->pix_fmts == nullptr)
+ 	{
+@@ -1543,6 +1551,7 @@ GSCapture::FormatList GSCapture::GetVideoFormatList(const char* codec)
+ 	{
+ 		ret.emplace_back(v_codec->pix_fmts[i], wrap_av_get_pix_fmt_name(v_codec->pix_fmts[i]));
+ 	}
++#endif
+ 
+ 	return ret;
+ }
+-- 
+2.55.0
+

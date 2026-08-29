@@ -1,7 +1,7 @@
-From aa50eda6ed5955e0402f9261bd510859d49b29cb Mon Sep 17 00:00:00 2001
+From f7754e6d7e35a151810dbb45a0473dbea1d63898 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Fri, 29 May 2026 21:23:20 +0200
-Subject: [PATCH 3/3] Hook up ImGui UI support.
+Subject: [PATCH 3/4] Hook up ImGui UI support.
 
 ---
  pcsx2/GS/GS.cpp                               |  61 ++-
@@ -13,7 +13,7 @@ Subject: [PATCH 3/3] Hook up ImGui UI support.
  6 files changed, 496 insertions(+), 130 deletions(-)
 
 diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
-index e7585c6fb..e98602f17 100644
+index bd356d926..69e5a38e9 100644
 --- a/pcsx2/GS/GS.cpp
 +++ b/pcsx2/GS/GS.cpp
 @@ -3,6 +3,7 @@
@@ -51,7 +51,7 @@ index e7585c6fb..e98602f17 100644
  #endif
  
  		default:
-@@ -199,11 +218,14 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool
+@@ -202,11 +221,14 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool
  
  static void CloseGSDevice(bool clear_state)
  {
@@ -70,7 +70,7 @@ index e7585c6fb..e98602f17 100644
  	g_gs_device.reset();
  }
  
-@@ -237,9 +259,9 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
+@@ -240,9 +262,9 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
  		g_gs_renderer = std::make_unique<GSRendererNull>();
  	}
  #ifdef HAVE_PARALLEL_GS
@@ -82,7 +82,7 @@ index e7585c6fb..e98602f17 100644
  		if (!g_pgs_renderer->Init())
  		{
  			g_pgs_renderer.reset();
-@@ -624,7 +646,7 @@ void GSvsync(u32 field, bool registers_written)
+@@ -627,7 +649,7 @@ void GSvsync(u32 field, bool registers_written)
  
  #ifdef HAVE_PARALLEL_GS
  	if (g_pgs_renderer)
@@ -91,7 +91,7 @@ index e7585c6fb..e98602f17 100644
  #endif
  
  	// Do not move the flush into the VSync() method. It's here because EE transfers
-@@ -709,6 +731,10 @@ void GSEndCapture()
+@@ -712,6 +734,10 @@ void GSEndCapture()
  
  void GSPresentCurrentFrame()
  {
@@ -102,7 +102,7 @@ index e7585c6fb..e98602f17 100644
  	if (g_gs_renderer)
  		g_gs_renderer->PresentCurrentFrame();
  }
-@@ -739,8 +765,8 @@ void GSGameChanged()
+@@ -742,8 +768,8 @@ void GSGameChanged()
  bool GSHasDisplayWindow()
  {
  #ifdef HAVE_PARALLEL_GS
@@ -113,7 +113,7 @@ index e7585c6fb..e98602f17 100644
  #else
  	pxAssert(g_gs_device);
  #endif
-@@ -754,23 +780,19 @@ bool GSHasDisplayWindow()
+@@ -757,23 +783,19 @@ bool GSHasDisplayWindow()
  void GSResizeDisplayWindow(u32 width, u32 height, float scale)
  {
  #ifdef HAVE_PARALLEL_GS
@@ -140,7 +140,7 @@ index e7585c6fb..e98602f17 100644
  #endif
  
  	if (g_gs_device && !g_gs_device->UpdateWindow())
-@@ -779,8 +801,7 @@ void GSUpdateDisplayWindow()
+@@ -782,8 +804,7 @@ void GSUpdateDisplayWindow()
  		return;
  	}
  
@@ -150,7 +150,7 @@ index e7585c6fb..e98602f17 100644
  }
  
  void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
-@@ -793,8 +814,8 @@ void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
+@@ -796,8 +817,8 @@ void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
  	Console.WriteLnFmt(Color_StrongCyan, "Setting vsync mode: {}{}", modes[static_cast<size_t>(mode)],
  		allow_present_throttle ? " (throttle allowed)" : "");
  #ifdef HAVE_PARALLEL_GS
@@ -743,7 +743,7 @@ index 5a9f22e93..6ab9800ce 100644
 +	return new GSTexturePGS(wsi.get_device().create_image(info, &initial_data));
 +}
 diff --git a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
-index 8fba63757..159adc66c 100644
+index 8fba63757..4a4ec19b5 100644
 --- a/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
 +++ b/pcsx2/GS/Renderers/parallel-gs/GSRendererPGS.h
 @@ -13,22 +13,99 @@
@@ -782,8 +782,8 @@ index 8fba63757..159adc66c 100644
 +		m_size.x = img->get_width();
 +		m_size.y = img->get_height();
 +		m_mipmap_levels = 1;
-+		m_type = Type::Texture;
 +		m_format = Format::Color;
++		m_usage = Usage::Texture;
 +	}
  
 +private:
@@ -907,10 +907,10 @@ index 8fba63757..159adc66c 100644
 +	void render_ui_end();
  };
 diff --git a/pcsx2/GameDatabase.cpp b/pcsx2/GameDatabase.cpp
-index deafcb4de..ec49b775a 100644
+index 0ad9a91c3..6d04913e8 100644
 --- a/pcsx2/GameDatabase.cpp
 +++ b/pcsx2/GameDatabase.cpp
-@@ -701,7 +701,7 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
+@@ -703,7 +703,7 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
  
  	// Only apply GS HW fixes if the user hasn't manually enabled HW fixes.
  	const bool apply_auto_fixes = !config.ManualUserHacks;
@@ -920,7 +920,7 @@ index deafcb4de..ec49b775a 100644
  		Console.Warning("GameDB: Manual GS hardware renderer fixes are enabled, not using automatic hardware renderer fixes from GameDB.");
  
 diff --git a/pcsx2/ImGui/ImGuiFullscreen.cpp b/pcsx2/ImGui/ImGuiFullscreen.cpp
-index 93d62b5d7..ffc7a6dde 100644
+index ca5f33cfa..1f288e43e 100644
 --- a/pcsx2/ImGui/ImGuiFullscreen.cpp
 +++ b/pcsx2/ImGui/ImGuiFullscreen.cpp
 @@ -1,6 +1,11 @@
@@ -967,7 +967,7 @@ index 93d62b5d7..ffc7a6dde 100644
  		Console.Error("Failed to upload %ux%u texture for resource", image.GetWidth(), image.GetHeight());
  		g_gs_device->Recycle(texture);
 diff --git a/pcsx2/ImGui/ImGuiManager.cpp b/pcsx2/ImGui/ImGuiManager.cpp
-index b5650ca3b..30c95260f 100644
+index 6bf97103c..85fe119dd 100644
 --- a/pcsx2/ImGui/ImGuiManager.cpp
 +++ b/pcsx2/ImGui/ImGuiManager.cpp
 @@ -1,6 +1,12 @@
@@ -983,7 +983,7 @@ index b5650ca3b..30c95260f 100644
  #include "GS/Renderers/Common/GSDevice.h"
  #include "Config.h"
  #include "Counters.h"
-@@ -137,7 +143,15 @@ bool ImGuiManager::Initialize()
+@@ -153,7 +159,15 @@ bool ImGuiManager::Initialize()
  		return false;
  	}
  
@@ -1000,7 +1000,7 @@ index b5650ca3b..30c95260f 100644
  	s_scale_changed = false;
  
  	ImGuiContext& g = *ImGui::CreateContext();
-@@ -152,8 +166,18 @@ bool ImGuiManager::Initialize()
+@@ -183,8 +197,18 @@ bool ImGuiManager::Initialize()
  	g.ConfigNavWindowingKeyPrev = ImGuiKey_None;
  	g.ConfigNavWindowingWithGamepad = false;
  
@@ -1021,7 +1021,7 @@ index b5650ca3b..30c95260f 100644
  	io.DisplayFramebufferScale = ImVec2(1, 1); // We already scale things ourselves, this would double-apply scaling
  	io.DisplaySize = ImVec2(s_window_width, s_window_height);
  
-@@ -202,7 +226,12 @@ void ImGuiManager::Shutdown(bool clear_state)
+@@ -233,7 +257,12 @@ void ImGuiManager::Shutdown(bool clear_state)
  	if (clear_state)
  		s_fullscreen_ui_was_initialized = false;
  
@@ -1035,7 +1035,7 @@ index b5650ca3b..30c95260f 100644
  
  	if (ImGui::GetCurrentContext())
  		ImGui::DestroyContext();
-@@ -227,8 +256,20 @@ float ImGuiManager::GetWindowHeight()
+@@ -258,8 +287,20 @@ float ImGuiManager::GetWindowHeight()
  
  void ImGuiManager::WindowResized()
  {
@@ -1058,7 +1058,7 @@ index b5650ca3b..30c95260f 100644
  
  	s_window_width = static_cast<float>(new_width);
  	s_window_height = static_cast<float>(new_height);
-@@ -268,7 +309,15 @@ void ImGuiManager::ReloadFonts()
+@@ -302,7 +343,15 @@ void ImGuiManager::ReloadFonts()
  
  void ImGuiManager::UpdateScale()
  {
@@ -1075,7 +1075,7 @@ index b5650ca3b..30c95260f 100644
  	const float scale = std::max(window_scale * (EmuConfig.GS.OsdScale / 100.0f), 0.5f);
  
  	if ((!ImGuiFullscreen::UpdateLayoutScale()) && scale == s_global_scale)
-@@ -1218,7 +1267,9 @@ void ImGuiManager::DestroySoftwareCursorTextures()
+@@ -1385,7 +1434,9 @@ void ImGuiManager::DestroySoftwareCursorTextures()
  void ImGuiManager::UpdateSoftwareCursorTexture(u32 index)
  {
  	SoftwareCursor& sc = s_software_cursors[index];
@@ -1087,5 +1087,5 @@ index b5650ca3b..30c95260f 100644
  		sc.texture.reset();
  		return;
 -- 
-2.54.0
+2.55.0
 
