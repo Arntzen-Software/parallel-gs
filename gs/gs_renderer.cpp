@@ -1401,8 +1401,8 @@ void GSRenderer::allocate_upload_indirection(TextureAnalysis &analysis, TextureU
 
 	analysis = {};
 	analysis.flags = TextureAnalysis::ENABLED_BIT;
-	analysis.block_stride = horiz_blocks;
-	analysis.layers = upload.image->get_create_info().layers;
+	analysis.block_stride_layers = horiz_blocks;
+	analysis.block_stride_layers |= upload.image->get_create_info().layers << 16u;
 
 	VkDeviceSize indirect_workgroups_offset = allocate_device_scratch(sizeof(uvec4), buffers.device_scratch, nullptr);
 	analysis.indirect_dispatch_va = buffers.device_scratch.buffer->get_device_address() + indirect_workgroups_offset;
