@@ -1,4 +1,4 @@
-From 4214b53f594b754a6fe23ba93d80bba0895a6f66 Mon Sep 17 00:00:00 2001
+From 5fcafe9dc8edf4284d64ccca1ecf30690cb0edb2 Mon Sep 17 00:00:00 2001
 From: Hans-Kristian Arntzen <post@arntzen-software.no>
 Date: Sat, 29 Aug 2026 13:19:59 +0200
 Subject: [PATCH 4/4] Workaround FFmpeg API breakage in 9.x.
