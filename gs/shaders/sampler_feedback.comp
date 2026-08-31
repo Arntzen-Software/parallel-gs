@@ -31,10 +31,21 @@ struct TextureAnalysis
     uint reserved;
     uvec2 size_minus_1;
     u16vec2 base;
-    uint16_t block_stride;
-    uint16_t layers;
+    // HACK: Blackwell windows drivers optimizes the values in a way that cause unaligned reads later
+    // combined to a single uint to workaround
+    uint block_stride_layers;
     uint flags;
 };
+
+uint analysis_block_stride(TextureAnalysis analysis)
+{
+    return analysis.block_stride_layers & 0xffffu;
+}
+
+uint analysis_layers(TextureAnalysis analysis)
+{
+    return analysis.block_stride_layers >> 16u;
+}
 
 layout(set = 1, binding = 0, std140) uniform AnalysisBuffer
 {
@@ -254,7 +265,7 @@ void main()
                         allocate_block(
                             analysis.indirect_dispatch_offset, analysis.indirect_workgroups_offset,
                             analysis.indirect_bitmask_offset,
-                            block, analysis.block_stride, analysis.layers);
+                            block, analysis_block_stride(analysis), analysis_layers(analysis));
                     }
                 }
             }
@@ -295,7 +306,7 @@ void main()
                 allocate_block(
                     analysis.indirect_dispatch_offset, analysis.indirect_workgroups_offset,
                     analysis.indirect_bitmask_offset,
-                    block, analysis.block_stride, analysis.layers);
+                    block, analysis_block_stride(analysis), analysis_layers(analysis));
             }
         }
     }

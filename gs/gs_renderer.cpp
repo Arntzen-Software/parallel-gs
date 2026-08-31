@@ -1436,8 +1436,7 @@ bool GSRenderer::allocate_upload_indirection(TextureAnalysis &analysis, TextureU
 
 	analysis = {};
 	analysis.flags = TextureAnalysis::ENABLED_BIT;
-	analysis.block_stride = uint16_t(horiz_blocks);
-	analysis.layers = uint16_t(layers);
+	analysis.block_stride_layers = horiz_blocks | (layers << 16u);
 	analysis.indirect_dispatch_offset = uint32_t(indirect_dispatch_offset / sizeof(uint32_t));
 	analysis.indirect_bitmask_offset = uint32_t(bitmask_offset / sizeof(uint32_t));
 	analysis.indirect_workgroups_offset = uint32_t(workgroups_offset / sizeof(uint32_t));

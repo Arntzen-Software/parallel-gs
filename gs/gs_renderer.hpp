@@ -386,8 +386,7 @@ private:
 		uint32_t reserved;
 		uvec2 size_minus_1;
 		u16vec2 base;
-		uint16_t block_stride;
-		uint16_t layers;
+		uint32_t block_stride_layers;
 		uint32_t flags;
 		enum { ENABLED_BIT = 1 << 0 };
 	};
