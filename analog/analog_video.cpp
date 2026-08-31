@@ -143,6 +143,8 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 	if (horizontal_shift < 0)
 		return;
 
+	auto start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+
 	struct
 	{
 		int32_t input_offset;
@@ -375,6 +377,9 @@ void AnalogVideoFilter::run_filter(CommandBuffer &cmd, const ImageView &input,
 	cmd.image_barrier(*decode_target, VK_IMAGE_LAYOUT_GENERAL, filter_options.dst_layout,
 					  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 					  filter_options.dst_stage, filter_options.dst_access);
+
+	auto end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+	device->register_time_interval("GPU", std::move(start_ts), std::move(end_ts), "analog");
 }
 
 void AnalogVideoFilter::run_iir_pass(CommandBuffer &cmd, uint32_t lines)
@@ -659,9 +664,12 @@ bool CRTFilter::run_filter_encode(Vulkan::CommandBuffer &cmd, const FilterOption
 	cmd.set_texture(0, 0, input->get_view());
 	cmd.set_storage_buffer(0, 3, sinc_vert ? *horiz_sinc_lut : *vert_sinc_lut);
 
+	auto start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 	cmd.begin_region("sinc-output");
 	cmd.draw(3);
 	cmd.end_region();
+	auto end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+	cmd.get_device().register_time_interval("GPU", std::move(start_ts), std::move(end_ts), "crt-screen-blit");
 
 	cmd.restore_state(saved);
 
@@ -836,6 +844,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	push.scan_factor_wide = filter_options.scan_factor_wide;
 
 	cmd.begin_region("crt-scan");
+	auto start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 	{
 		rp.color_attachments[1] = &phosphor_layer_threshold->get_view();
 		rp.num_color_attachments = 2;
@@ -856,6 +865,8 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		rp.num_color_attachments = 1;
 		rp.store_attachments = 0x1;
 	}
+	auto end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+	cmd.get_device().register_time_interval("GPU", std::move(start_ts), std::move(end_ts), "crt-scan");
 	cmd.end_region();
 
 	cmd.begin_barrier_batch();
@@ -868,6 +879,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	cmd.end_barrier_batch();
 
 	cmd.begin_region("crt-bloom");
+	start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 	{
 		rp.color_attachments[0] = &bloomed_half->get_view();
 		cmd.begin_render_pass(rp);
@@ -880,6 +892,8 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		cmd.draw(3);
 		cmd.end_render_pass();
 	}
+	end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+	cmd.get_device().register_time_interval("GPU", std::move(start_ts), std::move(end_ts), "crt-bloom");
 	cmd.end_region();
 
 	cmd.begin_barrier_batch();
@@ -889,6 +903,7 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 	cmd.end_barrier_batch();
 
 	cmd.begin_region("crt-apply-bloom");
+	start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 	{
 		rp.color_attachments[0] = &composited->get_view();
 		cmd.begin_render_pass(rp);
@@ -901,6 +916,8 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		cmd.draw(3);
 		cmd.end_render_pass();
 	}
+	end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+	cmd.get_device().register_time_interval("GPU", std::move(start_ts), std::move(end_ts), "crt-apply-bloom");
 	cmd.end_region();
 
 	cmd.image_barrier(*composited, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
@@ -939,6 +956,8 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		// Allocate dummy data.
 		cmd.allocate_typed_constant_data<float>(0, 2, 1);
 
+		start_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+
 		rp.color_attachments[0] = &sinc_vert->get_view();
 		cmd.begin_render_pass(rp);
 		cmd.set_opaque_sprite_state();
@@ -948,6 +967,9 @@ bool CRTFilter::run_filter_prepass(Vulkan::CommandBuffer &cmd, const Vulkan::Ima
 		cmd.set_storage_buffer(0, 3, *vert_sinc_lut);
 		cmd.draw(3);
 		cmd.end_render_pass();
+
+		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+		cmd.get_device().register_time_interval("GPU", std::move(start_ts), std::move(end_ts), "crt-sinc-vert");
 
 		cmd.image_barrier(*sinc_vert, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
 			  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
