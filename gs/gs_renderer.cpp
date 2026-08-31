@@ -866,7 +866,12 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 	     static_cast<unsigned long long>(max_allocated_image_memory_per_flush / (1024 * 1024)));
 
 	if (device->get_system_handles().timeline_trace_file)
+	{
 		enable_timestamps = true;
+		// Want a readable trace. Garbage collect only on frame boundaries.
+		// May bloat memory in an unbounded way for massive frames, but that's okay for profiling.
+		device->init_frame_contexts(2);
+	}
 
 	return true;
 }
@@ -1204,7 +1209,11 @@ void GSRenderer::flush_submit(uint64_t value)
 
 	// This is a delayed sync-point between CPU and GPU, and garbage collection can happen here.
 	drain_compilation_tasks_nonblock();
-	device->next_frame_context();
+
+	// If we have a timeline trace, we'd like it to be somewhat readable.
+	// Only do garbage collection at frame boundaries.
+	if (!device->get_system_handles().timeline_trace_file)
+		device->next_frame_context();
 
 	log_timestamps();
 	check_bug_feedback();
