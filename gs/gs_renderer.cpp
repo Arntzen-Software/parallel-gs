@@ -1358,6 +1358,10 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 	if (!device)
 		return {};
 
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps)
+		start_ts = device->write_calibrated_timestamp();
+
 	assert(desc.rect.width && desc.rect.height);
 
 	Vulkan::ImageHandle img = pull_image_handle_from_slab(desc.rect.width, desc.rect.height, desc.rect.levels, desc.samples);
@@ -1420,6 +1424,12 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 
 	post_image_barriers.push_back(barrier);
 	texture_uploads.push_back({ img, desc });
+
+	if (enable_timestamps)
+	{
+		end_ts = device->write_calibrated_timestamp();
+		device->register_time_interval("CPU", std::move(start_ts), std::move(end_ts), "create-cached-texture");
+	}
 
 	return img;
 }
