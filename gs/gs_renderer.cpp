@@ -1046,10 +1046,20 @@ GSRenderer::~GSRenderer()
 
 void GSRenderer::wait_timeline(uint64_t value)
 {
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps && device)
+		start_ts = device->write_calibrated_timestamp();
+
 	std::unique_lock<std::mutex> holder{timeline_lock};
 	timeline_cond.wait(holder, [this, value]() {
 		return timeline_value.load(std::memory_order_relaxed) >= value;
 	});
+
+	if (enable_timestamps && device)
+	{
+		end_ts = device->write_calibrated_timestamp();
+		device->register_time_interval("CPU", std::move(start_ts), std::move(end_ts), "wait-timeline");
+	}
 }
 
 uint64_t GSRenderer::query_timeline(const Vulkan::SemaphoreHolder &sem) const
@@ -1102,6 +1112,10 @@ void GSRenderer::flush_submit(uint64_t value)
 {
 	if (!device)
 		return;
+
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps)
+		start_ts = device->write_calibrated_timestamp();
 
 	total_stats.allocated_scratch_memory += stats.allocated_scratch_memory;
 	total_stats.allocated_image_memory += stats.allocated_image_memory;
@@ -1194,6 +1208,12 @@ void GSRenderer::flush_submit(uint64_t value)
 
 	log_timestamps();
 	check_bug_feedback();
+
+	if (enable_timestamps)
+	{
+		end_ts = device->write_calibrated_timestamp();
+		device->register_time_interval("CPU", std::move(start_ts), std::move(end_ts), "flush-submit");
+	}
 }
 
 void GSRenderer::check_bug_feedback()
@@ -2933,6 +2953,11 @@ static inline void sanitize_state_indices(const PrimitiveAttribute *prims, const
 void GSRenderer::flush_rendering(const RenderPass &rp, uint32_t instance,
                                  uint32_t base_primitive, uint32_t num_primitives)
 {
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+
+	if (enable_timestamps)
+		start_ts = device->write_calibrated_timestamp();
+
 	auto &cmd = *direct_cmd;
 	bind_frame_resources_instanced(rp, instance, num_primitives);
 	allocate_scratch_buffers_instanced(cmd, rp, instance, num_primitives);
@@ -3012,6 +3037,12 @@ void GSRenderer::flush_rendering(const RenderPass &rp, uint32_t instance,
 	cmd.set_specialization_constant_mask(0);
 
 	stats.num_render_passes++;
+
+	if (enable_timestamps)
+	{
+		end_ts = device->write_calibrated_timestamp();
+		device->register_time_interval("CPU", std::move(start_ts), std::move(end_ts), "flush-rendering");
+	}
 }
 
 static bool page_rect_overlaps(const PageRect &a, const PageRect &b)
@@ -4221,6 +4252,10 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	ensure_command_buffer(direct_cmd, Vulkan::CommandBuffer::Type::Generic);
 	auto &cmd = *direct_cmd;
 
+	Vulkan::QueryPoolHandle cpu_start_ts;
+	if (enable_timestamps)
+		cpu_start_ts = device->write_calibrated_timestamp();
+
 	cmd.begin_region("vsync");
 
 	auto image_info = Vulkan::ImageCreateInfo::immutable_2d_image(1, 1, VK_FORMAT_R8G8B8A8_UNORM);
@@ -5076,6 +5111,13 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	result.double_strike = double_strike;
 
 	flush_submit(0);
+
+	if (enable_timestamps)
+	{
+		end_ts = device->write_calibrated_timestamp();
+		device->register_time_interval("CPU", std::move(cpu_start_ts), std::move(end_ts), "vsync");
+	}
+
 	return result;
 }
 
