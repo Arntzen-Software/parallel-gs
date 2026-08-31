@@ -222,6 +222,9 @@ struct StreamApplication : Granite::Application, Granite::EventHandler
 		auto &wsi = get_wsi();
 		auto &device = wsi.get_device();
 
+		if (device.get_system_handles().timeline_trace_file)
+			wsi.set_enable_timing_feedback(true);
+
 		if (capture_count == NumCaptureFrames && has_renderdoc_capture)
 		{
 			device.begin_renderdoc_capture();
