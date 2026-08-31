@@ -865,6 +865,9 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 	LOGI("Using max allocated image memory per flush of %llu MiB.\n",
 	     static_cast<unsigned long long>(max_allocated_image_memory_per_flush / (1024 * 1024)));
 
+	if (device->get_system_handles().timeline_trace_file)
+		enable_timestamps = true;
+
 	return true;
 }
 
@@ -1535,6 +1538,7 @@ void GSRenderer::flush_host_vram_copy(const uint32_t *block_indices, uint32_t nu
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_TRANSFER_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "sync-host-to-vram");
 		timestamps.push_back({ TimestampType::SyncHostToVRAM, std::move(start_ts), std::move(end_ts) });
 	}
 
@@ -1564,6 +1568,7 @@ void GSRenderer::flush_readback(const uint32_t *page_indices, uint32_t num_indic
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "readback");
 		timestamps.push_back({ TimestampType::Readback, std::move(start_ts), std::move(end_ts) });
 	}
 
@@ -1979,6 +1984,7 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "triangle-setup");
 		timestamps.push_back({ TimestampType::TriangleSetup, std::move(start_ts), std::move(end_ts) });
 	}
 }
@@ -2145,6 +2151,7 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "binning");
 		timestamps.push_back({ TimestampType::Binning, std::move(start_ts), std::move(end_ts) });
 	}
 	cmd.enable_subgroup_size_control(false);
@@ -3281,6 +3288,7 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 		if (enable_timestamps)
 		{
 			end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+			device->register_time_interval("GPU", start_ts, end_ts, "shading");
 			timestamps.push_back({TimestampType::Shading, std::move(start_ts), std::move(end_ts)});
 		}
 
@@ -3819,6 +3827,7 @@ void GSRenderer::flush_palette_upload()
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "palette-update");
 		timestamps.push_back({ TimestampType::PaletteUpdate, std::move(start_ts), std::move(end_ts) });
 	}
 
@@ -3858,6 +3867,7 @@ void GSRenderer::flush_cache_upload()
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "texture-upload");
 		timestamps.push_back({ TimestampType::TextureUpload, std::move(start_ts), std::move(end_ts) });
 	}
 	cmd.end_region();
@@ -4046,6 +4056,7 @@ void GSRenderer::flush_transfer()
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "copy-vram");
 		timestamps.push_back({ TimestampType::CopyVRAM, std::move(start_ts), std::move(end_ts) });
 	}
 
@@ -5055,6 +5066,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "vsync");
 		timestamps.push_back({ TimestampType::VSync, std::move(start_ts), std::move(end_ts) });
 	}
 
