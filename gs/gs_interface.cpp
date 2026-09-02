@@ -1454,10 +1454,12 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	uint32_t width = 1u << TW;
 	uint32_t height = 1u << TH;
 
+	auto page_height = get_data_structure(psm).page_height;
+
 	if (render_pass.is_potential_feedback &&
 	    width > uint32_t(desc.tex0.desc.TBW) * PGS_BUFFER_WIDTH_SCALE &&
 	    desc.tex0.desc.TBW != 0 &&
-	    height > get_data_structure(psm).page_height)
+	    height > page_height)
 	{
 		// Speculate that we can clamp the image region.
 		// This is mostly a performance workaround, especially when using SSAA textures.
@@ -1687,8 +1689,12 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 			uint32_t pixel_count = desc.rect.width * desc.rect.height;
 			const uint32_t pixel_threshold = tracker.texture_may_super_sample(state_tracker.tex.page_rects[0]) ?
 			                                 128 * 128 : 512 * 512;
+
+			// If width/height is larger than the stride, and the stride matters,
+			// it's a good sign that the texture is not really this large. Opt-in to sampler feedback.
 			if (desc.rect.levels == 1 &&
-			    (pixel_count > pixel_threshold || desc.rect.width >= 1024 || desc.rect.height >= 1024))
+			    (pixel_count > pixel_threshold || desc.rect.width >= 1024 || desc.rect.height >= 1024 ||
+			     (desc.rect.width > desc.tex0.desc.TBW * 64 && desc.rect.height > page_height)))
 			{
 				long_term_cache_texture = false;
 				render_pass.has_optimized_short_term_texture_caching = true;
