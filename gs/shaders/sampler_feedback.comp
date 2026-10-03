@@ -93,7 +93,7 @@ bool q_is_annoying(float q)
     return isnan(q);
 }
 
-bool compute_tex_index_and_damage_region(uint index, out uint tex_index, out ivec2 lo, out ivec2 hi, out TextureAnalysis analysis)
+bool compute_tex_index_and_damage_region(uint index, out uint tex_index, out ivec2 lo, out ivec2 hi)
 {
     if (index >= registers.num_primitives)
         return false;
@@ -112,7 +112,7 @@ bool compute_tex_index_and_damage_region(uint index, out uint tex_index, out ive
     if (tex_index >= registers.num_textures)
         return false;
 
-    analysis = texture_analysis.data[tex_index];
+    TextureAnalysis analysis = texture_analysis.data[tex_index];
     if ((analysis.flags & ENABLED_BIT) == 0)
         return false;
 
@@ -242,8 +242,9 @@ void main()
 
     uint index = gl_GlobalInvocationID.x;
 
-    if (compute_tex_index_and_damage_region(index, tex_index, lo, hi, analysis))
+    if (compute_tex_index_and_damage_region(index, tex_index, lo, hi))
     {
+        analysis = texture_analysis.data[tex_index];
         int num_blocks = (hi.x - lo.x + 1) * (hi.y - lo.y + 1);
         if (num_blocks >= 64)
         {
