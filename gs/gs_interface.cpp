@@ -53,7 +53,8 @@ bool GSInterface::init(Vulkan::Device *device, const GSOptions &options)
 
 	set_super_sampling_rate(options.super_sampling,
 	                        options.ordered_super_sampling,
-	                        options.super_sampled_textures);
+	                        options.super_sampled_textures,
+	                        options.super_sampled_quads);
 
 	renderer.reserve_primitive_buffers(MaxPrimitivesPerFlush);
 	render_pass.positions = renderer.get_reserved_vertex_positions();
@@ -63,9 +64,12 @@ bool GSInterface::init(Vulkan::Device *device, const GSOptions &options)
 }
 
 void GSInterface::set_super_sampling_rate(SuperSampling super_sampling,
-                                          bool ordered_grid, bool super_sampled_textures_)
+                                          bool ordered_grid, bool super_sampled_textures_,
+                                          bool super_sampled_quads_)
 {
 	super_sampled_textures = super_sampled_textures_;
+	super_sampled_quads = super_sampled_quads_;
+	renderer.set_super_sampled_quads(super_sampled_quads_);
 	super_sampling = SuperSampling(std::min<uint32_t>(
 			uint32_t(super_sampling), uint32_t(renderer.get_max_supported_super_sampling())));
 
@@ -115,6 +119,11 @@ void GSInterface::set_super_sampling_rate(SuperSampling super_sampling,
 	}
 
 	renderer.invalidate_super_sampling_state(sampling_rate_x_log2, sampling_rate_y_log2);
+}
+
+void GSInterface::set_color_depth(ColorDepth mode)
+{
+	renderer.set_color_depth(mode);
 }
 
 static bool write_mask_is_16bit_channel_slice(uint32_t psm, uint32_t color_mask)

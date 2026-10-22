@@ -12,6 +12,7 @@ layout(constant_id = 0) const uint TEXTURE_FMT = 0;
 layout(constant_id = 1) const uint VRAM_MASK = 4 * 1024 * 1024 - 1;
 layout(constant_id = 2) const uint CLUT_FMT = 0;
 layout(constant_id = 3) const bool WORKGRAPH_INDIRECTION = false;
+layout(constant_id = 4) const bool HIGH_PRECISION = false;
 
 #include "utils.h"
 #include "swizzle_utils.h"
@@ -31,6 +32,11 @@ layout(std430, set = 0, binding = 0) readonly buffer VRAM8
 {
 	uint8_t data[];
 } vram8;
+
+layout(std430, set = 0, binding = BINDING_VRAM_PRECISION) readonly buffer VRAMPrecision
+{
+	uint16_t data[];
+} vram_precision;
 
 layout(std430, set = 0, binding = BINDING_CLUT) readonly buffer CLUT16
 {
@@ -153,15 +159,25 @@ void main()
 	else if (is_tex_16bit)
 	{
 		uint col = uint(vram16.data[addr]);
+		uint precision_plane = 0u;
 #if SUPER_SAMPLED
 		if (sample_id != ~0u)
 		{
 			uint ref = uint(vram16.data[addr + VRAM_STRIDE_U16]);
 			if (ref == 0xffffu)
+			{
 				col = uint(vram16.data[addr + (2 + sample_id) * VRAM_STRIDE_U16]);
+				precision_plane = 2u + sample_id;
+			}
 		}
 #endif
 		payload = rgba16_to_rgba32(col, registers.aem, registers.ta0, registers.ta1);
+
+		if (HIGH_PRECISION)
+		{
+			uint entry = uint(vram_precision.data[addr + precision_plane * VRAM_STRIDE_U16]);
+			payload = decode_precision(payload, col, entry);
+		}
 	}
 	else if (is_tex_8bit)
 	{

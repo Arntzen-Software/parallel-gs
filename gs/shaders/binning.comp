@@ -120,7 +120,7 @@ void update_heuristics(
         has_z_write = true;
 
     uint t = primitive_attr.data[primitive_index].tex;
-    if ((t & TEX_PER_SAMPLE_BIT) != 0)
+    if ((t & (TEX_PER_SAMPLE_BIT | TEX_SMOOTH_UPSCALE_BIT)) != 0)
         requires_super_sample = true;
 }
 

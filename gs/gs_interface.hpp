@@ -192,6 +192,8 @@ struct VSyncInfo
 	// For best results, force_progressive must also be used.
 	bool high_resolution_scanout;
 
+	bool quad_resolution_scanout;
+
 	// If using interlaced, defer any attempt to deinterlace and just return the raw output as-is with phase information.
 	// User is responsible for deinterlacing in whatever way is appropriate.
 	bool skip_deinterlace;
@@ -204,6 +206,7 @@ struct GSOptions
 	bool dynamic_super_sampling = false; // If super sampling rate can be toggled in-flight.
 	bool ordered_super_sampling = true; // Prefers ordered grid. Aids debugging.
 	bool super_sampled_textures = false;
+	bool super_sampled_quads = false; // Forces texture supersampling for 2D quads.
 };
 
 // Pragmatic hacks which may or may not be useful.
@@ -255,7 +258,9 @@ public:
 	bool init(Vulkan::Device *device, const GSOptions &options);
 	void reset_context_state();
 
-	void set_super_sampling_rate(SuperSampling super_sampling, bool ordered_grid, bool super_sampled_textures);
+	void set_super_sampling_rate(SuperSampling super_sampling, bool ordered_grid, bool super_sampled_textures,
+	                             bool super_sampled_quads = false);
+	void set_color_depth(ColorDepth mode);
 	void set_debug_mode(const DebugMode &mode);
 	void set_hacks(const Hacks &hacks);
 
@@ -617,6 +622,7 @@ private:
 	uint32_t sampling_rate_x_log2 = 0;
 	uint32_t sampling_rate_y_log2 = 0;
 	bool super_sampled_textures = false;
+	bool super_sampled_quads = false;
 
 	void reset_context_state_registers();
 

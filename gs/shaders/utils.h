@@ -94,6 +94,34 @@ uint rgba32_to_rgba16(uint rgb_32)
 	return uint(c.x | c.y | c.z | c.w);
 }
 
+uint precision_tag(uint rgba16)
+{
+	return (rgba16 * 0x9e3779b1u) >> 25u;
+}
+
+uint encode_precision(uint rgba32, uint rgba16)
+{
+	uint bits = rgba32 & 7u;
+	bits |= (rgba32 >> 5u) & 0x38u;
+	bits |= (rgba32 >> 10u) & 0x1c0u;
+
+	return bits | (precision_tag(rgba16) << 9u);
+}
+
+uint decode_precision(uint rgba32, uint rgba16, uint entry)
+{
+	if ((entry >> 9u) != precision_tag(rgba16))
+	{
+		return rgba32;
+	}
+
+	uint low = entry & 7u;
+	low |= (entry & 0x38u) << 5u;
+	low |= (entry & 0x1c0u) << 10u;
+
+	return rgba32 | low;
+}
+
 uint rgb24_to_rgba32(uint rgb_24, uint aem, uint ta0)
 {
 	ivec4 c = unpack_color(rgb_24);

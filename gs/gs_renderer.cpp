@@ -357,6 +357,61 @@ void GSRenderer::set_field_aware_super_sampling(bool enable)
 	field_aware_super_sampling = enable;
 }
 
+void GSRenderer::set_super_sampled_quads(bool enable)
+{
+	super_sampled_quads = enable;
+}
+
+void GSRenderer::set_color_depth(ColorDepth mode)
+{
+	color_depth = mode;
+
+	if (mode != ColorDepth::Force32)
+	{
+		buffers.precision.reset();
+		return;
+	}
+
+	if (buffers.precision || !device)
+	{
+		return;
+	}
+
+	Vulkan::BufferCreateInfo info = {};
+	info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+	info.size = VkDeviceSize(vram_size) * (2 + uint32_t(get_max_supported_super_sampling()));
+	info.domain = Vulkan::BufferDomain::Device;
+	info.misc = Vulkan::BUFFER_MISC_ZERO_INITIALIZE_BIT;
+
+	buffers.precision = device->create_buffer(info);
+	device->set_name(*buffers.precision, "vram-precision");
+}
+
+uint32_t GSRenderer::color_depth_mode_for_psm(uint32_t psm) const
+{
+	if (psm != PSMCT16 && psm != PSMCT16S)
+	{
+		return 0;
+	}
+
+	if (color_depth == ColorDepth::Force32 && !buffers.precision)
+	{
+		return uint32_t(ColorDepth::NoDither);
+	}
+
+	return uint32_t(color_depth);
+}
+
+const Vulkan::Buffer &GSRenderer::get_precision_buffer() const
+{
+	if (buffers.precision)
+	{
+		return *buffers.precision;
+	}
+
+	return *buffers.gpu;
+}
+
 void GSRenderer::init_vram(const GSOptions &options)
 {
 	Vulkan::BufferCreateInfo info = {};
@@ -878,6 +933,9 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 
 void GSRenderer::check_flush_stats()
 {
+	if (pending_copies.size() >= MaxPendingCopiesWithoutFlush || stats.num_copy_threads >= MaxPendingCopyThreads)
+		flush_transfer();
+
 	// Make sure that we flush as soon as there is a reasonable amount of work in flight.
 	// We also want to keep memory usage under control. We have to garbage collect memory.
 
@@ -901,11 +959,6 @@ void GSRenderer::check_flush_stats()
 		LOGI("  %u copy barriers\n", stats.num_copy_barriers);
 #endif
 		tracker.mark_memory_pressure();
-	}
-	else if (pending_copies.size() >= MaxPendingCopiesWithoutFlush || stats.num_copy_threads >= MaxPendingCopyThreads)
-	{
-		// Deal with soft limits. We have to flush since our algorithms need it, not because of pressure.
-		flush_transfer();
 	}
 }
 
@@ -1706,6 +1759,7 @@ void GSRenderer::bind_frame_resources(const RenderPass &rp)
 	cmd.set_sampler(0, BINDING_SAMPLER_LINEAR, Vulkan::StockSampler::LinearWrap);
 
 	cmd.set_storage_buffer(0, BINDING_VRAM, *buffers.gpu);
+	cmd.set_storage_buffer(0, BINDING_VRAM_PRECISION, get_precision_buffer());
 
 	triangle_setup_cmd->set_buffer_view(0, BINDING_FIXED_RCP_LUT, *buffers.fixed_rcp_lut_view);
 	triangle_setup_cmd->set_buffer_view(0, BINDING_FLOAT_RCP_LUT, *buffers.float_rcp_lut_view);
@@ -2008,12 +2062,13 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 	cmd.push_constants(&push, 0, sizeof(push));
 
 	cmd.set_program(shaders.triangle_setup);
-	cmd.set_specialization_constant_mask(0xf);
+	cmd.set_specialization_constant_mask(0x1f);
 	cmd.set_specialization_constant(0, sampling_rate_x_log2);
 	cmd.set_specialization_constant(1, sampling_rate_y_log2);
 	cmd.set_specialization_constant(2, bound_texture_has_array);
 
 	cmd.set_specialization_constant(3, bound_texture_has_array && allow_field_render);
+	cmd.set_specialization_constant(4, uint32_t(super_sampled_quads));
 
 	Vulkan::QueryPoolHandle start_ts, end_ts;
 	if (enable_timestamps)
@@ -2583,6 +2638,20 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	cmd.set_specialization_constant(4, vram_size - 1);
 
 	uint32_t variant_flags = 0;
+
+	switch (ColorDepth(color_depth_mode_for_psm(color_psm)))
+	{
+	case ColorDepth::NoDither:
+		variant_flags |= VARIANT_FLAG_NO_DITHER_BIT;
+		break;
+
+	case ColorDepth::Force32:
+		variant_flags |= VARIANT_FLAG_HIGH_PRECISION_BIT;
+		break;
+
+	default:
+		break;
+	}
 
 	bool fb_z_alias = inst.z_sensitive && inst.fb.frame.desc.FBP == inst.fb.z.desc.ZBP;
 	uint32_t first_primitive_index_z_sensitive = UINT32_MAX;
@@ -3534,6 +3603,7 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 	else
 		cmd.set_storage_buffer(0, 0, *buffers.gpu);
 	cmd.set_storage_buffer(0, BINDING_CLUT, *buffers.clut);
+	cmd.set_storage_buffer(0, BINDING_VRAM_PRECISION, get_precision_buffer());
 
 	if (upload.desc.samples > 1 && scratch.buffer)
 	{
@@ -3600,10 +3670,19 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 		{ uint32_t(desc.miptbp4_6.desc.TBP3), uint32_t(desc.miptbp4_6.desc.TBW3) },
 	};
 
-	cmd.set_specialization_constant_mask(0xf);
+	bool high_precision_upload =
+		!scratch.buffer &&
+		color_depth_mode_for_psm(uint32_t(desc.tex0.desc.PSM)) == uint32_t(ColorDepth::Force32);
+
+	cmd.set_specialization_constant_mask(high_precision_upload ? 0x1f : 0xf);
 	cmd.set_specialization_constant(0, uint32_t(desc.tex0.desc.PSM));
 	cmd.set_specialization_constant(2, uint32_t(desc.tex0.desc.CPSM));
 	cmd.set_specialization_constant(3, bool(upload.indirection.buffer));
+
+	if (high_precision_upload)
+	{
+		cmd.set_specialization_constant(4, true);
+	}
 
 	// Makes it feasible to handle REGION_CLAMP where we only access one page, but at an offset.
 	if (scratch.buffer)
@@ -4128,7 +4207,7 @@ void GSRenderer::transfer_overlap_barrier()
 
 void GSRenderer::sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::Image &img, const DISPFBBits &dispfb,
                                      const SamplingRect &rect, uint32_t super_samples,
-                                     const Vulkan::Image *promoted)
+                                     uint32_t scanout_scale_log2, const Vulkan::Image *promoted)
 {
 	cmd.image_barrier(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
 	                  0, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
@@ -4144,22 +4223,36 @@ void GSRenderer::sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::I
 	cmd.set_opaque_sprite_state();
 	cmd.set_program(sample_quad[promoted ? 1 : 0]);
 	if (promoted)
+	{
 		cmd.set_texture(0, 0, promoted->get_view());
+	}
 	else
+	{
 		cmd.set_storage_buffer(0, 0, *buffers.gpu);
+		cmd.set_storage_buffer(0, BINDING_VRAM_PRECISION, get_precision_buffer());
+	}
 
 	auto valid_extent = rect.valid_extent;
 	if (super_samples > 1)
 	{
-		valid_extent.width *= 2;
-		valid_extent.height *= 2;
+		valid_extent.width <<= scanout_scale_log2;
+		valid_extent.height <<= scanout_scale_log2;
 	}
 	cmd.set_scissor({{ 0, 0 }, valid_extent });
 
-	cmd.set_specialization_constant_mask(0x7);
+	bool high_precision_scanout =
+		!promoted && color_depth_mode_for_psm(uint32_t(dispfb.PSM)) == uint32_t(ColorDepth::Force32);
+
+	cmd.set_specialization_constant_mask(high_precision_scanout ? 0x1f : 0xf);
 	cmd.set_specialization_constant(0, uint32_t(dispfb.PSM));
 	cmd.set_specialization_constant(1, vram_size - 1);
 	cmd.set_specialization_constant(2, super_samples);
+	cmd.set_specialization_constant(3, scanout_scale_log2);
+
+	if (high_precision_scanout)
+	{
+		cmd.set_specialization_constant(4, true);
+	}
 
 	struct Registers
 	{
@@ -4319,6 +4412,15 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	if (high_resolution_scanout)
 		super_samples = 1 << (sampling_rate_x_log2 + sampling_rate_y_log2);
 
+	uint32_t scanout_scale_log2 = 0;
+
+	if (high_resolution_scanout)
+	{
+		bool ordered_16x = sampling_rate_x_log2 == 2 && sampling_rate_y_log2 == 2;
+
+		scanout_scale_log2 = (info.quad_resolution_scanout && ordered_16x) ? 2 : 1;
+	}
+
 	if (promoted1 && promoted1->get_create_info().layers < super_samples)
 		promoted1 = nullptr;
 	if (promoted2 && promoted2->get_create_info().layers < super_samples)
@@ -4425,6 +4527,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		high_resolution_scanout = false;
 		field_aware_rendering = false;
 		super_samples = 1;
+		scanout_scale_log2 = 0;
 	}
 	else if (priv.smode1.CMOD == SMODE1Bits::CMOD_PROGRESSIVE && priv.smode1.LC == SMODE1Bits::LC_VGA)
 	{
@@ -4643,13 +4746,10 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 		if (image_info.width && image_info.height)
 		{
-			if (high_resolution_scanout)
-			{
-				image_info.width *= 2;
-				image_info.height *= 2;
-			}
+			image_info.width <<= scanout_scale_log2;
+			image_info.height <<= scanout_scale_log2;
 			circuit1 = device->create_image(image_info);
-			sample_crtc_circuit(cmd, *circuit1, priv.dispfb1, rect, super_samples, promoted1);
+			sample_crtc_circuit(cmd, *circuit1, priv.dispfb1, rect, super_samples, scanout_scale_log2, promoted1);
 			device->set_name(*circuit1, "Circuit1");
 		}
 
@@ -4701,13 +4801,10 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 		if (image_info.width && image_info.height)
 		{
-			if (high_resolution_scanout)
-			{
-				image_info.width *= 2;
-				image_info.height *= 2;
-			}
+			image_info.width <<= scanout_scale_log2;
+			image_info.height <<= scanout_scale_log2;
 			circuit2 = device->create_image(image_info);
-			sample_crtc_circuit(cmd, *circuit2, priv.dispfb2, rect, super_samples, promoted2);
+			sample_crtc_circuit(cmd, *circuit2, priv.dispfb2, rect, super_samples, scanout_scale_log2, promoted2);
 			device->set_name(*circuit2, "Circuit2");
 		}
 
@@ -4763,11 +4860,8 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		uint32_t horiz_resolution1 = circuit2 ? circuit2->get_width() : 0;
 
 		// Need to do all the CRTC offset math in single sampled domain to avoid lots of confusing cases later.
-		if (high_resolution_scanout)
-		{
-			horiz_resolution0 >>= 1;
-			horiz_resolution1 >>= 1;
-		}
+		horiz_resolution0 >>= scanout_scale_log2;
+		horiz_resolution1 >>= scanout_scale_log2;
 
 		uint32_t magh1 = priv.display1.MAGH + 1;
 		uint32_t magh2 = priv.display2.MAGH + 1;
@@ -4801,6 +4895,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	result.mode_width = mode_width;
 	result.mode_height = mode_height;
 	result.high_resolution_scanout = high_resolution_scanout;
+	result.scanout_scale_log2 = scanout_scale_log2;
 	result.sampling_rate_mhz = sampling_rate_mhz;
 
 	if (info.raw_circuit_scanout &&
@@ -4811,11 +4906,8 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		auto effective_mode_width = mode_width;
 		auto effective_mode_height = mode_height;
 
-		if (high_resolution_scanout)
-		{
-			effective_mode_width *= 2;
-			effective_mode_height *= 2;
-		}
+		effective_mode_width <<= scanout_scale_log2;
+		effective_mode_height <<= scanout_scale_log2;
 
 		bool is_raw_circuit1 =
 				circuit1 && !circuit2 && MMOD == PMODEBits::MMOD_ALPHA_ALP && ALP == 0xff &&
@@ -4837,8 +4929,8 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 			                  info.dst_stage, info.dst_access);
 
-			result.internal_width = result.image->get_width() >> int(high_resolution_scanout);
-			result.internal_height = result.image->get_height() >> int(high_resolution_scanout);
+			result.internal_width = result.image->get_width() >> scanout_scale_log2;
+			result.internal_height = result.image->get_height() >> scanout_scale_log2;
 			result.double_strike = double_strike;
 
 			flush_submit(0);
@@ -4848,13 +4940,15 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 	result.internal_width = mode_width;
 	result.internal_height = mode_height;
-	image_info.width = mode_width << int(high_resolution_scanout);
-	image_info.height = mode_height << int(high_resolution_scanout);
+	image_info.width = mode_width << scanout_scale_log2;
+	image_info.height = mode_height << scanout_scale_log2;
+
+	uint32_t field_shift = scanout_scale_log2 ? (1u << (scanout_scale_log2 - 1)) : 0;
 
 	if (field_aware_rendering)
 	{
 		// Avoid a one line flicker due to field rendering.
-		image_info.height--;
+		image_info.height -= field_shift;
 	}
 
 	auto merged = device->create_image(image_info);
@@ -4920,13 +5014,15 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 			if (high_resolution_scanout)
 			{
-				vp.x *= 2.0f;
-				vp.y *= 2.0f;
-				vp.width *= 2.0f;
-				vp.height *= 2.0f;
+				float scale = float(1u << scanout_scale_log2);
+
+				vp.x *= scale;
+				vp.y *= scale;
+				vp.width *= scale;
+				vp.height *= scale;
 
 				if (field_aware_rendering && !info.phase)
-					vp.y -= 1.0f;
+					vp.y -= float(field_shift);
 			}
 
 			cmd.set_viewport(vp);
@@ -4953,13 +5049,15 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 			if (high_resolution_scanout)
 			{
-				vp.x *= 2.0f;
-				vp.y *= 2.0f;
-				vp.width *= 2.0f;
-				vp.height *= 2.0f;
+				float scale = float(1u << scanout_scale_log2);
+
+				vp.x *= scale;
+				vp.y *= scale;
+				vp.width *= scale;
+				vp.height *= scale;
 
 				if (field_aware_rendering && !info.phase)
-					vp.y -= 1.0f;
+					vp.y -= float(field_shift);
 			}
 
 			cmd.set_viewport(vp);
