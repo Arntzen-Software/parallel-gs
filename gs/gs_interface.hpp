@@ -192,6 +192,8 @@ struct VSyncInfo
 	// For best results, force_progressive must also be used.
 	bool high_resolution_scanout;
 
+	bool quad_resolution_scanout;
+
 	// If using interlaced, defer any attempt to deinterlace and just return the raw output as-is with phase information.
 	// User is responsible for deinterlacing in whatever way is appropriate.
 	bool skip_deinterlace;

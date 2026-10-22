@@ -35,6 +35,7 @@ struct ScanoutResult
 
 	// Set to true if we scanned out at a higher resolution.
 	bool high_resolution_scanout;
+	uint32_t scanout_scale_log2;
 
 	// If the result was interlaced.
 	// The result may already be deinterlaced automatically unless it was skipped.
@@ -504,7 +505,7 @@ private:
 
 	void sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::Image &img,
 	                         const DISPFBBits &dispfb, const SamplingRect &rect, uint32_t super_samples,
-	                         const Vulkan::Image *promoted);
+	                         uint32_t scanout_scale_log2, const Vulkan::Image *promoted);
 
 	static SamplingRect compute_circuit_rect(const PrivRegisterState &priv, uint32_t phase,
 	                                         const DISPLAYBits &display, bool force_progressive,
