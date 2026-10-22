@@ -25,6 +25,11 @@ layout(set = 0, binding = 0) readonly buffer VRAM16
 {
     uint16_t data[];
 } vram16;
+
+layout(set = 0, binding = BINDING_VRAM_PRECISION) readonly buffer VRAMPrecision
+{
+    uint16_t data[];
+} vram_precision;
 #endif
 
 layout(push_constant) uniform Registers
@@ -41,6 +46,7 @@ layout(constant_id = 0) const int PSM = 0;
 layout(constant_id = 1) const uint VRAM_MASK = 4 * 1024 * 1024 - 1;
 layout(constant_id = 2) const uint SUPER_SAMPLES = 1;
 layout(constant_id = 3) const uint SCANOUT_SCALE_LOG2 = 1;
+layout(constant_id = 4) const bool HIGH_PRECISION = false;
 
 const bool is_tex_16bit = PSM == PSMCT16 || PSM == PSMCT16S || PSM == PSMZ16 || PSM == PSMZ16S;
 
@@ -56,7 +62,14 @@ vec4 sample_vram(uint addr, uint slice)
 
     if (is_tex_16bit)
     {
-        payload = rgba16_to_rgba32(uint(vram16.data[addr + slice * (VRAM_MASK + 1) / 2]), 0, 0x0, 0xff);
+        uint col = uint(vram16.data[addr + slice * (VRAM_MASK + 1) / 2]);
+        payload = rgba16_to_rgba32(col, 0, 0x0, 0xff);
+
+        if (HIGH_PRECISION)
+        {
+            uint entry = uint(vram_precision.data[addr + slice * (VRAM_MASK + 1) / 2]);
+            payload = decode_precision(payload, col, entry);
+        }
     }
     else
     {

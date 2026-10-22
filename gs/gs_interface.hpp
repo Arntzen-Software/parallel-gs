@@ -260,6 +260,7 @@ public:
 
 	void set_super_sampling_rate(SuperSampling super_sampling, bool ordered_grid, bool super_sampled_textures,
 	                             bool super_sampled_quads = false);
+	void set_color_depth(ColorDepth mode);
 	void set_debug_mode(const DebugMode &mode);
 	void set_hacks(const Hacks &hacks);
 

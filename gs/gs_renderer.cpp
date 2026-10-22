@@ -362,6 +362,56 @@ void GSRenderer::set_super_sampled_quads(bool enable)
 	super_sampled_quads = enable;
 }
 
+void GSRenderer::set_color_depth(ColorDepth mode)
+{
+	color_depth = mode;
+
+	if (mode != ColorDepth::Force32)
+	{
+		buffers.precision.reset();
+		return;
+	}
+
+	if (buffers.precision || !device)
+	{
+		return;
+	}
+
+	Vulkan::BufferCreateInfo info = {};
+	info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+	info.size = VkDeviceSize(vram_size) * (2 + uint32_t(get_max_supported_super_sampling()));
+	info.domain = Vulkan::BufferDomain::Device;
+	info.misc = Vulkan::BUFFER_MISC_ZERO_INITIALIZE_BIT;
+
+	buffers.precision = device->create_buffer(info);
+	device->set_name(*buffers.precision, "vram-precision");
+}
+
+uint32_t GSRenderer::color_depth_mode_for_psm(uint32_t psm) const
+{
+	if (psm != PSMCT16 && psm != PSMCT16S)
+	{
+		return 0;
+	}
+
+	if (color_depth == ColorDepth::Force32 && !buffers.precision)
+	{
+		return uint32_t(ColorDepth::NoDither);
+	}
+
+	return uint32_t(color_depth);
+}
+
+const Vulkan::Buffer &GSRenderer::get_precision_buffer() const
+{
+	if (buffers.precision)
+	{
+		return *buffers.precision;
+	}
+
+	return *buffers.gpu;
+}
+
 void GSRenderer::init_vram(const GSOptions &options)
 {
 	Vulkan::BufferCreateInfo info = {};
@@ -1701,6 +1751,7 @@ void GSRenderer::bind_frame_resources(const RenderPass &rp)
 	cmd.set_sampler(0, BINDING_SAMPLER_LINEAR, Vulkan::StockSampler::LinearWrap);
 
 	cmd.set_storage_buffer(0, BINDING_VRAM, *buffers.gpu);
+	cmd.set_storage_buffer(0, BINDING_VRAM_PRECISION, get_precision_buffer());
 
 	triangle_setup_cmd->set_buffer_view(0, BINDING_FIXED_RCP_LUT, *buffers.fixed_rcp_lut_view);
 	triangle_setup_cmd->set_buffer_view(0, BINDING_FLOAT_RCP_LUT, *buffers.float_rcp_lut_view);
@@ -2577,6 +2628,20 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	cmd.set_specialization_constant(4, vram_size - 1);
 
 	uint32_t variant_flags = 0;
+
+	switch (ColorDepth(color_depth_mode_for_psm(color_psm)))
+	{
+	case ColorDepth::NoDither:
+		variant_flags |= VARIANT_FLAG_NO_DITHER_BIT;
+		break;
+
+	case ColorDepth::Force32:
+		variant_flags |= VARIANT_FLAG_HIGH_PRECISION_BIT;
+		break;
+
+	default:
+		break;
+	}
 
 	bool fb_z_alias = inst.z_sensitive && inst.fb.frame.desc.FBP == inst.fb.z.desc.ZBP;
 	uint32_t first_primitive_index_z_sensitive = UINT32_MAX;
@@ -3517,6 +3582,7 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 	else
 		cmd.set_storage_buffer(0, 0, *buffers.gpu);
 	cmd.set_storage_buffer(0, BINDING_CLUT, *buffers.clut);
+	cmd.set_storage_buffer(0, BINDING_VRAM_PRECISION, get_precision_buffer());
 
 	if (upload.indirection.buffer)
 		cmd.set_storage_buffer(0, 2, *upload.indirection.buffer, upload.indirection.offset, upload.indirection.size);
@@ -3577,10 +3643,19 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 		{ uint32_t(desc.miptbp4_6.desc.TBP3), uint32_t(desc.miptbp4_6.desc.TBW3) },
 	};
 
-	cmd.set_specialization_constant_mask(0xf);
+	bool high_precision_upload =
+		!scratch.buffer &&
+		color_depth_mode_for_psm(uint32_t(desc.tex0.desc.PSM)) == uint32_t(ColorDepth::Force32);
+
+	cmd.set_specialization_constant_mask(high_precision_upload ? 0x1f : 0xf);
 	cmd.set_specialization_constant(0, uint32_t(desc.tex0.desc.PSM));
 	cmd.set_specialization_constant(2, uint32_t(desc.tex0.desc.CPSM));
 	cmd.set_specialization_constant(3, bool(upload.indirection.buffer));
+
+	if (high_precision_upload)
+	{
+		cmd.set_specialization_constant(4, true);
+	}
 
 	// Makes it feasible to handle REGION_CLAMP where we only access one page, but at an offset.
 	if (scratch.buffer)
@@ -4118,9 +4193,14 @@ void GSRenderer::sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::I
 	cmd.set_opaque_sprite_state();
 	cmd.set_program(sample_quad[promoted ? 1 : 0]);
 	if (promoted)
+	{
 		cmd.set_texture(0, 0, promoted->get_view());
+	}
 	else
+	{
 		cmd.set_storage_buffer(0, 0, *buffers.gpu);
+		cmd.set_storage_buffer(0, BINDING_VRAM_PRECISION, get_precision_buffer());
+	}
 
 	auto valid_extent = rect.valid_extent;
 	if (super_samples > 1)
@@ -4130,11 +4210,19 @@ void GSRenderer::sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::I
 	}
 	cmd.set_scissor({{ 0, 0 }, valid_extent });
 
-	cmd.set_specialization_constant_mask(0xf);
+	bool high_precision_scanout =
+		!promoted && color_depth_mode_for_psm(uint32_t(dispfb.PSM)) == uint32_t(ColorDepth::Force32);
+
+	cmd.set_specialization_constant_mask(high_precision_scanout ? 0x1f : 0xf);
 	cmd.set_specialization_constant(0, uint32_t(dispfb.PSM));
 	cmd.set_specialization_constant(1, vram_size - 1);
 	cmd.set_specialization_constant(2, super_samples);
 	cmd.set_specialization_constant(3, scanout_scale_log2);
+
+	if (high_precision_scanout)
+	{
+		cmd.set_specialization_constant(4, true);
+	}
 
 	struct Registers
 	{

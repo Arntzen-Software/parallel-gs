@@ -121,6 +121,11 @@ void GSInterface::set_super_sampling_rate(SuperSampling super_sampling,
 	renderer.invalidate_super_sampling_state(sampling_rate_x_log2, sampling_rate_y_log2);
 }
 
+void GSInterface::set_color_depth(ColorDepth mode)
+{
+	renderer.set_color_depth(mode);
+}
+
 static bool write_mask_is_16bit_channel_slice(uint32_t psm, uint32_t color_mask)
 {
 	// Only accept all or nothing masking, which is probably a case where game does not intend channel shuffle.

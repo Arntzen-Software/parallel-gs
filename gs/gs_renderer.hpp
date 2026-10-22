@@ -239,6 +239,13 @@ enum class SuperSampling
 	X16 = 16
 };
 
+enum class ColorDepth
+{
+	Accurate = 0,
+	NoDither = 1,
+	Force32 = 2
+};
+
 struct GSOptions;
 class PageTracker;
 
@@ -325,6 +332,8 @@ public:
 
 	void set_super_sampled_quads(bool enable);
 
+	void set_color_depth(ColorDepth mode);
+
 private:
 	PageTracker &tracker;
 	Vulkan::Device *device = nullptr;
@@ -348,6 +357,10 @@ private:
 	bool last_clut_update_is_read = false;
 	bool field_aware_super_sampling = false;
 	bool super_sampled_quads = false;
+	ColorDepth color_depth = ColorDepth::Accurate;
+
+	uint32_t color_depth_mode_for_psm(uint32_t psm) const;
+	const Vulkan::Buffer &get_precision_buffer() const;
 
 	std::vector<VkImageMemoryBarrier2> pre_image_barriers;
 	std::vector<VkImageMemoryBarrier2> post_image_barriers;
@@ -406,6 +419,7 @@ private:
 		Vulkan::BufferHandle clut;
 		Vulkan::BufferHandle gpu;
 		Vulkan::BufferHandle cpu;
+		Vulkan::BufferHandle precision;
 		Vulkan::BufferHandle vram_copy_atomics;
 		Vulkan::BufferHandle vram_copy_payloads;
 

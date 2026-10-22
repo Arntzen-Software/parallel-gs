@@ -85,6 +85,11 @@ layout(std430, set = DESCRIPTOR_SET_WORKGROUP_LIST, binding = 0) readonly buffer
 
 layout(set = 0, binding = BINDING_PHASE_LUT) uniform usampler2D uPhaseLUT;
 
+layout(std430, set = 0, binding = BINDING_VRAM_PRECISION) buffer VRAMPrecision
+{
+	uint16_t data[];
+} vram_precision;
+
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
 layout(rgba8, set = 0, binding = BINDING_FEEDBACK_COLOR) writeonly uniform image2DArray FeedbackColor;
 layout(rgba32ui, set = 0, binding = BINDING_FEEDBACK_PRIM) writeonly uniform uimage2D FeedbackPrim;
@@ -398,6 +403,10 @@ uint pending_primitive_index;
 const bool is_fb_32bit = FB_FMT == PSMCT32 || FB_FMT == PSMZ32;
 const bool is_fb_24bit = FB_FMT == PSMCT24 || FB_FMT == PSMZ24;
 const bool is_fb_16bit = FB_FMT == PSMCT16 || FB_FMT == PSMCT16S || FB_FMT == PSMZ16 || FB_FMT == PSMZ16S;
+const uint FB_16BIT_MASK = is_fb_16bit ? ~0u : 0u;
+const uint COLOR_DEPTH_FLAGS = VARIANT_FLAGS & FB_16BIT_MASK;
+const bool HIGH_PRECISION_16 = (COLOR_DEPTH_FLAGS & uint(VARIANT_FLAG_HIGH_PRECISION_BIT)) != 0u;
+const bool NO_DITHER_16 = (COLOR_DEPTH_FLAGS & uint(VARIANT_FLAG_NO_DITHER_BIT | VARIANT_FLAG_HIGH_PRECISION_BIT)) != 0u;
 
 const bool is_zb_32bit = ZB_FMT == PSMZ32 || ZB_FMT == PSMCT32;
 const bool is_zb_24bit = ZB_FMT == PSMZ24 || ZB_FMT == PSMCT24;
@@ -441,6 +450,7 @@ void begin_tile()
 	if (is_fb_16bit)
 	{
 		uint col = uint(vram16.data[tile.fb_index]);
+		uint precision_plane = 0u;
 
 		if (SUPER_SAMPLE)
 		{
@@ -449,9 +459,16 @@ void begin_tile()
 #if defined(FEEDBACK_COLOR) && FEEDBACK_COLOR
 			if (sample_index == 0u)
 			{
+				uint feedback_col = rgba16_to_rgba32(col, 0u, 0u, 0x80u);
+
+				if (HIGH_PRECISION_16)
+				{
+					feedback_col = decode_precision(feedback_col, col, uint(vram_precision.data[tile.fb_index]));
+				}
+
 				imageStore(FeedbackColor,
 					ivec3((tile.fb_pixel >> SAMPLING_RATE_DIM_LOG2) - constants.base_pixel, 3),
-					unpackUnorm4x8(rgba16_to_rgba32(col, 0u, 0u, 0x80u)));
+					unpackUnorm4x8(feedback_col));
 
 				imageStore(FeedbackColor,
 					ivec3((tile.fb_pixel >> SAMPLING_RATE_DIM_LOG2) - constants.base_pixel, 4),
@@ -464,10 +481,17 @@ void begin_tile()
 				// Load super-sampled data instead.
 				uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
 				col = uint(vram16.data[tile.fb_index + vram_offset]);
+				precision_plane = sample_index + 2u;
 			}
 		}
 
 		fb_color = rgba16_to_rgba32(col, 0u, 0u, 0x80u);
+
+		if (HIGH_PRECISION_16)
+		{
+			uint entry = uint(vram_precision.data[tile.fb_index + precision_plane * VRAM_SIZE_16]);
+			fb_color = decode_precision(fb_color, col, entry);
+		}
 	}
 	else
 	{
@@ -657,7 +681,13 @@ void end_tile()
 				if (is_fb_16bit)
 				{
 					uint vram_offset = (sample_index + 2u) * VRAM_SIZE_16;
-					vram16.data[tile.fb_index + vram_offset] = uint16_t(rgba32_to_rgba16(fb_color));
+					uint col = rgba32_to_rgba16(fb_color);
+					vram16.data[tile.fb_index + vram_offset] = uint16_t(col);
+
+					if (HIGH_PRECISION_16)
+					{
+						vram_precision.data[tile.fb_index + vram_offset] = uint16_t(encode_precision(fb_color, col));
+					}
 				}
 				else
 				{
@@ -737,7 +767,14 @@ void end_tile()
 			// Store reference, so we can detect per-pixel when data changed in single-sampled domain.
 			if (HAS_SUPER_SAMPLE_REFERENCE)
 				vram16.data[tile.fb_index + VRAM_SIZE_16] = super_sample_required_color ? 0xffffus : 0us;
-			vram16.data[tile.fb_index] = uint16_t(rgba32_to_rgba16(fb_color));
+
+			uint col = rgba32_to_rgba16(fb_color);
+			vram16.data[tile.fb_index] = uint16_t(col);
+
+			if (HIGH_PRECISION_16)
+			{
+				vram_precision.data[tile.fb_index] = uint16_t(encode_precision(fb_color, col));
+			}
 		}
 		else
 		{
@@ -1571,7 +1608,7 @@ void shade_resolve(uint primitive_index, uint state_index, uint tex)
 		if (alpha_blending)
 			blended_color.rgb = alpha_blend(combined_color, unpacked_fb_color, state.blend_mode, alpha_attribs);
 
-		if (dithering)
+		if (dithering && !NO_DITHER_16)
 		{
 			// The dither format is 3-bit ints, 4 bits with padding, 4x4 matrix coordinates
 			// We want same dither strength for every super-sample,
@@ -1602,6 +1639,12 @@ void shade_resolve(uint primitive_index, uint state_index, uint tex)
 
 		uint fb_mask = primitive_attr.data[primitive_index].fbmsk;
 
+		if (HIGH_PRECISION_16)
+		{
+			uint masked_low_bits = fb_mask & 0x00080808u;
+			fb_mask |= (masked_low_bits >> 1u) | (masked_low_bits >> 2u) | (masked_low_bits >> 3u);
+		}
+
 		// If we fully mask FB writes, it will never be dirty.
 		if (fb_mask != ~0u && (write_fb || write_alpha))
 		{
@@ -1612,8 +1655,14 @@ void shade_resolve(uint primitive_index, uint state_index, uint tex)
 				fb_color = packed_color;
 
 			// Quantize the 32-bit -> 16-bit -> 32-bit roundtrip through memory.
-			if (is_fb_16bit)
+			if (HIGH_PRECISION_16)
+			{
+				fb_color &= 0x80ffffffu;
+			}
+			else if (is_fb_16bit)
+			{
 				fb_color &= 0x80f8f8f8u;
+			}
 			fb_color_dirty = true;
 		}
 
