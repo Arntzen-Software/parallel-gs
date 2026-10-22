@@ -887,6 +887,22 @@ ShadeResultEarly shade_early(uint primitive_index)
 			i = bary.x;
 			j = bary.y;
 		}
+		else if (snap_state == SNAP_RASTER_BIT &&
+		         (primitive_attr.data[primitive_index].tex & TEX_SMOOTH_UPSCALE_BIT) != 0)
+		{
+			const int native_sample_offset = int(round(float(1 << PGS_RASTER_SUBSAMPLE_BITS) *
+				get_average_sampling_offset(NUM_SAMPLES_X_LOG2, NUM_SAMPLES_Y_LOG2).x));
+
+			ivec2 sample_coord = tile.fb_pixel << (PGS_RASTER_SUBSAMPLE_BITS - SAMPLING_RATE_DIM_LOG2);
+			ivec2 hull_lo = (prim.bb.xy << PGS_RASTER_SUBSAMPLE_BITS) + native_sample_offset;
+			ivec2 hull_hi = (prim.bb.zw << PGS_RASTER_SUBSAMPLE_BITS) + native_sample_offset;
+			sample_coord = clamp(sample_coord, hull_lo, hull_hi);
+
+			vec2 bary = evaluate_barycentric_ij(prim.b, prim.c, prim.inv_area,
+				prim.error_i, prim.error_j, sample_coord, PGS_RASTER_SUBSAMPLE_BITS);
+			i = bary.x;
+			j = bary.y;
+		}
 		else if (HAS_TEXTURE_ARRAY && snap_state == SNAP_RASTER_BIT)
 		{
 			// For SSAA textured sprites, we may snap coverage, but we want per-sample interpolation.

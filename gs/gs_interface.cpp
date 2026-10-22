@@ -2691,15 +2691,8 @@ void GSInterface::drawing_kick_append()
 	{
 		prim_attr.state |= 1u << STATE_BIT_PARALLELOGRAM;
 		prim_attr.state |= 1u << STATE_BIT_SPRITE;
-
-		// Force supersampling for textured quads when super_sampled_quad is enabled.
-		bool is_per_sample = prim_attr.tex & TEX_PER_SAMPLE_BIT;
-		bool super_sample_this_sprite = super_sampled_quads && prim.desc.TME && !is_per_sample;
-		if (!super_sample_this_sprite)
-		{
-			prim_attr.state |= 1u << STATE_BIT_SNAP_RASTER;
-			prim_attr.state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
-		}
+		prim_attr.state |= 1u << STATE_BIT_SNAP_RASTER;
+		prim_attr.state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
 		prim_attr.state &= ~(1u << STATE_BIT_MULTISAMPLE);
 	}
 	else if (is_line)
