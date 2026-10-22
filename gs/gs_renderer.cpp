@@ -511,6 +511,13 @@ bool GSRenderer::can_potentially_super_sample() const
 
 void GSRenderer::kick_compilation_tasks()
 {
+	const char *env = getenv("PGS_SKIP_COMPILATION_TASKS");
+	if (env && strcmp(env, "1") == 0)
+	{
+		LOGI("Skipping precompilation of shaders. May stutter way more.\n");
+		return;
+	}
+
 	// Pre-prime all potential shader variants early.
 	std::vector<Vulkan::DeferredPipelineCompile> tasks;
 	compilation_tasks_active = true;
@@ -913,6 +920,14 @@ bool GSRenderer::init(Vulkan::Device *device_, const GSOptions &options)
 	LOGI("Using max allocated image memory per flush of %llu MiB.\n",
 	     static_cast<unsigned long long>(max_allocated_image_memory_per_flush / (1024 * 1024)));
 
+	if (device->get_system_handles().timeline_trace_file)
+	{
+		enable_timestamps = true;
+		// Want a readable trace. Garbage collect only on frame boundaries.
+		// May bloat memory in an unbounded way for massive frames, but that's okay for profiling.
+		device->init_frame_contexts(2);
+	}
+
 	return true;
 }
 
@@ -1089,10 +1104,20 @@ GSRenderer::~GSRenderer()
 
 void GSRenderer::wait_timeline(uint64_t value)
 {
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps && device)
+		start_ts = device->write_calibrated_timestamp();
+
 	std::unique_lock<std::mutex> holder{timeline_lock};
 	timeline_cond.wait(holder, [this, value]() {
 		return timeline_value.load(std::memory_order_relaxed) >= value;
 	});
+
+	if (enable_timestamps && device)
+	{
+		end_ts = device->write_calibrated_timestamp();
+		device->register_time_interval("CPU", std::move(start_ts), std::move(end_ts), "wait-timeline");
+	}
 }
 
 uint64_t GSRenderer::query_timeline(const Vulkan::SemaphoreHolder &sem) const
@@ -1145,6 +1170,10 @@ void GSRenderer::flush_submit(uint64_t value)
 {
 	if (!device)
 		return;
+
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps)
+		start_ts = device->write_calibrated_timestamp();
 
 	total_stats.allocated_scratch_memory += stats.allocated_scratch_memory;
 	total_stats.allocated_image_memory += stats.allocated_image_memory;
@@ -1233,10 +1262,20 @@ void GSRenderer::flush_submit(uint64_t value)
 
 	// This is a delayed sync-point between CPU and GPU, and garbage collection can happen here.
 	drain_compilation_tasks_nonblock();
-	device->next_frame_context();
+
+	// If we have a timeline trace, we'd like it to be somewhat readable.
+	// Only do garbage collection at frame boundaries.
+	if (!device->get_system_handles().timeline_trace_file)
+		device->next_frame_context();
 
 	log_timestamps();
 	check_bug_feedback();
+
+	if (enable_timestamps)
+	{
+		end_ts = device->write_calibrated_timestamp();
+		device->register_time_interval("CPU", std::move(start_ts), std::move(end_ts), "flush-submit");
+	}
 }
 
 void GSRenderer::check_bug_feedback()
@@ -1372,6 +1411,10 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 	if (!device)
 		return {};
 
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+	if (enable_timestamps)
+		start_ts = device->write_calibrated_timestamp();
+
 	assert(desc.rect.width && desc.rect.height);
 
 	Vulkan::ImageHandle img = pull_image_handle_from_slab(desc.rect.width, desc.rect.height, desc.rect.levels, desc.samples);
@@ -1435,82 +1478,49 @@ Vulkan::ImageHandle GSRenderer::create_cached_texture(const TextureDescriptor &d
 	post_image_barriers.push_back(barrier);
 	texture_uploads.push_back({ img, desc });
 
+	if (enable_timestamps)
+	{
+		end_ts = device->write_calibrated_timestamp();
+		device->register_time_interval("CPU", std::move(start_ts), std::move(end_ts), "create-cached-texture");
+	}
+
 	return img;
 }
 
-bool GSRenderer::allocate_upload_indirection(TextureAnalysis &analysis, TextureUpload &upload)
+void GSRenderer::allocate_upload_indirection(TextureAnalysis &analysis, TextureUpload &upload)
 {
 	uint32_t horiz_blocks = (upload.desc.rect.width + 7) / 8;
 	uint32_t vert_blocks = (upload.desc.rect.height + 7) / 8;
-	uint32_t layers = upload.image->get_create_info().layers;
-	if (upload.desc.rect.width == 0 || upload.desc.rect.height == 0 ||
-	    upload.desc.rect.x > UINT16_MAX || upload.desc.rect.y > UINT16_MAX ||
-	    horiz_blocks > UINT16_MAX || layers > UINT16_MAX)
-	{
-		return false;
-	}
-
-	VkDeviceSize num_blocks = VkDeviceSize(horiz_blocks) * vert_blocks;
-	VkDeviceSize qword_blocks = (num_blocks + 127) / 128;
-	VkDeviceSize bitmask_size = qword_blocks * sizeof(uvec4);
-	VkDeviceSize workgroups_size = sizeof(uvec4) + num_blocks * sizeof(uvec2);
-	VkDeviceSize bitmask_relative_offset = sizeof(uvec4);
-	VkDeviceSize workgroups_relative_offset = bitmask_relative_offset + bitmask_size;
-	VkDeviceSize allocation_size = workgroups_relative_offset + workgroups_size;
-
-	auto &scratch = buffers.device_scratch;
-	// All analysis entries share one descriptor, so they cannot span scratch-buffer allocations.
-	if (!texture_analysis.empty() && scratch.buffer != buffers.texture_analysis_scratch)
-		return false;
-
-	VkDeviceSize aligned_offset = align_offset(scratch.offset, buffers.ssbo_alignment);
-	bool fits_existing_buffer = scratch.buffer && aligned_offset <= scratch.size &&
-	                            allocation_size <= scratch.size - aligned_offset;
-	bool would_reallocate = !fits_existing_buffer;
-	// Falling back to a full texture upload is always safe.
-	if (would_reallocate && !texture_analysis.empty())
-		return false;
-
-	constexpr VkDeviceSize MaxAddressableScratchSize = VkDeviceSize(UINT32_MAX) * sizeof(uint32_t);
-	VkDeviceSize expected_allocation_offset = would_reallocate ? 0 : aligned_offset;
-	if (expected_allocation_offset > MaxAddressableScratchSize ||
-	    allocation_size > MaxAddressableScratchSize - expected_allocation_offset)
-		return false;
-
-	VkDeviceSize allocation_offset = allocate_device_scratch(allocation_size, scratch, nullptr);
-	if (texture_analysis.empty())
-		buffers.texture_analysis_scratch = scratch.buffer;
-	else
-		VK_ASSERT(scratch.buffer == buffers.texture_analysis_scratch);
-
-	VkDeviceSize indirect_dispatch_offset = allocation_offset;
-	VkDeviceSize bitmask_offset = allocation_offset + bitmask_relative_offset;
-	VkDeviceSize workgroups_offset = allocation_offset + workgroups_relative_offset;
+	uint32_t num_blocks = horiz_blocks * vert_blocks;
+	uint32_t qword_blocks = (num_blocks + 127) / 128;
 
 	analysis = {};
 	analysis.flags = TextureAnalysis::ENABLED_BIT;
-	analysis.block_stride = uint16_t(horiz_blocks);
-	analysis.layers = uint16_t(layers);
-	analysis.indirect_dispatch_offset = uint32_t(indirect_dispatch_offset / sizeof(uint32_t));
-	analysis.indirect_bitmask_offset = uint32_t(bitmask_offset / sizeof(uint32_t));
-	analysis.indirect_workgroups_offset = uint32_t(workgroups_offset / sizeof(uint32_t));
+	analysis.block_stride_layers = horiz_blocks;
+	analysis.block_stride_layers |= upload.image->get_create_info().layers << 16u;
 
-	upload.indirection.indirect = scratch.buffer;
-	upload.indirection.indirect_offset = indirect_dispatch_offset;
-	upload.indirection.buffer = scratch.buffer;
+	VkDeviceSize indirect_workgroups_offset = allocate_device_scratch(sizeof(uvec4), buffers.device_scratch, nullptr);
+	analysis.indirect_dispatch_va = buffers.device_scratch.buffer->get_device_address() + indirect_workgroups_offset;
+	upload.indirection.indirect = buffers.device_scratch.buffer;
+	upload.indirection.indirect_offset = indirect_workgroups_offset;
+	qword_clears.push_back(analysis.indirect_dispatch_va);
+
+	VkDeviceSize bit_block_offset = allocate_device_scratch(qword_blocks * sizeof(uvec4), buffers.device_scratch, nullptr);
+	analysis.indirect_bitmask_va = buffers.device_scratch.buffer->get_device_address() + bit_block_offset;
+
+	for (uint32_t i = 0; i < qword_blocks; i++)
+		qword_clears.push_back(analysis.indirect_bitmask_va + sizeof(uvec4) * i);
+
+	VkDeviceSize workgroups_offset = allocate_device_scratch(
+			sizeof(uvec4) + num_blocks * sizeof(uvec2), buffers.device_scratch, nullptr);
+	analysis.indirect_workgroups_va = buffers.device_scratch.buffer->get_device_address() + workgroups_offset;
+	upload.indirection.buffer = buffers.device_scratch.buffer;
 	upload.indirection.offset = workgroups_offset;
-	upload.indirection.size = workgroups_size;
-
-	VkDeviceAddress scratch_address = scratch.buffer->get_device_address();
-	qword_clears.push_back(scratch_address + indirect_dispatch_offset);
-
-	for (VkDeviceSize i = 0; i < qword_blocks; i++)
-		qword_clears.push_back(scratch_address + bitmask_offset + sizeof(uvec4) * i);
-	qword_clears.push_back(scratch_address + workgroups_offset);
+	upload.indirection.size = sizeof(uvec4) + num_blocks * sizeof(uvec2);
+	qword_clears.push_back(analysis.indirect_workgroups_va);
 
 	analysis.base = u16vec2(upload.desc.rect.x, upload.desc.rect.y);
 	analysis.size_minus_1 = uvec2(upload.desc.rect.width - 1, upload.desc.rect.height - 1);
-	return true;
 }
 
 void GSRenderer::commit_cached_texture(uint32_t tex_info_index, bool sampler_feedback)
@@ -1520,12 +1530,8 @@ void GSRenderer::commit_cached_texture(uint32_t tex_info_index, bool sampler_fee
 
 	if (sampler_feedback)
 	{
-		TextureAnalysis analysis;
-		if (allocate_upload_indirection(analysis, texture_uploads.back()))
-		{
-			texture_analysis.resize(std::max<size_t>(texture_analysis.size(), tex_info_index + 1));
-			texture_analysis[tex_info_index] = analysis;
-		}
+		texture_analysis.resize(std::max<size_t>(texture_analysis.size(), tex_info_index + 1));
+		allocate_upload_indirection(texture_analysis[tex_info_index], texture_uploads.back());
 	}
 
 	// Delay any flushing since we may want to modify the texture upload based on the page tracker later.
@@ -1624,6 +1630,7 @@ void GSRenderer::flush_host_vram_copy(const uint32_t *block_indices, uint32_t nu
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_TRANSFER_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "sync-host-to-vram");
 		timestamps.push_back({ TimestampType::SyncHostToVRAM, std::move(start_ts), std::move(end_ts) });
 	}
 
@@ -1653,6 +1660,7 @@ void GSRenderer::flush_readback(const uint32_t *page_indices, uint32_t num_indic
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_2_COPY_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "readback");
 		timestamps.push_back({ TimestampType::Readback, std::move(start_ts), std::move(end_ts) });
 	}
 
@@ -2070,6 +2078,7 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "triangle-setup");
 		timestamps.push_back({ TimestampType::TriangleSetup, std::move(start_ts), std::move(end_ts) });
 	}
 }
@@ -2236,6 +2245,7 @@ void GSRenderer::dispatch_binning(Vulkan::CommandBuffer &cmd, const RenderPass &
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "binning");
 		timestamps.push_back({ TimestampType::Binning, std::move(start_ts), std::move(end_ts) });
 	}
 	cmd.enable_subgroup_size_control(false);
@@ -3031,6 +3041,11 @@ static inline void sanitize_state_indices(const PrimitiveAttribute *prims, const
 void GSRenderer::flush_rendering(const RenderPass &rp, uint32_t instance,
                                  uint32_t base_primitive, uint32_t num_primitives)
 {
+	Vulkan::QueryPoolHandle start_ts, end_ts;
+
+	if (enable_timestamps)
+		start_ts = device->write_calibrated_timestamp();
+
 	auto &cmd = *direct_cmd;
 	bind_frame_resources_instanced(rp, instance, num_primitives);
 	allocate_scratch_buffers_instanced(cmd, rp, instance, num_primitives);
@@ -3110,6 +3125,12 @@ void GSRenderer::flush_rendering(const RenderPass &rp, uint32_t instance,
 	cmd.set_specialization_constant_mask(0);
 
 	stats.num_render_passes++;
+
+	if (enable_timestamps)
+	{
+		end_ts = device->write_calibrated_timestamp();
+		device->register_time_interval("CPU", std::move(start_ts), std::move(end_ts), "flush-rendering");
+	}
 }
 
 static bool page_rect_overlaps(const PageRect &a, const PageRect &b)
@@ -3386,6 +3407,7 @@ void GSRenderer::flush_rendering(const RenderPass &rp)
 		if (enable_timestamps)
 		{
 			end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+			device->register_time_interval("GPU", start_ts, end_ts, "shading");
 			timestamps.push_back({TimestampType::Shading, std::move(start_ts), std::move(end_ts)});
 		}
 
@@ -3533,7 +3555,6 @@ uint32_t GSRenderer::update_palette_cache(const PaletteUploadDescriptor &desc)
 void GSRenderer::dispatch_texture_analysis(Vulkan::CommandBuffer &cmd, const RenderPass &rp)
 {
 	cmd.set_program(shaders.sampler_feedback);
-	cmd.set_storage_buffer(1, 1, *buffers.texture_analysis_scratch);
 	memcpy(cmd.allocate_typed_constant_data<TextureAnalysis>(1, 0, texture_analysis.size()),
 	       texture_analysis.data(),
 	       texture_analysis.size() * sizeof(TextureAnalysis));
@@ -3583,6 +3604,12 @@ void GSRenderer::upload_texture(const TextureUpload &upload)
 		cmd.set_storage_buffer(0, 0, *buffers.gpu);
 	cmd.set_storage_buffer(0, BINDING_CLUT, *buffers.clut);
 	cmd.set_storage_buffer(0, BINDING_VRAM_PRECISION, get_precision_buffer());
+
+	if (upload.desc.samples > 1 && scratch.buffer)
+	{
+		LOGE("CPU scratch upload with super-sampling should never happen ...\n");
+		return;
+	}
 
 	if (upload.indirection.buffer)
 		cmd.set_storage_buffer(0, 2, *upload.indirection.buffer, upload.indirection.offset, upload.indirection.size);
@@ -3929,6 +3956,7 @@ void GSRenderer::flush_palette_upload()
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "palette-update");
 		timestamps.push_back({ TimestampType::PaletteUpdate, std::move(start_ts), std::move(end_ts) });
 	}
 
@@ -3968,6 +3996,7 @@ void GSRenderer::flush_cache_upload()
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "texture-upload");
 		timestamps.push_back({ TimestampType::TextureUpload, std::move(start_ts), std::move(end_ts) });
 	}
 	cmd.end_region();
@@ -4156,6 +4185,7 @@ void GSRenderer::flush_transfer()
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "copy-vram");
 		timestamps.push_back({ TimestampType::CopyVRAM, std::move(start_ts), std::move(end_ts) });
 	}
 
@@ -4334,6 +4364,10 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	ensure_command_buffer(direct_cmd, Vulkan::CommandBuffer::Type::Generic);
 	auto &cmd = *direct_cmd;
 
+	Vulkan::QueryPoolHandle cpu_start_ts;
+	if (enable_timestamps)
+		cpu_start_ts = device->write_calibrated_timestamp();
+
 	cmd.begin_region("vsync");
 
 	auto image_info = Vulkan::ImageCreateInfo::immutable_2d_image(1, 1, VK_FORMAT_R8G8B8A8_UNORM);
@@ -4497,11 +4531,22 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	}
 	else if (priv.smode1.CMOD == SMODE1Bits::CMOD_PROGRESSIVE && priv.smode1.LC == SMODE1Bits::LC_VGA)
 	{
-		mode_width = 640;
-		mode_height = 480;
-		// Matches the known content that uses VGA.
-		scan_offset_x = 138;
-		scan_offset_y = 34;
+		if (overscan)
+		{
+			mode_width = 714;
+			mode_height = 520;
+			scan_offset_x = 101;
+			scan_offset_y = 14;
+		}
+		else
+		{
+			mode_width = 640;
+			mode_height = 480;
+			// Matches the known content that uses VGA.
+			scan_offset_x = 138;
+			scan_offset_y = 34;
+		}
+
 		insert_label(cmd, "VGA 640x480");
 		clock_divider = SMODE1Bits::CLOCK_DIVIDER_COMPONENT;
 	}
@@ -5184,6 +5229,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	if (enable_timestamps)
 	{
 		end_ts = cmd.write_timestamp(VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT);
+		device->register_time_interval("GPU", start_ts, end_ts, "vsync");
 		timestamps.push_back({ TimestampType::VSync, std::move(start_ts), std::move(end_ts) });
 	}
 
@@ -5193,6 +5239,13 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	result.double_strike = double_strike;
 
 	flush_submit(0);
+
+	if (enable_timestamps)
+	{
+		end_ts = device->write_calibrated_timestamp();
+		device->register_time_interval("CPU", std::move(cpu_start_ts), std::move(end_ts), "vsync");
+	}
+
 	return result;
 }
 
